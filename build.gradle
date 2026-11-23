@@ -24,3 +24,44 @@ dependencies {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+tasks.register('downloadTestData') {
+    group = 'verification'
+    description = 'Download the Solothurn 2019 acceptance tile into the local test-data cache.'
+    doLast {
+        def directory = file('.cache/test-data')
+        long bytes = 83_247_722
+        def target = new File(directory, 'so-2019.laz')
+        if (target.isFile() && target.length() == bytes) {
+            logger.lifecycle("Using ${target} (${bytes} bytes)")
+            return
+        }
+        directory.mkdirs()
+        if (directory.usableSpace < bytes + (1L << 30)) {
+            throw new GradleException("Insufficient space for ${target} and a 1 GiB reserve")
+        }
+        def url = new URI('https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz').toURL()
+        def download = url.openConnection()
+        download.connectTimeout = 15_000
+        download.readTimeout = 60_000
+        def temporary = java.nio.file.Files.createTempFile(directory.toPath(), 'so-2019-', '.part')
+        try {
+            if (download.responseCode != 200 || download.contentLengthLong != bytes) {
+                throw new GradleException("Unexpected test data response: HTTP ${download.responseCode}, ${download.contentLengthLong} bytes")
+            }
+            download.inputStream.withCloseable { input ->
+                java.nio.file.Files.copy(input, temporary, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+            temporary.toFile().withInputStream { input ->
+                if (temporary.toFile().length() != bytes || new String(input.readNBytes(4), 'US-ASCII') != 'LASF') {
+                    throw new GradleException("Incomplete or invalid test data: ${temporary}")
+                }
+            }
+            java.nio.file.Files.move(temporary, target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            logger.lifecycle("Downloaded ${target} (${bytes} bytes)")
+        } finally {
+            download.disconnect()
+            java.nio.file.Files.deleteIfExists(temporary)
+        }
+    }
+}

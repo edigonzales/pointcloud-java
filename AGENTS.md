@@ -17,7 +17,8 @@ liegen ausserhalb des Produktumfangs.
   CPU-Standardbuild braucht keine experimentellen JVM-Module, nativen
   LiDAR-Bibliotheken, GPU oder Realdatendownloads. Verwende
   `./gradlew clean check` für die Standardtests und `./gradlew installDist`
-  für die installierbare CLI.
+  für die installierbare CLI. Realdaten beziehen wir separat mit
+  `./gradlew downloadTestData`.
 - Wende KISS und Ockham's Razor an. Suche vorhandenen Code und bevorzuge
   direkte Lösungen und Standardwerkzeuge. Jede neue Klasse, Schnittstelle,
   Modulgrenze, Abhängigkeit und Buildaufgabe braucht einen heutigen Verbraucher

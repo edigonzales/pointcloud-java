@@ -17,3 +17,7 @@ build/install/pointcloud/bin/pointcloud --version
 
 Der Standardbuild verwendet den Gradle-Wrapper und Groovy DSL. Er benötigt
 keine nativen LiDAR-Bibliotheken, Spezialhardware oder Realdaten.
+
+Die Kachel für die separate Realdatenprüfung wird mit
+`./gradlew downloadTestData` angefordert. Quelle und Cachepfad stehen im
+[Herkunftsnachweis](docs/provenance.md).
