@@ -80,6 +80,32 @@ def compare_stats(java, reference, expected_count):
         print("Maximum absolute statistics differences:", errors)
 
 
+def check_cancel(cli, work):
+    pipeline = json.loads(Path("examples/ground-crop.json").read_text())
+    target = work / "interrupted.las"
+    pipeline["pipeline"][-1]["filename"] = str(target)
+    config = work / "interrupted.json"
+    config.write_text(json.dumps(pipeline))
+    started = time.perf_counter()
+    with subprocess.Popen([cli, "pipeline", config], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          env=dict(os.environ, JAVA_OPTS="-Xmx512m")) as process:
+        try:
+            deadline = time.monotonic() + 8
+            while process.poll() is None and not any(work.glob("*.las.part")) and time.monotonic() < deadline:
+                time.sleep(0.005)
+            require(any(work.glob("*.las.part")), "No active temporary output to interrupt")
+            process.terminate()
+            process.communicate(timeout=8)
+            require(process.returncode != 0, "Interrupted CLI reported success")
+            require(not target.exists() and not any(work.glob("*.las.part")), "Cancelled CLI left output files")
+            print(f"SIGTERM, CLI exit {process.returncode}, no target or temporary output, "
+                  f"{time.perf_counter() - started:.2f} s")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
 def main():
     pdal = sys.argv[1] if len(sys.argv) > 1 else "pdal"
     cli = "build/install/pointcloud/bin/pointcloud"
@@ -136,6 +162,7 @@ def main():
                 pdal_las.unlink()
             else:
                 require(java["pointsWritten"] == 0, "Null writer wrote points")
+        check_cancel(cli, work)
 
 
 if __name__ == "__main__":

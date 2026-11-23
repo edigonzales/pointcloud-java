@@ -42,6 +42,11 @@ Zielverzeichnis temporär geschrieben und nach dem Headerabschluss
 veröffentlicht. Bestehende Ziele erfordern explizites Überschreiben,
 Aliase der Eingabe werden abgelehnt.
 
+Die CLI unterbricht einen aktiven Pipelinelauf bei regulärer JVM-
+Beendigung. Der Shutdown-Hook wartet auf dessen Ressourcenschluss
+und die Bereinigung des temporären Outputs. Bibliotheksaufrufe
+verwenden die Interrupts des aufrufenden Threads.
+
 ## Metadaten
 
 CRS- und Extra-Bytes-VLRs sowie gewöhnliche unbekannte VLRs und EVLRs

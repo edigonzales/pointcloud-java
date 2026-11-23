@@ -14,5 +14,5 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: gradle
-      - run: ./gradlew clean check installDist
+      - run: ./gradlew clean check installDist distZip
       - run: build/install/pointcloud/bin/pointcloud --version

@@ -589,3 +589,67 @@ Einfachheitsprüfung: ein Filterkernel, explizite Transfers,
 stabile Host-Kompaktierung und Standard-Metal-Backend ohne
 Accelerator-Infrastruktur. E8 durch reale GPU-Messung
 abgeschlossen. P10 abgenommen.
+
+## P11 · Konsolidierung und Lieferung
+
+23. November 2026, Apple M5/macOS 27.0.1 arm64. Gradle 9.9.1 mit
+Temurin 25.0.5+8-LTS für Launcher, Compiler und Tests. Realdatenreferenz
+PDAL 2.10.2/LazPerf. Die zwei bezogenen Kacheln belegen zusammen
+157'509'563 B. Die ursprüngliche Auftragsdatei ist seit B0 unverändert.
+
+Der Abschlusscheck fand einen Abbruchfehler. Ein SIGTERM bei
+geöffneter temporärer Ausgabe führte zu Exit 143 und hinterliess
+die temporäre Datei. Die CLI unterbricht jetzt den Pipeline-Thread
+über einen einfachen Shutdown-Hook und wartet darauf, dass seine
+Ressourcen geschlossen sind. Der direkte SIGTERM-Test im
+Realdatenaufruf endete erwartungsgemäss mit Exit 143 in 0.10 s
+und ohne Ziel- oder temporäre Datei.
+
+| Prüfung | Ergebnis |
+| --- | --- |
+| `./gradlew clean check installDist distZip --info` | Exit 0, 1.01 s. 23 JUnit-Tests, 0 Failures, 0 Fehler, 0 Skips. |
+| `./gradlew --offline clean check installDist distZip` auf dem Auslieferungsstand | Exit 0, 1.03 s. `LasIoTest` 14 (0.079 s), `PipelineTest` 7 (0.052 s), `MainTest` 2 (0.001 s). Insgesamt 23 erfolgreich, 0 fehlgeschlagen, 0 Fehler, 0 Skips. |
+| ZIP und entpackte CLI | `unzip -tq`, Vergleich der enthaltenen MIT-Lizenzdatei, `--version`, `--help`, `info` und Mini-Pipeline erfolgreich. `info` meldete 5 Punkte, Format 8, 2 Extra Bytes. Mini-Metadaten identisch mit AOT und Native. |
+| `java -cp '.cache/p11/dist/pointcloud/lib/*' examples/ReadBatches.java src/test/resources/las/format-3.laz` | Exit 0, 0.23 s, 5 gelesene Records. Erstes Raw X −200, World X 2'593'998.0. |
+| Offline-Datencache | `downloadTestData` und `downloadTestData -Ptile=2014` Exit 0 in 0.28/0.26 s. Vollständige bestehende Dateien wiederverwendet. |
+| `python3 tools/check-real-data.py "$PDAL"` | Exit 0 in 23.04 s. Alle Produktläufe mit `-Xmx512m`. Beide Kacheln und alle drei unveränderten Beispiele komplett. 353'342 ausgegebene Records gegen PDAL verglichen, 0 Abweichungen. Statistiken innerhalb der P5-Toleranz, gleiche Counts, Bounds, CRS-Inhalte, Quantisierung und Return-Zähler. |
+
+JUnit-Berichte unter `build/test-results/test/` und
+`build/reports/tests/test/`. Kompakte Prüf- und Werkzeuglogs unter
+`build/reports/p11/`. Der finale Realdatenlauf benötigte für Java/PDAL
+3.66/1.80 s für Ground-Crop, 3.75/2.09 s für den 2019-Statslauf,
+3.53/1.67 s für die Dezimierung und 3.59/1.90 s für 2014.
+Die ausgewählten Punkte entsprechen P5 (195'738, 128'909
+und 28'695 geschriebene Records). Die drei Java-LAS-Dateien
+wurden zusätzlich durch PDAL vollständig gelesen. Die
+CRS-/VLR-Regeln und die Statistikabweichungen entsprechen P5.
+
+Die [AOT-/Native-Befehle](experiments.md#e6-und-e7--jvm-version-aot-cache-und-native-image)
+wurden mit dem aktualisierten CLI-Code erneut geprüft. AOT-Training
+3.84 s, Assembly 0.17 s für 16'449'536 B Cache, Laden in
+`AOTMode=on` bestätigt. Nativer Build 31.71 s, Peak-RSS
+1'874'837'504 B, 19'080'384 B Mach-O-arm64-Binary. Beide
+Mini-Pipelines und der Java-27-Minigegenlauf stimmen fachlich
+überein. Beide vollen Ground-Crop-Läufe (AOT 3.56 s, Native
+4.09 s) endeten erfolgreich mit 195'738 bytegleichen
+Ausgaberecords und denselben Statistiken. Die P9-Messreihen
+bleiben an ihre dokumentierte Basis gebunden.
+
+Das JVM-ZIP (456'824 B) liegt unter `build/distributions`,
+das Anwendungs-JAR (42'357 B) unter `build/libs`. Das
+Installationsverzeichnis enthält die Laufzeitbibliotheken
+und einen separaten Codec mit den zugehörigen Lizenztexten.
+Die CI-Konfiguration baut und prüft den CPU-Standardpfad
+und erzeugt das ZIP. Die Befehle wurden lokal ausgeführt.
+Die erzeugten grossen LAS-Zwischenstände, JFR-Aufnahmen,
+Native Binaries und AOT-Caches wurden bereinigt. Die
+zwei Realdatenkacheln verbleiben im ignorierten Cache.
+
+Die Einfachheitsprüfung behält die wiederverwendbaren vollständigen
+Records und den skalaren Standardleser. Decoder-Allokationen sind
+der nachgewiesene und behobene Speicherengpass. LAZ-Dekodierung
+dominiert die Laufzeit. Der geordnete Chunkversuch war auf der
+M5-Maschine bis zum Faktor 2.83 schneller und bleibt isoliert.
+SIMD, Batchpool, I/O, JVM-Wechsel, AOT, Native und Metal-GPU
+sind mit Messwerten und einem dokumentierten Entscheid
+abgeschlossen. Keine Pflichtprüfung offen. P11 abgenommen.

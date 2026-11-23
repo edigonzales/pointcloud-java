@@ -16,6 +16,8 @@ application {
     mainClass = 'pointcloud.Main'
 }
 
+distributions.main.contents.from('LICENSE')
+
 dependencies {
     implementation project(':codec')
     implementation 'com.google.code.gson:gson:2.13.2'

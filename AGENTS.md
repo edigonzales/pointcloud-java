@@ -17,7 +17,8 @@ liegen ausserhalb des Produktumfangs.
   CPU-Standardbuild braucht keine experimentellen JVM-Module, nativen
   LiDAR-Bibliotheken, GPU oder Realdatendownloads. Verwende
   `./gradlew clean check` für die Standardtests und `./gradlew installDist`
-  für die installierbare CLI. Realdaten beziehen wir separat mit
+  für die installierbare CLI. `./gradlew distZip` erzeugt das JVM-ZIP.
+  Realdaten beziehen wir separat mit
   `./gradlew downloadTestData` und `./gradlew downloadTestData -Ptile=2014`.
   Die unabhängige Abnahme läuft mit `python3 tools/check-real-data.py /pfad/zu/pdal`.
 - Wende KISS und Ockham's Razor an. Suche vorhandenen Code und bevorzuge

@@ -11,12 +11,36 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.concurrent.CountDownLatch;
 
 public final class Main {
     private Main() {}
 
     public static void main(String[] args) {
-        System.exit(run(args, System.out, System.err));
+        int command = args.length > 0 && args[0].equals("--diagnostics") ? 1 : 0;
+        int status;
+        if (command < args.length && args[command].equals("pipeline")) {
+            Thread execution = Thread.currentThread();
+            var completed = new CountDownLatch(1);
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (completed.getCount() != 0) {
+                    execution.interrupt();
+                    try {
+                        completed.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }, "pointcloud-cancel"));
+            try {
+                status = run(args, System.out, System.err);
+            } finally {
+                completed.countDown();
+            }
+        } else {
+            status = run(args, System.out, System.err);
+        }
+        System.exit(status);
     }
 
     static int run(String[] args, PrintStream out, PrintStream err) {

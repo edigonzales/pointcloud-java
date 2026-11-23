@@ -343,7 +343,7 @@ cmp build/results/ground-crop.las .cache/experiments/e1-baseline.las
 rm build/results/ground-crop.las
 /usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m -XX:AOTMode=create \
   -XX:AOTConfiguration="$work/ground.aotconfig" -XX:AOTCache="$work/ground.aot" -cp "$product_cp"
-JAVA_HOME="$graal" /usr/bin/time -lp "$graal/bin/native-image" -J-Xmx8g --no-fallback \
+JAVA_HOME="$graal" /usr/bin/time -lp "$graal/bin/native-image" -J-Xmx8g \
   -H:ConfigurationFileDirectories=experiments/native-image -cp "$product_cp" \
   -o "$work/pointcloud-native" pointcloud.Main
 file "$work/pointcloud-native"
@@ -365,9 +365,9 @@ registriert nur diese Methoden der drei Ergebnis-Records.
 Der korrigierte Build dauerte 42.40 s (Builder 41.4 s),
 maximales Build-RSS 1'680'949'248 B. Das Binary wog 19'080'352 B.
 `file` meldete Mach-O arm64. `otool -L` zeigte Systembibliotheken
-und keine JVM-Laufzeit. Der gewählte Builder meldete `--no-fallback`
-als deprecated und wirkungslos. Der Nachweis erfolgt am direkt
-ausgeführten Binary.
+und keine JVM-Laufzeit. Der P9-Builder meldete `--no-fallback`
+als deprecated und wirkungslos. Der obige Aufruf wurde in P11
+ohne diese Option erneut gebaut und direkt ausgeführt.
 [GraalVM Native Image](https://www.graalvm.org/jdk25/reference-manual/native-image/)
 
 ### Ergebnisse
@@ -429,7 +429,7 @@ Der Runtime-Aufruf benötigt kein separat installiertes
 `metal`-Kommando. TornadoVM meldete `METAL`, Gerät
 `metal-0-0`, Typ GPU und physischen Gerätenamen Apple M5.
 Die Swift-Probe bestätigt die residente Metal-GPU und Shared Memory.
-Das Kontroll-Shader mit `float` kompiliert über Metal zur Laufzeit.
+Der Kontrollshader mit `float` kompiliert über Metal zur Laufzeit.
 Die sonst gleiche Variante mit `double` wird vom Metal-Compiler
 mit `'double' is not supported in Metal` abgelehnt.
 [TornadoVM-Installation](https://tornadovm.readthedocs.io/en/latest/installation.html) ·
