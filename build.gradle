@@ -1,0 +1,26 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+application {
+    mainClass = 'pointcloud.Main'
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.0.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:6.0.3'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

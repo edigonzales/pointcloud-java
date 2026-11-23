@@ -15,8 +15,9 @@ liegen ausserhalb des Produktumfangs.
   unabhängigen PDAL-Produkttests bleiben verpflichtend.
 - Verwende Java 25, Gradle Groovy DSL und lokale Codecquellen im Produkt. Der
   CPU-Standardbuild braucht keine experimentellen JVM-Module, nativen
-  LiDAR-Bibliotheken, GPU oder Realdatendownloads. Geplante Standardbefehle
-  sind `./gradlew clean check` und `./gradlew installDist`.
+  LiDAR-Bibliotheken, GPU oder Realdatendownloads. Verwende
+  `./gradlew clean check` für die Standardtests und `./gradlew installDist`
+  für die installierbare CLI.
 - Wende KISS und Ockham's Razor an. Suche vorhandenen Code und bevorzuge
   direkte Lösungen und Standardwerkzeuge. Jede neue Klasse, Schnittstelle,
   Modulgrenze, Abhängigkeit und Buildaufgabe braucht einen heutigen Verbraucher
