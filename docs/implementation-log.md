@@ -244,3 +244,61 @@ Die Einfachheitsprüfung behält eine Byte-Repräsentation und eine
 transaktionale Writer-Grenze. Die grossen Originalmetadaten werden direkt
 übertragen, statt sie in eine Liste oder ein zweites Dateimodell zu laden.
 Der Git-Diff und alle Pflichtprüfungen dieser Etappe sind geprüft. P3 abgenommen.
+
+## P4 · PDAL-Pipeline-Teilmenge und CLI
+
+23. November 2026, Plattform wie P3. Gradle 9.9.1 und Temurin 25.0.5+8-LTS
+aarch64. Gson 2.13.2 liest den JSON-Baum. PDAL 2.10.2/LazPerf ist die
+Referenz für ausführbare Beispiele, Dekimation und Statistik. Ein direkter
+Stage-Switch erzeugt pro Lauf die Selektoren und Akkumulatoren. Die
+Ausgabe folgt der Reihenfolge im Eingabestrom. `Pipeline` ist zugleich
+die Bibliotheks-API. Die [Optionen und das JSON-Ergebnis](architecture.md#pipelines)
+sind dokumentiert.
+
+Die kleine Beispielabnahme verwendete `format-3.las` mit X/Y-Offsets
+2'594'200 / 1'227'700, damit die fünf lokalen Punkte in der Beispielbox
+liegen. In den Beispiel-JSONs wurden dafür nur Dateipfade ausgetauscht.
+`pointcloud pipeline .cache/p4/<name>.json --metadata .cache/p4/java-<name>.json`
+und `pdal pipeline .cache/p4/<name>.json --stream --metadata .cache/p4/pdal-<name>.json`
+liefen auf derselben Konfiguration. Java-Punktdateien wurden vorher unter
+eigenen Namen abgelegt. Recordlänge und Punktanzahl wurden aus dem LAS-Header
+ausgelesen und alle Records vollständig verglichen.
+
+| Prüfung | Ergebnis |
+| --- | --- |
+| `pdal pipeline examples/<name>.json --validate` | Alle drei Originaldateien `valid: true`, `streamable: true`, Exit 0. Ground-Crop 0.07 s, Stats 0.05 s, Decimate 0.05 s. |
+| Ground-Crop auf Fixture | Je fünf gelesen, zwei ausgewählt und geschrieben, je 359 B LAS, 2 vollständige Records verglichen mit 0 Abweichungen. Java/PDAL Exit 0, 0.33/0.16 s. |
+| Stats auf Fixture | Je fünf gelesen und konsumiert, keine LAS-Ausgabe. Fünf Dimensionen verglichen. Java/PDAL Exit 0, 0.15/0.05 s. |
+| Decimate auf Fixture | Je fünf gelesen und einer ausgewählt und geschrieben, je 325 B LAS. 1 vollständiger Record verglichen, 0 Abweichungen. Java/PDAL Exit 0, 0.14/0.05 s. |
+| `pointcloud info src/test/resources/las/format-8.laz` | Exit 0, 0.10 s. Format 8 / LAS 1.4 / 5 Headerpunkte / 40 B Record, zwei Extra Bytes. Header-Bounds und alle vier VLRs angezeigt. |
+| `./gradlew --offline clean check installDist --info` | Exit 0, 3.14 s. `PipelineTest`: 6 erfolgreich (0.135 s), `LasIoTest`: 13 (0.261 s), `MainTest`: 2 (0.002 s). Insgesamt 21 ausgeführt, 0 fehlgeschlagen, 0 Fehler, 0 übersprungen. XML unter `build/test-results/test/`, HTML unter `build/reports/tests/test/`. |
+
+Alle endlichen Stats-Werte verglichen mit `max(1e-10, 5.1e-10 * max(|Java|,|PDAL|))`
+wegen der ungefähr zehn signifikanten Stellen im PDAL-JSON. Anzahl und
+Extrema exakt. Grösste absolute Abweichung beim Mittelwert 2.33e-10,
+bei der Varianz 1.20e-7 und bei der Standardabweichung 4.66e-6.
+
+Vier zusätzliche Mini-Pipelines mit `writers.null` und demselben
+Befehlspaar prüften leere Auswahl (`Intensity < 0`), einen Punkt
+(`Intensity == 20`) und je einen NaN- bzw. +Inf-GPS-Wert im ersten von
+fünf Records. Beide CLIs Exit 0. Wandzeit Java/PDAL in dieser Reihenfolge
+0.14/0.04 s, 0.12/0.04 s, 0.11/0.04 s, 0.10/0.04 s.
+PDAL 2.10.2 meldet bei 0 Punkten DBL_MAX-/−DBL_MAX-Sentinels und Nullwerte
+für die Momente. Java schreibt bei 0 Punkten die fünf Werte als JSON-null.
+Bei einem Punkt stimmen die Lagewerte, beide behandeln Stichprobenstreuung
+als undefiniert. Bei NaN und +Inf stimmen Stichprobenanzahl und endliche
+Extrema. Java kodiert undefinierte oder nicht endliche Resultate als null,
+PDAL kodiert NaN und Infinity als Strings und lässt undefinierte Streuung weg.
+
+Die erste Testselektion erkannte eine falsch handgerechnete
+Chunkgrenzenerwartung (5 gelaufen, 4 erfolgreich, 1 Failure, 0 Fehler,
+0 Skips, Exit 1, Gradle 1 s). Bei Schritt 24'999 und Offset 1 nach dem
+Vorschaltfilter gehören die ursprünglichen Records 2, 25'001 und 50'000
+zum Ergebnis. Das korrigierte Testorakel prüft auch, dass ein exklusives
+Limit 49'999 den letzten davon ausschliesst. Die breitere Wiederholung
+bestand mit Batchgrössen 7, 13 und 32'768 auf der Zwei-Chunk-Fixture.
+Die zweite fachliche Ausführung derselben Pipeline hat keinen Altzustand.
+
+Einfachheitsprüfung mit den Repository-Skills. Feste Stage-Menge,
+ein JSON-Baum, ein kleiner Ausdrucksparser und ein Selektor pro Stage.
+Der Standardbuild bleibt unabhängig von PDAL und Realdaten. P4 abgenommen.

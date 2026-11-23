@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import tempfile
 
 
 def vlr(user, record, payload, extended=False):
@@ -69,3 +70,20 @@ for fmt, length in [(0, 20), (1, 28), (2, 26), (3, 34), (6, 30), (7, 36), (8, 40
     extra_dims = "Confidence=uint16" if fmt == 8 else "all"
     subprocess.run([sys.argv[1], "translate", str(las), str(laz), "--stream",
                     "--writers.las.forward=all", f"--writers.las.extra_dims={extra_dims}"], check=True)
+
+# Two LazPerf chunks with a short final chunk. Raw X is the point's index.
+with tempfile.TemporaryDirectory() as scratch:
+    las = Path(scratch) / "chunks.las"
+    base = bytearray((directory / "format-3.las").read_bytes())
+    start = struct.unpack_from("<I", base, 96)[0]
+    record = base[start:start + 34]
+    count = 50_003
+    struct.pack_into("<6I", base, 107, count, count, 0, 0, 0, 0)
+    struct.pack_into("<dd", base, 179, offsets[0] + (count - 1) * scales[0], offsets[0])
+    with las.open("wb") as output:
+        output.write(base[:start])
+        for index in range(count):
+            struct.pack_into("<i", record, 0, index)
+            output.write(record)
+    subprocess.run([sys.argv[1], "translate", str(las), str(directory / "chunks.laz"),
+                    "--stream", "--writers.las.forward=all"], check=True)

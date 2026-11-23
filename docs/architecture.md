@@ -54,5 +54,48 @@ Bei EVLRs bleiben Rahmen und Nutzdaten erhalten und der Anfangsoffset
 wird angepasst. Der Writer lädt grosse Nutzdaten nicht in den Heap und
 interpretiert die Inhalte unbekannter Metadaten nicht.
 
+## Pipelines
+
+Ein JSON-Array oder `{"pipeline":[...]}` beschreibt eine lineare Pipeline.
+Dateinamen sind relativ zum aktuellen Arbeitsverzeichnis. Stages werden
+einsbasiert nummeriert. Typen, Optionen und die Ausdruckssyntax werden
+vor dem Punktlauf geprüft. Dimensionsnamen werden am geöffneten
+Punktformat geprüft.
+
+| Stage | Optionen |
+| --- | --- |
+| `readers.las` | `filename` für eine lokale LAS-/LAZ-Datei. Als erste Stage ist der Dateiname auch direkt zulässig. |
+| `filters.crop` | `bounds` als `([xmin,xmax],[ymin,ymax])` mit optionalem dritten Z-Intervall. Grenzen sind inklusiv. `outside: true` invertiert die Auswahl. |
+| `filters.expression` | `expression` enthält Dimensionsvergleiche mit endlichen Dezimalliteralen. Unterstützt sind `== != < <= > >=`, `!`, `&&`, `\|\|` und Klammern. Negation bindet vor UND, UND vor ODER. |
+| `filters.decimation` | Ganzzahlige `step` (Standard 1), `offset` (Standard 0) und exklusives `limit` (optional). Zählung ab 0 über die Eingabe dieser Stage. |
+| `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. |
+| `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
+| `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
+
+Ausdrücke und Statistik akzeptieren `X`, `Y`, `Z`, `Intensity`,
+`Classification`, `ReturnNumber`, `NumberOfReturns` sowie formatabhängig
+`GpsTime`, `Red`, `Green`, `Blue`, `Infrared`. Statistik wird dort
+erhoben, wo die Stage steht. Der laufende Mittelwert und das zweite
+zentrale Moment folgen derselben stabilen Online-Formel wie PDAL.
+Varianz und Standardabweichung sind Stichprobenwerte. Ein einziger
+Punkt hat undefinierte Stichprobenstreuung. Die JSON-Ausgabe verwendet
+`null` für undefinierte und nicht endliche Werte. NaN zählt als Probe,
+kann die Extrema nicht ändern und macht die laufenden Momente undefiniert.
+Bei leerer Auswahl sind alle fünf statistischen Werte `null`.
+
+`pointcloud pipeline` schreibt `pointsRead`, `pointsSelected`,
+`pointsWritten` und `statistics` als JSON auf stdout beziehungsweise in
+den mit `--metadata` angegebenen Pfad. Jede Statistikstage enthält
+`stage` und `dimensions` mit `name`, `count`, `minimum`, `maximum`,
+`average`, `variance` und `stddev`. Bei `writers.null` ist
+`pointsWritten` gleich 0 und `pointsSelected` die Anzahl konsumierter
+Punkte. `--batch-size` wählt die Batchgrösse und `--overwrite` erlaubt
+das Ersetzen vorhandener Ziele. `pointcloud --diagnostics ...` aktiviert
+Stacktraces.
+
+Im Bibliotheksaufruf verwendet `Pipeline.read(Path.of("examples/stats.json"))`
+dieselbe Konfiguration. `pipeline.run(32_768, false)` liefert das
+typisierte Ergebnis. Ein erneuter Aufruf erstellt frischen Stage-Zustand.
+
 [ASPRS LAS-Spezifikation](https://github.com/ASPRSorg/LAS) ·
 [Herkunft und Fixtures](provenance.md)

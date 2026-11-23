@@ -61,3 +61,7 @@ Erzeugung ab Repositorywurzel mit `python3 tools/make-fixtures.py /pfad/zu/pdal`
 Für Format 8 wird `Confidence=uint16` beim Erzeugen angegeben. PDAL
 2.10.2 würde mit `extra_dims=all` auch `Infrared` als zweite Dimension
 hinter den formatüblichen NIR-Wert schreiben.
+
+`chunks.laz` wurde mit demselben Werkzeug erzeugt. Es enthält 50'003
+synthetische Punkte in zwei Chunks. Die rohe X-Koordinate gibt die
+ursprüngliche Position im Strom an.

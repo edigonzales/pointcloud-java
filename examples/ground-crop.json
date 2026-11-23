@@ -1,0 +1,27 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": ".cache/test-data/so-2019.laz"
+    },
+    {
+      "type": "filters.crop",
+      "bounds": "([2594100,2594300],[1227600,1227800])"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "Classification == 2"
+    },
+    {
+      "type": "filters.stats",
+      "dimensions": "X,Y,Z,Intensity"
+    },
+    {
+      "type": "writers.las",
+      "filename": "build/results/ground-crop.las",
+      "forward": "all",
+      "compression": false,
+      "extra_dims": "all"
+    }
+  ]
+}
