@@ -423,3 +423,44 @@ Einfachheitsprüfung: kurzer, lokaler Speicherlebenszyklus im Decoder
 an Stelle immer neuer Record-Instanzen. Das Experimentprojekt wird
 explizit aktiviert und verwendet Standard-JMH und Gradle-Distribution.
 Der Standardbuild bleibt frei von Experimentabhängigkeiten. P6 abgenommen.
+
+## P7 · SIMD, Speicher und Batchparallelität
+
+23. November 2026. Apple M5/macOS, Temurin 25.0.5+8-LTS aarch64,
+Gradle 9.9.1 und JMH 1.37. `./gradlew --offline -Pexperiments
+-Pvector :experiments:installDist` Exit 0, Gradle 515 ms.
+Das [Experimentprotokoll](experiments.md#e2-e3-und-e5--vektoren-batchparallelität-und-io)
+enthält die reproduzierbaren Messbefehle und Rohdaten. Reihenfolge der
+ersten Messreihe war E2, E3, E5, danach der Gegenlauf zur unveränderten
+Produkt-CLI mit denselben E3-Stages.
+
+E2 mit zwei Forks und je fünf Messiterationen je Kernelvariante.
+Alle Vergleiche der Auswahl und kompaktifizierten Recordbytes sowie
+der Distanzen einschliesslich Tail-Tests bestanden. Vektorauswahl
+109.826 µs statt 128.269 µs pro Samplebatch. Distanz praktisch
+gleich. E3 mit zwölf vollständigen Versuchsläufen und drei
+CLI-Gegenläufen. Je 195'738 Punkte geschrieben, stabiler
+Record- und Statistikvergleich bestanden. Ein Worker erreicht
+ungefähr den Durchsatz des schlankeren Produktpfads. E5 führte 126
+kleine vollständige LAS-Scans mit gleichen XYZ-Summen durch.
+Der warme Median fiel im Mappingversuch von 0.451 auf 0.285 ms,
+der erste Zugriff dauerte länger. Alle Experimente wurden mit
+Exit 0 gemessen und bleiben ausserhalb der Produktimplementierung.
+
+Beim separat aufgerufenen E3-CLI-Gegenlauf fehlten zunächst die
+Shellvariablen für die Zielpfade. Der Ausschnitt wurde mit den
+richtigen Variablen aufgerufen und alle drei CLI-Läufe bestanden.
+`bash -n experiments/p7.sh` prüfte das vollständige Messskript.
+
+Standardprüfung `./gradlew --offline clean check installDist` Exit 0
+in 1.07 s. 23 JUnit-Tests ausgeführt und erfolgreich, 0 fehlgeschlagen,
+0 Fehler, 0 übersprungen. `LasIoTest` 14 (0.080 s), `PipelineTest`
+7 (0.057 s), `MainTest` 2 (0.001 s). Native Reports unter
+`build/test-results/test/` und `build/reports/tests/test/`.
+Im Installationsverzeichnis liegen Produkt, Codec und Gson samt
+Annotationsabhängigkeit.
+
+Einfachheitsprüfung: direkte Schleifen, normaler Executor mit fester
+Zahl Bufferslots und zwei klare Dateizugriffe. Kein neuer Backend-
+oder Schedulingvertrag im Produkt. E2, E3 und E5 sind mit gemessener
+Entscheidung abgeschlossen. P7 abgenommen.

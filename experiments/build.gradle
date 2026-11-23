@@ -22,3 +22,10 @@ dependencies {
 application {
     mainClass = 'org.openjdk.jmh.Main'
 }
+
+if (providers.gradleProperty('vector').isPresent()) {
+    sourceSets.main.java.srcDir('src/vector/java')
+    tasks.named('compileJava') {
+        options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+    }
+}

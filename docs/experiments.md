@@ -117,3 +117,112 @@ pipeline examples/ground-crop.json`. Zwischen Läufen das Ausgabeziel
 freimachen. Die JFR-Variante verwendet zusätzlich
 `-Xlog:jfr+startup=off -XX:StartFlightRecording=filename=.cache/experiments/e1-final.jfr,settings=profile,dumponexit=true`.
 Das Profil mit `jfr view allocation-by-site` auswerten.
+
+## E2, E3 und E5 · Vektoren, Batchparallelität und I/O
+
+Basis ist das Produkt nach P6 (`8261661`), dieselbe Maschine und dasselbe
+JDK. Die Experimente sind getrennt vom CPU-Standardbuild.
+
+- **E2.** Kann SIMD auf den bereits dekodierten Spalten durch schnellere
+  Auswahl oder Distanzrechnung helfen? Vergleich mit normalem JIT, zwei
+  Kernel und je eine Vector-API-Implementierung. Der Auswahlkernel
+  kompaktifiziert vollständige Records stabil. Distanz zu einem festen
+  lokalen Bezugspunkt verwendet getrennte Multiplikation und Addition.
+  Auswahl und Distanzwerte müssen exakt auch bei 1, 2 und 3 Punkten
+  um die verwendete Zwei-Lane-Vektorbreite übereinstimmen.
+- **E3.** Kann ein fester Pool von 1, 2 oder 4 Workers die Arbeit nach
+  dem sequenziellen Decoder beschleunigen? Serieller Vergleich mit
+  denselben Stages und Statistiken. Maximal zwei Worker-Batches pro
+  Worker plus der Reader-Batch. Ein Workerslot hält Auswahlindizes
+  und Statistik selbst. Schreiben und Welford-Merge erfolgen in
+  Eingabereihenfolge. Der Versuch parallelisiert Crop, Klassenauswahl
+  und Z-Statistik.
+- **E5.** Kann eine explizit schliessbare Zuordnung mit MemorySegment den
+  unkomprimierten LAS-Scan gegenüber dem verwendeten FileChannel-Pfad
+  vereinfachen oder beschleunigen? Genau eine Alternative, gleicher
+  Header, gleiche Punktanzahl und rohe XYZ-Summen auf dem 4.38-MB-Sample.
+  Beide Varianten schliessen sämtliche Ressourcen nach jedem Scan.
+
+```sh
+./gradlew --offline -Pexperiments -Pvector installDist :experiments:installDist
+bash experiments/p7.sh
+```
+
+### E2 · Vector API
+
+Das JMH-Setup prüfte die komplette Kompaktierung der 1'730 ausgewählten
+Records aus 128'909 Punkten und alle berechneten Distanzen. Skalare
+Ergebnisse und Vector-API-Ergebnisse stimmten exakt überein. Die Cases
+der Längen 1, 2 und 3 verwenden Treffer auf inklusiven Grenzen und einen
+Punkt ausserhalb. Verwendet wird `DoubleVector.SPECIES_128` mit zwei
+Lanes und eine gleich breite Klassenmaske aus zwei Integer-Lanes.
+
+| Kernel | Skalar, µs/Batch | Vector API, µs/Batch |
+| --- | ---: | ---: |
+| Crop/Klasse mit Record-Kompaktierung | 128.269 ± 7.116 | 109.826 ± 3.946 |
+| Quadrierte Distanz | 23.912 ± 0.982 | 23.961 ± 1.702 |
+
+Zwei Forks, je 3 × 300 ms Warm-up und 5 × 300 ms Messung. Ein Thread,
+512 MiB Max-Heap, Temurin 25.0.5+8-LTS, Inkubator-Flag ausschliesslich
+für den Versuch. JMHs GC-Profiler meldet für die vier Operationen
+0.55–2.94 B/Batch. Die Auswahl im Vector-Kernel erreicht ca.
+1.17 Mrd. Punkte/s statt 1.00 Mrd. Punkte/s. Die Distanz liegt bei
+beiden ungefähr 5.39 Mrd. Punkte/s. Beide Kernel starten mit warmen
+Spalten; die 155 µs für das Befüllen aus E1 kommen für einen
+einmaligen Produktlauf zusätzlich hinzu. **Isoliertes Experiment
+behalten.** Ein Einbau in die CPU-Pipeline ist durch die Messung
+des einmaligen Einsatzes nicht gerechtfertigt.
+[JMH-Einzeliterationen](measurements/e2-vector.json)
+
+### E3 · Parallelität nach dem Decoder
+
+Die ganze Kachel wurde pro Prozess gelesen. Ein Reader-Batch enthält
+32'768 Punkte, der Pool erhält unabhängige Recordkopien. Die
+Pipeline-Arbeit umfasst eine Box, die Bodenklasse, Z-Statistik und
+das Schreiben von 195'738 Records (6'655'601 B).
+
+| Pfad | Worker | Max. gleichzeitige Batches | Median (Min–Max) | Mio. Punkte/s | Max. RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Serieller Versuch | 0 | 1 | 4.35 (4.12–4.43) s | 3.35 | 144.27 MiB |
+| Pool | 1 | 3 | 3.62 (3.53–3.92) s | 4.02 | 151.39 MiB |
+| Pool | 2 | 5 | 4.06 (3.98–4.12) s | 3.59 | 154.20 MiB |
+| Pool | 4 | 9 | 3.70 (3.50–4.02) s | 3.94 | 159.97 MiB |
+| Produkt-CLI mit denselben Stages | 0 | 1 | 3.60 (3.58–3.74) s | 4.05 | 152.36 MiB |
+
+Je drei Prozessläufe, warmer Dateisystemcache, 512 MiB Heapgrenze.
+Alle Versuchsausgaben und die drei CLI-Ausgaben waren mit der
+schon gegen PDAL geprüften E1-Ausgabe bytegleich, einschliesslich
+vollständiger Records und Reihenfolge. Die zusammengeführten
+Z-Statistiken waren über alle Workerzahlen identisch.
+Die absolute Differenz zur CLI war beim Mittel 7.96e-12 und bei
+der Varianz 4.10e-11, bei Zählung und Extrema null.
+Der einzelne Worker überlappt Rechen- und Schreibarbeit des
+Prototyps, der Median der bestehenden CLI bleibt mindestens
+gleichauf. **Pool als Produktvariante verworfen.** Der
+Versuchsquellcode dokumentiert das begrenzte, geordnete Vorgehen.
+[Einzelmessungen](measurements/e3-batches.csv)
+
+### E5 · Unkomprimiertes LAS über MemorySegment
+
+FileChannel liest wie im Produkt in einen 1'114'112-B-Recordpuffer.
+Die Alternative mappt 4'382'906 B Punktdaten in eine pro Scan
+geschlossene Arena und benutzt Little-Endian-Int-Zugriff. Beide
+lesen 128'909 Records aus dem 4'383'415-B-Sample, prüfen dabei
+rohe XYZ-Summen und schliessen die Datei. Keine gleichzeitig
+laufenden Tests oder anderen Benchmarks. Jede der drei gestarteten
+JVMs je Variante führte den ersten Zugriff und 20 Wiederholungen aus.
+
+| Pfad | Erster Zugriff, Median (Min–Max) | Warmer Scan, Median der Laufmediane | Streuung aller warmen Scans | Grösstes RSS |
+| --- | ---: | ---: | ---: | ---: |
+| FileChannel | 11.999 (11.325–12.143) ms | 0.451 ms | 0.366–6.085 ms | 82.48 MiB |
+| MemorySegment | 18.210 (17.347–21.159) ms | 0.285 ms | 0.236–1.379 ms | 58.80 MiB |
+
+Der warme Median entspricht ca. 286 bzw. 452 Mio. Punkten/s
+und umfasst Lesen, XYZ-Summen und Ressourcenschluss. Alle 126
+Scans liefern identische Abmessungen und rohe XYZ-Summen
+33'442'197'602'816 / 15'826'912'317'139 / 9'544'108'888.
+Der Versuch misst einen begrenzten unkomprimierten Zugriff. Der
+MemorySegment-Pfad bleibt **isoliertes Experiment**. Die Produkt-LAZ-
+Dekodierung verwendet bereits schliessbare Mappings und war von
+dieser Änderung unberührt.
+[Einzelmessungen](measurements/e5-io.csv)
