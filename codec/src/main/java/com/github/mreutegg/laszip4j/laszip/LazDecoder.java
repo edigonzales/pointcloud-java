@@ -14,6 +14,7 @@ public final class LazDecoder implements AutoCloseable {
     private final LASreadPoint reader = new LASreadPoint(LASzip.LASZIP_DECOMPRESS_SELECTIVE_ALL);
     private final PointDataRecord[] records;
     private final long count;
+    private long limit;
     private long position;
     private boolean finished;
 
@@ -46,6 +47,7 @@ public final class LazDecoder implements AutoCloseable {
             throw new IOException("Unsupported LAZ item codec");
         }
         this.count = count;
+        limit = count;
         records = new PointDataRecord[zip.num_items];
         stream = new ByteStreamInFile(source, end);
         try {
@@ -63,12 +65,35 @@ public final class LazDecoder implements AutoCloseable {
         }
     }
 
+    public record Chunk(long offset, long end, long firstPoint, long points) {}
+
+    /** Zero chunks means the file is empty or has no random-access table. */
+    public int chunkCount() {
+        return reader.chunkCount();
+    }
+
+    public Chunk chunk(int index) {
+        java.util.Objects.checkIndex(index, chunkCount());
+        long first = reader.chunkFirstPoint(index);
+        return new Chunk(reader.chunkOffset(index), reader.chunkOffset(index + 1),
+                first, reader.chunkFirstPoint(index + 1) - first);
+    }
+
+    /** Decode one table-defined chunk, starting at its uncompressed seed point. */
+    public void startChunk(int index) {
+        var chunk = chunk(index);
+        reader.startChunk(index);
+        position = chunk.firstPoint;
+        limit = position + chunk.points;
+        finished = false;
+    }
+
     /**
      * Append one LAS record to the destination. At the declared end, validate
      * the decoder state before reporting EOF.
      */
     public boolean read(ByteBuffer destination) throws IOException {
-        if (position == count) {
+        if (position == limit) {
             if (!finished && !reader.check_end()) {
                 throw failure(reader.error());
             }

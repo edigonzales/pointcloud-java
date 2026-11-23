@@ -464,3 +464,47 @@ Einfachheitsprüfung: direkte Schleifen, normaler Executor mit fester
 Zahl Bufferslots und zwei klare Dateizugriffe. Kein neuer Backend-
 oder Schedulingvertrag im Produkt. E2, E3 und E5 sind mit gemessener
 Entscheidung abgeschlossen. P7 abgenommen.
+
+## P8 · LAZ-Chunkparallelität
+
+23. November 2026, Apple M5/macOS und Temurin 25.0.5+8-LTS aarch64
+unter Gradle 9.9.1. Bei 416 GiB freiem Platz wurde die vorhandene
+83'247'722-B-Eingabe verwendet. Die Vergleichspipeline schreibt pro
+Lauf eine LAS-Datei von 6'655'601 B. Der [Chunkversuch](experiments.md#e4--unabhängige-laz-chunks)
+enthält die gemessenen Byte- und Punktbereiche, Reproduktion und Rohdaten.
+
+Einen hinreichenden Chunkstart liefert die bereits validierte Tabelle.
+Der Versuch verwendet pro Task Arena, Cursors und Decoderzustand.
+Es wird direkt am Seed-Record gestartet. Eine geordnete Queue und
+höchstens acht wiederverwendbare Chunks halten den Speicher begrenzt.
+Der bestehende LAS-Writer wird mit einem Abschlussnachweis der Quelle
+genutzt. Der alte Punktseek mit 32-Bit-Positionen entfällt.
+
+Ganzkachelprüfung mit `ChunkParallel 4 .cache/test-data/so-2019.laz
+.cache/experiments/e4-verified.las --verify` verglich 14'566'627 vollständige
+Records ohne Abweichung. 195'738 Punkte ausgewählt und geschrieben,
+Exit 0 in 3.70 s einschliesslich erneuter sequenzieller Dekodierung.
+Abgleich der Ausgabe mit dem zuvor gegen PDAL bestätigten Ground-Crop
+vollständig bestanden. Variable Chunkgrössen auf einer kleinen
+LazPerf-Datei (128'909 Records, 5 Chunks) exakt verglichen. Die resultierenden
+1'730 Format-7-Punkte las PDAL in 0.14 s erfolgreich. Ein zulässig
+fehlender Tabellenzeiger aktivierte den sequenziellen Pfad bei
+50'003 Punkten, eine beschädigte Tabellenversion lieferte erwartungsgemäss
+Exit 1 und keine Punktdatei.
+
+`bash experiments/e4.sh` mass je drei vollständige Läufe mit 0, 2
+und 4 Workers, Exit 0 für alle Läufe mit identischen Ausgaben.
+Median 3.56 / 1.96 / 1.26 s, bei vier Workers ca. 2.83-facher
+Durchsatz und Peak-RSS 251'510'784 B. Der reproduzierbare Versuch
+bleibt separat, der Standardlesepfad bleibt sequenziell.
+
+`./gradlew --offline clean check installDist` Exit 0, 1.06 s.
+23 Tests ausgeführt und erfolgreich, 0 fehlgeschlagen, 0 Fehler,
+0 übersprungen. `LasIoTest` 14 (0.081 s), `PipelineTest` 7 (0.058 s),
+`MainTest` 2 (0.002 s). JUnit-XML unter `build/test-results/test/`,
+HTML unter `build/reports/tests/test/`. Opt-in-`installDist` Exit 0
+in 289 ms, `bash -n experiments/e4.sh` Exit 0.
+
+Einfachheitsprüfung: ein geteiltes validiertes Tabellenschema, direkter
+Chunkstart und kleine Writer-Grenze. Dateihülle und Codec für die
+Standarddistribution benötigen keine Experimentabhängigkeit. P8 abgenommen.

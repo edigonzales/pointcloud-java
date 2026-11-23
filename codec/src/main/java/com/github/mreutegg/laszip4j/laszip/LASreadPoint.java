@@ -44,15 +44,11 @@ public class LASreadPoint {
     private int decompress_selective;
     // used for seeking
     private long point_start;
-    private int point_size; // unsigned
-    private PointDataRecord[] seek_point;
     // used for error and warning reporting
     private String last_error;
-    private String last_warning;
 
     public LASreadPoint(int decompress_selective)
     {
-        point_size = 0;
         instream = null;
         num_readers = 0;
         readers = null;
@@ -72,10 +68,8 @@ public class LASreadPoint {
         this.decompress_selective = decompress_selective;
         // used for seeking
         point_start = 0;
-        seek_point = null;
         // used for error and warning reporting
         last_error = null;
-        last_warning = null;
     }
 
     public boolean setup(int num_items /*unsigned*/, LASitem[] items) {
@@ -155,20 +149,17 @@ public class LASreadPoint {
                 default:
                     return FALSE;
             }
-            point_size += items[i].size;
         }
 
         if (dec != null)
         {
             readers_compressed = new LASreadItem[num_readers];
             // seeks with compressed data need a seek point
-            seek_point = new PointDataRecord[num_items];
             for (i = 0; i < num_readers; i++)
             {
                 switch (items[i].type)
                 {
                     case POINT10:
-                        seek_point[i] = new PointDataRecordPoint10();
                         if (items[i].version == 1)
                             readers_compressed[i] = new LASreadItemCompressed_POINT10_v1(dec);
                         else if (items[i].version == 2)
@@ -177,7 +168,6 @@ public class LASreadPoint {
                             return FALSE;
                         break;
                     case GPSTIME11:
-                        seek_point[i] = new PointDataRecordGpsTime();
                         if (items[i].version == 1)
                             readers_compressed[i] = new LASreadItemCompressed_GPSTIME11_v1(dec);
                         else if (items[i].version == 2)
@@ -186,7 +176,6 @@ public class LASreadPoint {
                             return FALSE;
                         break;
                     case RGB12:
-                        seek_point[i] = new PointDataRecordRGB();
                         if (items[i].version == 1)
                             readers_compressed[i] = new LASreadItemCompressed_RGB12_v1(dec);
                         else if (items[i].version == 2)
@@ -195,28 +184,24 @@ public class LASreadPoint {
                             return FALSE;
                         break;
                     case RGB14:
-                        seek_point[i] = new PointDataRecordRGB();
                         if ((items[i].version == 4) || (items[i].version == 3) || (items[i].version == 2))
                             readers_compressed[i] = new LASreadItemCompressed_RGB14_v3(dec, decompress_selective);
                         else 
                             return FALSE;
                         break;
                     case WAVEPACKET13:
-                        seek_point[i] = new PointDataRecordWavepacket();
                         if (items[i].version == 1)
                             readers_compressed[i] = new LASreadItemCompressed_WAVEPACKET13_v1(dec);
                         else
                             return FALSE;
                         break;
                     case WAVEPACKET14:
-                        seek_point[i] = new PointDataRecordWavepacket();
                         if ( (items[i].version == 4) || (items[i].version == 3))
                             readers_compressed[i] = new LASreadItemCompressed_WAVEPACKET14_v3(dec, decompress_selective);
                         else
                             return FALSE;
                         break;
                     case BYTE:
-                        seek_point[i] = new PointDataRecordBytes(items[i].size);
                         if (items[i].version == 1)
                             readers_compressed[i] = new LASreadItemCompressed_BYTE_v1(dec, items[i].size);
                         else if (items[i].version == 2)
@@ -225,21 +210,18 @@ public class LASreadPoint {
                             return FALSE;
                         break;
                     case BYTE14:
-                        seek_point[i] = new PointDataRecordBytes(items[i].size);
                         if ((items[i].version == 4) || (items[i].version == 3))
                             readers_compressed[i] = new LASreadItemCompressed_BYTE14_v3(dec, items[i].size, decompress_selective);
                         else
                             return FALSE;
                         break;
                     case POINT14:
-                        seek_point[i] = new PointDataRecordPoint14();
                         if ((items[i].version == 4) || (items[i].version == 3) || (items[i].version == 2)) // version == 2 from lasproto
                             readers_compressed[i] = new LASreadItemCompressed_POINT14_v3(dec, decompress_selective);
                         else
                             return FALSE;
                         break;
                     case RGBNIR14:
-                        seek_point[i] = new PointDataRecordRgbNIR();
                         if ((items[i].version == 4) || (items[i].version == 3) || (items[i].version == 2)) // version == 2 from lasproto
                             readers_compressed[i] = new LASreadItemCompressed_RGBNIR14_v3(dec, decompress_selective);
                         else
@@ -281,83 +263,6 @@ public class LASreadPoint {
             readers = readers_raw;
         }
 
-        return TRUE;
-    }
-
-    public boolean seek(int current /*unsigned*/, int target /*unsigned*/)
-    {
-        if (!instream.isSeekable()) return FALSE;
-        int delta = 0; // unsigned
-        if (dec != null)
-        {
-            if (point_start == 0)
-            {
-                init_dec();
-                chunk_count = 0;
-            }
-            if (chunk_starts != null)
-            {
-                int target_chunk; // unsigned
-                if (chunk_totals != null)
-                {
-                    target_chunk = search_chunk_table(target, 0, number_chunks);
-                    chunk_size = chunk_totals[target_chunk+1]-chunk_totals[target_chunk];
-                    delta = target - chunk_totals[target_chunk];
-                }
-                else
-                {
-                    target_chunk = target/chunk_size;
-                    delta = target%chunk_size;
-                }
-                if (Integer.compareUnsigned(target_chunk, tabled_chunks) >= 0)
-                {
-                    if (Integer.compareUnsigned(current_chunk, (tabled_chunks-1)) < 0)
-                    {
-                        dec.done();
-                        current_chunk = (tabled_chunks-1);
-                        instream.seek(chunk_starts[current_chunk]);
-                        init_dec();
-                        chunk_count = 0;
-                    }
-                    delta += (chunk_size*(target_chunk-current_chunk) - chunk_count);
-                }
-                else if (current_chunk != target_chunk || Integer.compareUnsigned(current, target) > 0)
-                {
-                    dec.done();
-                    current_chunk = target_chunk;
-                    instream.seek(chunk_starts[current_chunk]);
-                    init_dec();
-                    chunk_count = 0;
-                }
-                else
-                {
-                    delta = target - current;
-                }
-            }
-            else if (Integer.compareUnsigned(current, target) > 0)
-            {
-                dec.done();
-                instream.seek(point_start);
-                init_dec();
-                delta = target;
-            }
-            else if (Integer.compareUnsigned(current, target) < 0)
-            {
-                delta = target - current;
-            }
-            while (delta != 0)
-            {
-                read(seek_point);
-                delta--;
-            }
-        }
-        else
-        {
-            if (current != target)
-            {
-                instream.seek(point_start+point_size*target);
-            }
-        }
         return TRUE;
     }
 
@@ -524,6 +429,33 @@ public class LASreadPoint {
         readers = null;
     }
 
+    int chunkCount() {
+        return number_chunks;
+    }
+
+    long chunkOffset(int index) {
+        return chunk_starts[index];
+    }
+
+    long chunkFirstPoint(int index) {
+        if (index == number_chunks) {
+            return pointCount;
+        }
+        return chunk_totals == null ? index * Integer.toUnsignedLong(chunk_size)
+                : Integer.toUnsignedLong(chunk_totals[index]);
+    }
+
+    void startChunk(int index) {
+        dec.done();
+        current_chunk = index;
+        instream.seek(chunk_starts[index]);
+        if (chunk_totals != null) {
+            chunk_size = chunk_totals[index + 1] - chunk_totals[index];
+        }
+        chunk_count = 0;
+        init_dec();
+    }
+
     void initialiseChunks(long count, long end) {
         pointCount = count;
         pointEnd = end;
@@ -597,16 +529,5 @@ public class LASreadPoint {
         instream.seek(first);
     }
 
-    int search_chunk_table(int index, int lower, int upper)
-    {
-        if (lower + 1 == upper) return lower;
-        int mid = (lower+upper)/2;
-        if (Integer.compareUnsigned(index, chunk_totals[mid]) >= 0)
-            return search_chunk_table(index, mid, upper);
-        else
-            return search_chunk_table(index, lower, mid);
-    }
-
     public String error() { return last_error; };
-    public String warning() { return last_warning; };
 }

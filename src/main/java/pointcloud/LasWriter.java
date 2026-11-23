@@ -12,10 +12,13 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.function.BooleanSupplier;
 
 /** Writes selected records from one source. Publish explicitly with finish(). */
 public final class LasWriter implements AutoCloseable {
-    private final LasReader reader;
+    private final Path sourcePath;
+    private final FileChannel source;
+    private final BooleanSupplier sourceFinished;
     private final LasHeader header;
     private final Path target;
     private final boolean overwrite;
@@ -30,10 +33,17 @@ public final class LasWriter implements AutoCloseable {
     private boolean closed;
 
     public LasWriter(LasReader reader, Path target, boolean overwrite) throws IOException {
-        this.reader = reader;
+        this(reader.path, reader.source, reader.header(), reader::finished, target, overwrite);
+    }
+
+    LasWriter(Path sourcePath, FileChannel source, LasHeader header, BooleanSupplier sourceFinished,
+              Path target, boolean overwrite) throws IOException {
+        this.sourcePath = sourcePath;
+        this.source = source;
+        this.sourceFinished = sourceFinished;
         this.target = target.toAbsolutePath();
         this.overwrite = overwrite;
-        header = reader.header();
+        this.header = header;
         if (!target.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".las")) {
             throw new IOException("LAS output filename must end in .las");
         }
@@ -96,7 +106,7 @@ public final class LasWriter implements AutoCloseable {
 
     /** Complete the header and publish the output after verified source EOF. */
     public void finish() throws IOException {
-        if (closed || !reader.finished()) {
+        if (closed || !sourceFinished.getAsBoolean()) {
             throw new IOException("LAS output requires a complete source scan");
         }
         if (Thread.currentThread().isInterrupted()) {
@@ -141,7 +151,7 @@ public final class LasWriter implements AutoCloseable {
 
     private long copyMetadata(boolean extended) throws IOException {
         var count = new long[1];
-        long end = header.visitMetadata(reader.source, extended, record -> {
+        long end = header.visitMetadata(source, extended, record -> {
             if (!record.isPointIndex()) {
                 transfer(record.start(), record.payload() - record.start() + record.length());
                 count[0]++;
@@ -155,7 +165,7 @@ public final class LasWriter implements AutoCloseable {
 
     private void transfer(long offset, long remaining) throws IOException {
         while (remaining > 0) {
-            long written = reader.source.transferTo(offset, remaining, channel);
+            long written = source.transferTo(offset, remaining, channel);
             if (written <= 0) {
                 throw new IOException("Cannot copy LAS metadata at byte " + offset);
             }
@@ -166,7 +176,7 @@ public final class LasWriter implements AutoCloseable {
 
     private void checkTarget() throws IOException {
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-            if (Files.exists(target) && Files.isSameFile(reader.path, target)) {
+            if (Files.exists(target) && Files.isSameFile(sourcePath, target)) {
                 throw new IOException("LAS input and output refer to the same file");
             }
             if (!overwrite) {

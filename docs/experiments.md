@@ -226,3 +226,77 @@ MemorySegment-Pfad bleibt **isoliertes Experiment**. Die Produkt-LAZ-
 Dekodierung verwendet bereits schliessbare Mappings und war von
 dieser Änderung unberührt.
 [Einzelmessungen](measurements/e5-io.csv)
+
+## E4 · Unabhängige LAZ-Chunks
+
+Hypothese auf Basis P7 (`c0d7409`): Da die Entropiedekodierung dominiert,
+kann unabhängige Arbeit an validierten Chunks mehr Gewinn liefern als
+Worker hinter einem seriellen Decoder. Verglichen werden die sequenzielle
+Dekodierung und ein Pool mit 2 oder 4 Workers. Alle Pfade führen dieselbe
+Box-/Klassenauswahl aus und schreiben mit dem Produktwriter. Die gemessene
+Zeit umfasst die Chunk-Tabelle, Aufbau von Stream und Decodern, I/O,
+Auswahl und Ausgabe. Ein separater Prüflauf vergleicht sämtliche Records
+der Ganzkachel bytegenau und geordnet gegen den sequenziellen Reader.
+
+Der Experimentpfad liest Startoffset, Bytebereich und Punktbereich aus
+derselben validierten Chunktabelle wie der Codec. Jeder Task hat eine
+eigene Arena, einen Streamcursor, Prädiktoren und Modelle. Der erste
+Record am Chunkstart initialisiert den Decoder. Je Worker sind höchstens
+zwei Bufferslots unterwegs. Ein ordentlicher Abwesenheitsmarker einer
+Tabelle mit fester Chunkgrösse erlaubt den sequenziellen Pfad. Eine
+beschädigte Tabelle bleibt ein Eingabefehler.
+[LAZ-Spezifikation 1.4 R1, rapidlasso](https://downloads.rapidlasso.de/doc/LAZ_Specification_1.4_R1.pdf)
+
+```sh
+./gradlew --offline -Pexperiments installDist :experiments:installDist
+bench_cp='experiments/build/install/experiments/lib/*'
+"$JAVA_HOME/bin/java" -Xmx512m -cp "$bench_cp" pointcloud.ChunkParallel \
+  4 .cache/test-data/so-2019.laz .cache/experiments/e4-verified.las --verify
+bash experiments/e4.sh
+```
+
+Die 2019-Datei hat 292 Chunks. Erster Chunk Byte 623–282'305
+(Ende exklusiv), Punkte [0,50'000). Letzter Chunk Byte
+83'134'681–83'247'146, Punkte [14'550'000,14'566'627). Der
+Prüflauf mit vier Workers verglich die vollständigen 14'566'627
+ungekürzten Records (495'265'318 B) bytegenau in Originalreihenfolge,
+0 Abweichungen. Die resultierende Ausgabe war vollständig identisch
+mit dem gegen LazPerf geprüften Ground-Crop. Exit 0, 3.70 s
+für die zusätzliche sequenzielle Dekodierung und den Vergleich,
+Peak RSS 313'704'448 B.
+
+Für variable Chunks wurde mit `pdal translate .cache/experiments/kernel.las
+.cache/experiments/e4-adaptive.copc.laz --writer writers.copc
+--writers.copc.forward=all` ein kleines externes LAZ-Sample erzeugt.
+Es besitzt fünf adaptive Chunks (1'384'445 B, Format 7,
+Kompressor 3, variabler Chunkmarker). Der erste Chunk enthält
+12'747 Punkte, der letzte 74'196. Derselbe Versuch mit 2 Workers
+und `--verify` verglich alle 128'909 Records exakt. Die 1'730 Punkte
+der Ausgabe wurden mit `pdal info --stats` gelesen (0.14 s, Exit 0).
+Die Ausgabe (63'419 B) enthält das Projektions-VLR und keine
+übernommenen COPC-Indexdaten. Die Verarbeitung nutzt die LAZ-Tabelle.
+
+Am kleinen Fixchunk-Fixture wurde die Unterscheidung geprüft:
+Mit absolutem Tabellenzeiger gleich Punktdatenoffset greift der
+sequenzielle Pfad, 50'003 vollständige Records wurden verglichen.
+Wird an der vorhandenen Tabellenposition die vier Byte lange
+Tabellenversion auf 1 gesetzt, meldet der Versuch einen Eingabefehler
+und erzeugt keine Ausgabedatei.
+
+| Pfad | Vorgesehene Batches bzw. Chunks | Median (Min–Max) | Mio. Punkte/s | Grösstes RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Seriell | 1 × 32'768 Punkte | 3.56 (3.53–3.66) s | 4.09 | 147.42 MiB |
+| 2 Workers | 4 × 50'000 Punkte | 1.96 (1.89–2.00) s | 7.43 | 226.00 MiB |
+| 4 Workers | 8 × 50'000 Punkte | 1.26 (1.20–1.31) s | 11.56 | 239.86 MiB |
+
+Je drei frische Prozesse, Apple M5 / Temurin 25.0.5+8-LTS,
+warmer Dateisystemcache und maximal 512 MiB Heap. Der Beleg für
+die End-to-End-Zeit umfasst die geschriebenen 195'738 Records
+pro Lauf. Das 4-Worker-Ergebnis entspricht rund 2.83-fachem Durchsatz
+in diesem Versuch und höherem RSS. Die virtuelle Mappingfläche
+kann bei vier gleichzeitig aktiven Tasks bis zu ca. 333 MB betragen.
+**Experiment behalten.** Die skalare Standardpipeline bleibt
+einfach. Für einen weiteren Produktpfad müssten unter anderem
+Abbruchverhalten, Speicherauslegung für breite Records, Scheduler
+und mehrere Pipelineformen zusätzlich qualifiziert werden.
+[Einzelmessungen](measurements/e4-chunks.csv)

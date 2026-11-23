@@ -44,6 +44,10 @@ In `POINT10_v2`, `RGB12_v2`, `GPSTIME11_v2` und `LASreadPoint`
 werden die kurzlebigen Ausgaberecords bzw. der Lesekontext lokal
 wiederverwendet. Die Vorhersage- und Entropiemodelle bleiben identisch.
 
+Der Chunkversuch nutzt aus dem Codec die validierten Offset- und
+Punktbereiche und startet an der Seed-Record-Grenze. Der nicht
+verwendete 32-Bit-Punktseek des Ports wurde dabei entfernt.
+
 ## Realdaten
 
 Quelle ist das Amt für Geoinformation, Kanton Solothurn. Die Kacheln werden
