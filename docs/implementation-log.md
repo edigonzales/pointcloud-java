@@ -508,3 +508,43 @@ in 289 ms, `bash -n experiments/e4.sh` Exit 0.
 Einfachheitsprüfung: ein geteiltes validiertes Tabellenschema, direkter
 Chunkstart und kleine Writer-Grenze. Dateihülle und Codec für die
 Standarddistribution benötigen keine Experimentabhängigkeit. P8 abgenommen.
+
+## P9 · JVM-Versionen, AOT und Native Image
+
+23. November 2026, Apple M5/macOS 27.0.1 arm64. Temurin
+25.0.5+8-LTS, Temurin 27.0.1.1+4 aarch64, Oracle GraalVM
+25.0.4.1.1 aarch64 mit Apple clang 21.0.0. Dieselben
+Java-25-Klassen aus P8 wurden auf beiden JDKs benutzt.
+Die [Build- und AOT-Befehle](experiments.md#e6-und-e7--jvm-version-aot-cache-und-native-image)
+sind an der ausführbaren CLI geprüft.
+
+Der AOT-Cache wurde mit getrennten Record- und Create-Läufen
+erzeugt (5.67 s und 0.29 s, beide Exit 0, 16'384'000 B Cache)
+und mit strengem `AOTMode=on` geladen. Der erste Native-Build
+gelang in 48.58 s und lieferte ein arm64-Binary von 19'063'824 B.
+Die Mini-Pipeline darin scheiterte bei Gson-Record-Reflexion mit
+Exit 2. Die mit dem Agent ermittelten Methoden der drei
+Ergebnis-Records wurden gezielt registriert. Der zweite Build
+erzeugte ein echtes arm64-Binary von 19'080'352 B (42.40 s,
+max. RSS 1'680'949'248 B, Exit 0). Die Mini-Pipeline lief danach
+direkt mit Exit 0. Deren JSON war mit dem AOT-Lauf identisch.
+
+`python3 experiments/p9-runtimes.py .cache/jdks/temurin27/Contents/Home/bin/java`
+prüfte zwei Messserien (57.43 und 47.63 s, je Exit 0). Je Serie
+28 Mini- und 12 Ganzkachelläufe, alle erfolgreich.
+Alle 24 Ganzkachelausgaben mit je 195'738 Records waren mit
+dem unabhängigen P5/P6-Referenzstand übereinstimmend.
+Alle Mini- und Ground-Crop-Statistiken entsprechen dem
+Java-25-Standard. Mini-Mediane in der wechselnden Serie
+70.0 ms (25), 81.0 ms (27), 45.1 ms (AOT) und 7.7 ms (Native).
+Bei voller Kachel liegen die Mediane bei 3.727 / 3.651 /
+3.613 / 4.050 s. Native RSS blieb unter 95 MiB.
+
+Der erfolgreiche P8-Standardlauf mit 23 JUnit-Tests, 0 Failures,
+0 Fehlern und 0 Skips wurde wegen unveränderter CPU-Quellen,
+unveränderten Tests, Fixtures, Build und Java-25-Toolchain
+wiederverwendet. Die neuen Realdaten-Produktvergleiche dieser
+Etappe liefen mit den tatsächlichen JVM-, AOT- und Native-Artefakten.
+Einfachheitsprüfung: enger Reflexionsumfang für die drei
+Record-Typen, keine Native- oder AOT-Voraussetzung im
+Standardbuild. E6 und E7 mit realen Artefakten abgenommen. P9 abgenommen.

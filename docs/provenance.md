@@ -48,6 +48,16 @@ Der Chunkversuch nutzt aus dem Codec die validierten Offset- und
 Punktbereiche und startet an der Seed-Record-Grenze. Der nicht
 verwendete 32-Bit-Punktseek des Ports wurde dabei entfernt.
 
+Das Native Binary ist ein lokales Versuchsartefakt. Eine spätere
+Verteilung muss die jeweiligen Codec-Hinweise und Lizenztexte,
+passende Quelltexte und die für den eingebetteten LGPL-Code
+erforderliche Austausch- bzw. Relink-Möglichkeit abdecken
+(LGPL 2.1 §6 bzw. LGPL 3.0 §4). Für die mit Oracle GraalVM
+eingebetteten Komponenten gelten zusätzlich dessen Free Terms
+and Conditions und die Hinweise zu separat lizenzierten Teilen.
+Die JVM-Distribution hält den Codec in einem separaten JAR.
+[Oracle GraalVM-Lizenz](https://www.oracle.com/downloads/licenses/graal-free-license.html)
+
 ## Realdaten
 
 Quelle ist das Amt für Geoinformation, Kanton Solothurn. Die Kacheln werden

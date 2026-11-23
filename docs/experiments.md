@@ -300,3 +300,109 @@ einfach. Für einen weiteren Produktpfad müssten unter anderem
 Abbruchverhalten, Speicherauslegung für breite Records, Scheduler
 und mehrere Pipelineformen zusätzlich qualifiziert werden.
 [Einzelmessungen](measurements/e4-chunks.csv)
+
+## E6 und E7 · JVM-Version, AOT-Cache und Native Image
+
+Basis ist der Standardbuild nach P8 (`978f38d`). Zweite VM ist Temurin
+27 auf derselben Architektur. Temurin 25 wird mit Standardstart und
+mit strikt angefordertem AOT-Cache verglichen. Die Hypothese ist,
+dass Laufzeit und AOT den Prozessstart stärker beeinflussen als
+die lange Dekodierung. Das lokale Native Binary soll Startzeit
+und RSS reduzieren können. Buildzeit, Grösse und voller Durchsatz
+werden getrennt geprüft. Die beiden Aufgaben sind eine kleine
+Stats-Pipeline auf einer Offline-Fixture und die vollständige
+Ground-Crop-Pipeline. Gefordert sind identische Metadaten und
+bytegleiche Punktrecords bei allen Laufzeiten.
+
+### Aufbau und Reproduktion
+
+Temurin 25.0.5+8-LTS und 27.0.1.1+4 sind aarch64. Das zusätzliche
+Temurin-JDK stammt aus dem Adoptium-Release `jdk-27.0.1.1+4`,
+138'176'968 B Download, mit übereinstimmender veröffentlichter SHA-256.
+Es liegt in `.cache/jdks/temurin27`. Die lokale Oracle-GraalVM-Version
+ist 25.0.4.1.1 aarch64 mit Native Image und Apple clang 21.0.0.
+Vor Download und Build waren 414 GiB frei.
+[Adoptium-Release](https://github.com/adoptium/temurin27-binaries/releases/tag/jdk-27.0.1.1%2B4) ·
+[Java-25-AOT-Optionen](https://docs.oracle.com/en/java/javase/25/docs/specs/man/java.html)
+
+Die Befehle verwenden denselben Klassenpfad aus der installierten
+JVM-Distribution. Für das Vergleichsskript muss die Ground-Crop-Referenz
+aus E1 unter `.cache/experiments/e1-baseline.las` und `e1-baseline.json`
+liegen. Alternativ kann sie mit dem installierten Standardprodukt
+erzeugt und vor der Messung aus `build/results` verschoben werden.
+
+```sh
+./gradlew --offline installDist
+work=.cache/experiments/p9
+mkdir -p "$work"
+product_cp=$(printf '%s\n' build/install/pointcloud/lib/*.jar | paste -sd ':' -)
+/usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m -XX:AOTMode=record \
+  -XX:AOTConfiguration="$work/ground.aotconfig" -cp "$product_cp" \
+  pointcloud.Main pipeline examples/ground-crop.json --metadata "$work/train.json"
+cmp build/results/ground-crop.las .cache/experiments/e1-baseline.las
+rm build/results/ground-crop.las
+/usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m -XX:AOTMode=create \
+  -XX:AOTConfiguration="$work/ground.aotconfig" -XX:AOTCache="$work/ground.aot" -cp "$product_cp"
+JAVA_HOME="$graal" /usr/bin/time -lp "$graal/bin/native-image" -J-Xmx8g --no-fallback \
+  -H:ConfigurationFileDirectories=experiments/native-image -cp "$product_cp" \
+  -o "$work/pointcloud-native" pointcloud.Main
+file "$work/pointcloud-native"
+otool -L "$work/pointcloud-native"
+python3 experiments/p9-runtimes.py .cache/jdks/temurin27/Contents/Home/bin/java
+```
+
+Das Training lief 5.67 s, Peak-RSS 151'126'016 B, und erzeugte
+eine Konfiguration von 15'630'336 B. Die Assembly lief 0.29 s,
+Peak-RSS 115'851'264 B, für einen Cache von 16'384'000 B.
+Alle Trainingsausgaben waren bytegleich mit der Basis. `-XX:AOTMode=on`
+und `-Xlog:aot=info:stderr` bestätigten den geladenen Cache.
+
+Das erste Native Binary war ausführbar, scheiterte bei der
+Pipeline-JSON-Ausgabe aber am reflektiven Zugriff auf Java-Records.
+Ein lokaler Lauf mit dem Native-Image-Agent zeigte die tatsächlich
+aufgerufenen Accessor-Methoden. Die verwendete Konfiguration
+registriert nur diese Methoden der drei Ergebnis-Records.
+Der korrigierte Build dauerte 42.40 s (Builder 41.4 s),
+maximales Build-RSS 1'680'949'248 B. Das Binary wog 19'080'352 B.
+`file` meldete Mach-O arm64. `otool -L` zeigte Systembibliotheken
+und keine JVM-Laufzeit. Der gewählte Builder meldete `--no-fallback`
+als deprecated und wirkungslos. Der Nachweis erfolgt am direkt
+ausgeführten Binary.
+[GraalVM Native Image](https://www.graalvm.org/jdk25/reference-manual/native-image/)
+
+### Ergebnisse
+
+Auf der Apple-M5-Maschine liefen je sieben Mini- und drei
+Ganzkachel-Prozesse pro Variante mit 512 MiB Heapgrenze.
+Reihenfolge in der ersten Serie gruppiert und in der zweiten
+wechselnd, jeweils ohne konkurrierende Builds oder Tests.
+Alle Läufe verwendeten dieselben Eingaben. Die zweite Serie
+minimiert die Abhängigkeit der Vergleiche von der Startreihenfolge.
+Beide Serien bleiben in den Rohdaten. Die Zahlen unten stammen
+aus der wechselnden Serie.
+
+| Laufzeit | Mini, erster Lauf | Mini, Median (Min–Max) | Ground-Crop, Median (Min–Max) | Mio. Punkte/s | Max. Ground-Crop-RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Temurin 25 | 76.4 ms | 70.0 (67.8–76.4) ms | 3.727 (3.610–3.920) s | 3.91 | 152.78 MiB |
+| Temurin 27 | 153.2 ms | 81.0 (76.6–153.2) ms | 3.651 (3.580–4.371) s | 3.99 | 151.86 MiB |
+| Temurin 25 mit AOT | 57.9 ms | 45.1 (43.7–57.9) ms | 3.613 (3.578–3.632) s | 4.03 | 156.36 MiB |
+| Native Image | 28.3 ms | 7.7 (7.2–28.3) ms | 4.050 (4.019–4.189) s | 3.60 | 94.25 MiB |
+
+Mini verarbeitet 5 Punkte und gibt Statistiken aus. Ground-Crop
+verarbeitet jeweils 14'566'627 Punkte und schreibt 195'738 in eine
+6'655'601-B-Ausgabe. Alle 80 Prozessläufe beider Serien lieferten
+dieselben fachlichen Ergebnisse wie der jeweilige Standardlauf.
+Jede Wiederholung startet einen neuen Prozess. Die kurze Aufgabe
+zeigt Start- und Initialisierungskosten, der lange Durchsatz enthält
+das Anlaufen des JIT innerhalb des ersten Dateilaufs. Alle Daten
+waren für die Wiederholungen bereits im Dateisystemcache verfügbar.
+[Einzelmessungen](measurements/e6-e7-runtime.csv)
+
+Java 27 bleibt eine geprüfte zusätzliche Laufzeit. Sein Vorteil
+beim ganzen Bestand war gegenüber der Streuung klein. **AOT-
+und Native-Versuche bleiben isoliert.** AOT senkt die kurze
+Startaufgabe im Median um etwa 36 %. Native Image startet den
+kleinen Fall wesentlich schneller und braucht weniger RSS,
+verarbeitet die vollständige Kachel aber langsamer als der
+JVM-Standard. Der Cache bleibt an JVM, Architektur und
+identischen Produktklassenpfad gebunden.
