@@ -548,3 +548,44 @@ Etappe liefen mit den tatsächlichen JVM-, AOT- und Native-Artefakten.
 Einfachheitsprüfung: enger Reflexionsumfang für die drei
 Record-Typen, keine Native- oder AOT-Voraussetzung im
 Standardbuild. E6 und E7 mit realen Artefakten abgenommen. P9 abgenommen.
+
+## P10 · TornadoVM auf der M5-GPU
+
+23. November 2026. TornadoVM 8.1.0-jdk22plus, Metal, Temurin
+25.0.5+8-LTS aarch64, Apple M5/macOS 27.0.1. Vor dem
+gezielten Abruf der optionalen Maven-Bibliotheken waren 413 GiB
+frei. Installation und Geräteabfrage via `./gradlew -Pexperiments
+-Ptornado :experiments:installDist` und `TornadoCrop --device`
+Exit 0. Die [vollständige Reproduktion](experiments.md#e8--tornadovm-auf-apple-m5)
+beschreibt die explizite GPU-Auswahl, den Kernel und die Kosten.
+
+Die erste Swift-Probe erzeugte wegen falsch übernommener
+Interpolation einen ungültigen Kontrollshader (Exit 133).
+Interpolation und Fehlerausgabe korrigiert und erneut ausgeführt.
+`swift experiments/probe-metal.swift` zeigte Apple M5 mit
+Unified Memory und einen kompilierten Float-Kontrollshader.
+Der Double-Shader wurde vom selben Compiler erwartungsgemäss
+abgelehnt. Probe Exit 0.
+
+Drei neue Prozesse mit je elf realen Metal-Geräteausführungen,
+alle Exit 0. Die Laufzeiten der drei Prozesse waren 0.70 /
+0.34 / 0.31 s. Der erste Ausführungsmedian inkl. Kompilierung
+war 103.251 ms. Warme Geräte-Kernelzeit 26.8 µs, kompletter
+warmer Batch inkl. Transfers und Kompaktierung 1.263 ms.
+CPU-Kompaktierung bei gleicher Arbeit 0.176 ms im Median.
+Die Host-/Device-Kosten und Vergleiche stehen im
+Experimentprotokoll. Alle 4'253'997 Maskeneinträge und
+57'090 kompaktifizierten Records über die 33 Ausführungen
+stimmen exakt mit der skalaren Double-Referenz.
+Ergebnis: kein Einsatz im Produktpfad.
+
+`./gradlew --offline clean check installDist` ohne Experimentflags
+Exit 0 in 1.00 s. `LasIoTest` 14 erfolgreich (0.084 s),
+`PipelineTest` 7 (0.053 s), `MainTest` 2 (0.001 s), insgesamt
+23 erfolgreich und 0 fehlgeschlagen, 0 Fehler, 0 Skips.
+JUnit-XML unter `build/test-results/test/`, HTML-Report unter
+`build/reports/tests/test/`. Kein TornadoVM-JAR im Produkt-Installationsbaum.
+Einfachheitsprüfung: ein Filterkernel, explizite Transfers,
+stabile Host-Kompaktierung und Standard-Metal-Backend ohne
+Accelerator-Infrastruktur. E8 durch reale GPU-Messung
+abgeschlossen. P10 abgenommen.

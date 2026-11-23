@@ -29,3 +29,11 @@ if (providers.gradleProperty('vector').isPresent()) {
         options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
     }
 }
+
+if (providers.gradleProperty('tornado').isPresent()) {
+    sourceSets.main.java.srcDir('src/tornado/java')
+    dependencies {
+        implementation 'io.github.beehive-lab:tornado-runtime:8.1.0-jdk22plus'
+        runtimeOnly 'io.github.beehive-lab:tornado-drivers-metal:8.1.0-jdk22plus'
+    }
+}

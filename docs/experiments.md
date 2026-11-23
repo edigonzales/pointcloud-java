@@ -406,3 +406,89 @@ kleinen Fall wesentlich schneller und braucht weniger RSS,
 verarbeitet die vollständige Kachel aber langsamer als der
 JVM-Standard. Der Cache bleibt an JVM, Architektur und
 identischen Produktklassenpfad gebunden.
+
+## E8 · TornadoVM auf Apple M5
+
+Hypothese nach E2: Ein GPU-Kernel kann die Auswahlmaske schnell
+berechnen, bei einmaligem Filtern bestimmen aber Datenaufnahme
+und Host-Kompaktierung den Gesamtnutzen. Untersucht wird genau
+der Crop-/Classification-Kernel auf dem dekodierten E2-Sample.
+Der Referenzvergleich umfasst jede Maskenentscheidung und alle
+kompaktierten Recordbytes. Die zentimetergenauen Rohkoordinaten
+erlauben für diesen Datensatz dieselben inklusiven Grenzen mit
+Integer-Operationen. Gemessen werden Input-Aufbereitung, Planaufbau,
+erster und wiederholter Device-Lauf, Transfers und Kompaktierung.
+Ein CPU-Fallback ist ein Fehler.
+
+### Durchführung
+
+TornadoVM 8.1.0-jdk22plus von Maven Central, Metal-Backend auf
+Temurin 25.0.5+8-LTS arm64. macOS 27.0.1 mit integrierter M5-GPU
+und Metal 4. Die Apple-Systembibliothek ist im lokalen SDK vorhanden.
+Der Runtime-Aufruf benötigt kein separat installiertes
+`metal`-Kommando. TornadoVM meldete `METAL`, Gerät
+`metal-0-0`, Typ GPU und physischen Gerätenamen Apple M5.
+Die Swift-Probe bestätigt die residente Metal-GPU und Shared Memory.
+Das Kontroll-Shader mit `float` kompiliert über Metal zur Laufzeit.
+Die sonst gleiche Variante mit `double` wird vom Metal-Compiler
+mit `'double' is not supported in Metal` abgelehnt.
+[TornadoVM-Installation](https://tornadovm.readthedocs.io/en/latest/installation.html) ·
+[TornadoVM 8.1.0](https://github.com/beehive-lab/TornadoVM/releases/tag/v8.1.0)
+
+```sh
+swift experiments/probe-metal.swift
+./gradlew -Pexperiments -Ptornado :experiments:installDist
+work=.cache/experiments/p10
+mkdir -p "$work"
+for run in 1 2 3; do
+  /usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m --enable-native-access=ALL-UNNAMED \
+    -Dtornado.enabled.backends=metal -Dtornado.home="$work" \
+    -cp 'experiments/build/install/experiments/lib/*' pointcloud.TornadoCrop \
+    > "$work/gpu-$run.csv" 2> "$work/gpu-$run.log"
+done
+```
+
+Das E2-Sample liegt unter `.cache/experiments/kernel.las`.
+Der Plan kopiert X, Y und Klasse bei jeder Ausführung über
+die Tornado-Array-Schnittstelle. Eine Integer-Maske wird
+zurückgelesen und auf dem Host stabil in vollständige
+LAS-Records kompaktifiziert. Der Code setzt strikte
+Floating-Point-Semantik und verwendet im GPU-Kernel
+ausschliesslich 32-Bit-Integer. Er prüft die Voraussetzungen
+Scale 0.01 und Offset 0 sowie alle Masken gegen die
+Double-Referenz. Alle 33 Geräteausführungen (3 Prozesse,
+je 1 erster und 10 wiederholte Durchläufe) haben eine
+positive Geräte-Kernelzeit. 128'909 Entscheidungen und
+1'730 vollständige Ausgaberecords stimmen pro Durchlauf exakt.
+
+| Kosten | Erster Lauf, Median (Min–Max) | Wiederholt, Median (Min–Max) |
+| --- | ---: | ---: |
+| Kompilierung und Installation laut Profiler | 76.593 (71.752–454.976) ms | 0 ms |
+| Geräte-Kernel laut Profiler | 0.0285 (0.0273–0.0286) ms | 0.0268 (0.0265–0.0309) ms |
+| Geräteschreiben laut Profiler | 0.280 (0.279–0.358) ms | 0.042 (0.038–0.255) ms |
+| Rücklesen laut Profiler | 0.088 (0.062–0.101) ms | 0.015 (0.012–0.047) ms |
+| Plan-Ausführung als Wandzeit | 103.251 (92.481–477.727) ms | 0.778 (0.647–1.388) ms |
+| Kompaktierung auf dem Host | 1.934 (1.872–2.122) ms | 0.457 (0.188–1.464) ms |
+| Ausführung plus Kompaktierung | 105.184 (94.602–479.599) ms | 1.263 (1.083–2.470) ms |
+
+Geräteinitialisierung, Host-Datenaufbereitung und Planaufbau
+kosteten im Median separat 73.51 ms, 11.57 ms und 38.05 ms.
+Der erstmalige Batch von Geräteinitialisierung bis fertiger
+Kompaktierung brauchte median 240.81 ms (214.37–602.65 ms).
+Der Dateizugriff für das gemeinsame Sample liegt ausserhalb
+dieses Messbereichs. Maximales Prozess-RSS 174'653'440 B.
+Die vom Profiler gezählten Bytes umfassen seine Arrayheader.
+Erster Transfer 2'062'608 B hinein, wiederholter Transfer
+1'546'956 B, jeweils 515'652 B zurück. Shared Memory hebt
+diese vom gewählten Graphen verursachten Kosten nicht auf.
+
+Die direkte CPU-Variante in derselben Anwendung benötigte
+0.176 ms im Median (0.153–0.380 ms, 21 Messungen nach je fünf
+Warm-up-Läufen). Der warme GPU-Pfad erreicht für den ganzen
+Batch inklusive Kopieren und Kompaktieren ca. 102 Mio. Punkte/s.
+Die frühere JMH-Reihe auf demselben Sample ergab 0.128 ms
+skalar und 0.110 ms per Vector API. Die Arraybefüllung und
+die Rückführung des GPU-Ergebnisses zählen gegen den
+Kernelvorteil. **Produktive Übernahme verworfen.** Der
+TornadoVM-Versuch bleibt getrennt reproduzierbar.
+[Einzelmessungen](measurements/e8-metal.csv)
