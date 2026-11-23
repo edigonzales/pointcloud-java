@@ -1,10 +1,9 @@
 package com.github.mreutegg.laszip4j.laszip;
 
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.file.Path;
+import java.nio.channels.FileChannel;
 
 /**
  * Internal adapter from the vendored point decoder to little-endian LAS records.
@@ -18,13 +17,17 @@ public final class LazDecoder implements AutoCloseable {
     private long position;
     private boolean finished;
 
-    public LazDecoder(Path path, long offset, long count, int format, int length, byte[] vlr) throws IOException {
+    public LazDecoder(FileChannel source, long offset, long end, long count, int format, int length, byte[] vlr)
+            throws IOException {
         var zip = new LASzip();
         if (!zip.unpack(vlr, vlr.length) || !zip.check()) {
             throw new IOException("Invalid LASzip VLR: " + zip.get_error());
         }
-        if (format < 6 ? zip.compressor != 1 && zip.compressor != 2 : zip.compressor != 3) {
+        if (zip.compressor != (format < 6 ? 2 : 3)) {
             throw new IOException("Unsupported LAZ compressor " + (int) zip.compressor + " for format " + format);
+        }
+        if ((zip.options & 1) != 0 || zip.number_of_special_evlrs > 0) {
+            throw new IOException("Unsupported LAZ compatibility mode or special EVLR reference");
         }
         var expected = new LASzip();
         if (!expected.setup((byte) format, (char) length, zip.compressor) || expected.num_items != zip.num_items) {
@@ -35,29 +38,28 @@ public final class LazDecoder implements AutoCloseable {
             if (item.type != expected.items[i].type || item.size != expected.items[i].size) {
                 throw new IOException("LASzip item " + i + " does not match format " + format);
             }
+            if (item.version != (format < 6 ? 2 : 3)) {
+                throw new IOException("Unsupported LAZ item version " + (int) item.version + " at item " + i);
+            }
         }
         if (!reader.setup(zip.num_items, zip.items, zip)) {
             throw new IOException("Unsupported LAZ item codec");
         }
         this.count = count;
         records = new PointDataRecord[zip.num_items];
-        var file = new RandomAccessFile(path.toFile(), "r");
+        stream = new ByteStreamInFile(source, end);
         try {
-            if (offset < 0 || offset > file.length()) {
-                throw new IOException("LAZ point offset outside file");
-            }
-            stream = new ByteStreamInFile(file);
-            stream.seek(offset);
-            if (!reader.init(stream)) {
+            if (!stream.seek(offset) || !reader.init(stream)) {
                 throw new IOException("Cannot start LAZ decoder");
             }
+            reader.initialiseChunks(count, end);
         } catch (RuntimeException | IOException e) {
             try {
-                file.close();
+                stream.close();
             } catch (IOException close) {
                 e.addSuppressed(close);
             }
-            throw e;
+            throw new IOException("Invalid LAZ point stream: " + e.getMessage(), e);
         }
     }
 
@@ -67,14 +69,14 @@ public final class LazDecoder implements AutoCloseable {
      */
     public boolean read(ByteBuffer destination) throws IOException {
         if (position == count) {
-            if (!finished && (!reader.check_end() || reader.warning() != null)) {
-                throw failure(reader.error() != null ? reader.error() : reader.warning());
+            if (!finished && !reader.check_end()) {
+                throw failure(reader.error());
             }
             finished = true;
             return false;
         }
-        if (!reader.read(records) || reader.warning() != null) {
-            throw failure(reader.error() != null ? reader.error() : reader.warning());
+        if (!reader.read(records)) {
+            throw failure(reader.error());
         }
         destination.order(ByteOrder.LITTLE_ENDIAN);
         for (PointDataRecord item : records) {

@@ -8,6 +8,7 @@
  * This software is distributed WITHOUT ANY WARRANTY and without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
+// PointCloud Java: use the default non-layered chunk implementation.
 package com.github.mreutegg.laszip4j.laszip;
 
 import static com.github.mreutegg.laszip4j.laszip.MyDefs.U8_FOLD;
@@ -67,8 +68,4 @@ public class LASreadItemCompressed_BYTE_v2 extends LASreadItemCompressed {
         return result;
     }
 
-    @Override	
-    public boolean chunk_sizes() {	
-        return false;	
-    }
 }

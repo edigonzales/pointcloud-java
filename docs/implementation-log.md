@@ -202,3 +202,45 @@ reproduzierbar. Er ist aus dem aktuellen Arbeitsbaum entfernt.
 Einfachheitsprüfung: der Adapter nutzt den bestehenden Itemdecoder direkt.
 Ordentliche Dateihülle, Batchverarbeitung und Ressourcenlebensdauer gehören
 zur nächsten Etappe. Keine Pflichtprüfung aus P2 offen. P2 abgenommen.
+
+## P3 · Verlustfreier Batchpfad
+
+23. November 2026, Apple M5/macOS, Temurin 25.0.5+8-LTS aarch64, PDAL
+2.10.2/LazPerf wie P1. Der [Dateivertrag](architecture.md) hält Layout,
+Formatmatrix, Fehler und Metadatenregeln fest. Der Reader liefert
+einen wiederverwendeten Bytepuffer vollständiger Records und trennt
+Roh-XYZ und skalierte Double-Koordinaten. Das vermeidet Kopien in ein
+zweites Punktmodell und bewahrt Flags, GPS-Zeit, RGB/NIR und Extra Bytes.
+Der Writer kopiert Metadatenbereiche aus der Originaldatei und schliesst
+den Header mit neu berechneten Zählern und Bounds ab. Die Codec-Änderungen
+betreffen die Ressourcen- und Strukturgrenzen um den Entropiedecoder.
+
+```sh
+python3 tools/make-fixtures.py "$PDAL"
+./gradlew --offline test --tests pointcloud.LasIoTest
+./gradlew --offline clean check installDist --info
+/usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m -cp 'build/install/pointcloud/lib/*' \
+  tools/DecodeTile.java .cache/test-data/so-2019.laz .cache/p1/sample.las .cache/p3/selected.las
+"$PDAL" info --stats .cache/p3/selected.las
+```
+
+Die erste Fixtureprüfung lief mit 12 erfolgreichen und einer fehlerhaften
+Ausführung (13 Tests, 0 Fehler, 0 Skips, Exit 1, Gradle 1 s). Ursache war
+die von PDAL doppelt abgelegte Infrarotdimension im LAZ-8-Fixture.
+Die Fixture-Erzeugung gibt nun die gewünschte Extra-Bytes-Dimension
+explizit an. Die Assertions auf unveränderte Recordlänge und Rohbytes
+blieben bestehen. Die korrigierte Selektion lief mit 13 Erfolgen und
+0 Failures, Fehlern oder Skips (Exit 0, Gradle 753 ms).
+
+| Prüfung | Ergebnis |
+| --- | --- |
+| Offline-Standardbuild | Exit 0, 1.29 s. `LasIoTest`: 13 erfolgreich, 0 fehlgeschlagen, 0 Fehler, 0 übersprungen, 0.134 s. `MainTest`: 2 erfolgreich, 0 fehlgeschlagen, 0 Fehler, 0 übersprungen, 0.001 s. JUnit-XML unter `build/test-results/test/`, HTML unter `build/reports/tests/test/`. |
+| Fixture-Reader und -Writer | 14 LAS-/LAZ-Eingaben, 70 vollständige Records bytegenau an den ursprünglichen LAS-Punktbytes gemessen. 28 ausgewählte Ausgaberecords vollständig verglichen, 0 Abweichungen. Vorhandene VLR-/EVLR- und Extra-Bytes-Nutzdaten geprüft, zusätzlich leere und Einpunktausgabe, Return-Zähler und Bounds. |
+| Defekte Eingaben | Trunkierung, ungültige Recordlänge und Header, Waveform, beschädigte Chunktabelle, übergrosse Layer sowie Abbruch und Zielalias direkt geprüft. Verworfenes Ergebnis und vorhandenes Ziel geprüft. |
+| Ganzkachel und Ausgaberegression | Exit 0, 4.17 s, 3.49 Mio. Punkte/s, max. RSS 419'332'096 B. Eingabe 83'247'722 B, 14'566'627 gelesen, 1'024 ausgewählt und geschrieben, 35'325 B Ausgabe. Vollständiger Ausschnittvergleich gegen P1 mit 0 Recordabweichungen und gleichen Roh-XYZ-Summen über den Gesamtbestand. |
+| PDAL liest P3-Ausgabe | `info --stats` Exit 0 in 0.13 s und 1'024 Punkte. Gleiche Projektions-VLR-Nutzdaten wie P1 und kein LASzip-VLR. |
+
+Die Einfachheitsprüfung behält eine Byte-Repräsentation und eine
+transaktionale Writer-Grenze. Die grossen Originalmetadaten werden direkt
+übertragen, statt sie in eine Liste oder ein zweites Dateimodell zu laden.
+Der Git-Diff und alle Pflichtprüfungen dieser Etappe sind geprüft. P3 abgenommen.

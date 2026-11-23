@@ -8,7 +8,7 @@
  * This software is distributed WITHOUT ANY WARRANTY and without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
-// PointCloud Java: propagate decoder failures to the caller.
+// PointCloud Java: validate chunk tables and layer sizes, and propagate decoder failures.
 package com.github.mreutegg.laszip4j.laszip;
 
 import java.io.EOFException;
@@ -17,7 +17,6 @@ import static com.github.mreutegg.laszip4j.laszip.LASzip.LASZIP_CODER_ARITHMETIC
 import static com.github.mreutegg.laszip4j.laszip.LASzip.LASZIP_COMPRESSOR_POINTWISE;
 import static com.github.mreutegg.laszip4j.laszip.LASzip.LASZIP_COMPRESSOR_LAYERED_CHUNKED;
 import static com.github.mreutegg.laszip4j.laszip.MyDefs.U32_MAX;
-import static com.github.mreutegg.laszip4j.laszip.MyDefs.realloc;
 import static java.lang.Boolean.FALSE;
 import static java.lang.Boolean.TRUE;
 
@@ -38,6 +37,8 @@ public class LASreadPoint {
     private int tabled_chunks; // unsigned
     private long[] chunk_starts;
     private int[] chunk_totals; // unsigned
+    private long pointCount;
+    private long pointEnd;
       // used for selective decompression (new LAS 1.4 point types only)
     private int decompress_selective;
     // used for seeking
@@ -386,23 +387,9 @@ public class LASreadPoint {
                             }
                         }
                     }
-                    if (!init_dec()) {
-                        last_error = "cannot initialise LAZ chunk";
-                        return FALSE;
-                    }
-                    if (current_chunk == tabled_chunks) // no or incomplete chunk table?
-                    {
-                        if (current_chunk >= number_chunks)
-                        {
-                            number_chunks += 256;
-                            chunk_starts = realloc(chunk_starts, number_chunks+1);
-                        }
-                        chunk_starts[tabled_chunks] = point_start; // needs fixing
-                        tabled_chunks++;
-                    }
-                    else if (chunk_totals != null) // variable sized chunks?
-                    {
-                        chunk_size = chunk_totals[current_chunk+1]-chunk_totals[current_chunk];
+                    init_dec();
+                    if (chunk_totals != null) {
+                        chunk_size = chunk_totals[current_chunk + 1] - chunk_totals[current_chunk];
                     }
                     chunk_count = 0;
                 }
@@ -425,12 +412,22 @@ public class LASreadPoint {
                     {
                         // for layered compression 'dec' only hands over the stream
                         dec.setByteStreamIn(instream);
-                        // read how many points are in the chunk
-                        instream.get32bitsLE();
-                        // read the sizes of all layers
-                        for (i = 0; i < num_readers; i++)
-                        {
-                            ((LASreadItemCompressed)(readers_compressed[i])).chunk_sizes();
+                        long declaredPoints = Integer.toUnsignedLong(instream.get32bitsLE());
+                        long expectedPoints = chunk_totals != null ? Integer.toUnsignedLong(chunk_size)
+                                : Math.min(Integer.toUnsignedLong(chunk_size),
+                                        pointCount - (long) current_chunk * Integer.toUnsignedLong(chunk_size));
+                        if (declaredPoints != expectedPoints) {
+                            throw new IllegalArgumentException("invalid layered chunk point count " + declaredPoints);
+                        }
+                        long layerBytes = 0;
+                        for (i = 0; i < num_readers; i++) {
+                            layerBytes += ((LASreadItemCompressed) readers_compressed[i]).chunk_sizes();
+                        }
+                        long end = chunk_starts == null ? pointEnd : chunk_starts[current_chunk + 1];
+                        long available = end - instream.tell();
+                        if (layerBytes > (64L << 20) || layerBytes > available
+                                || chunk_starts != null && layerBytes != available) {
+                            throw new IllegalArgumentException("invalid or oversized LAZ layer payload");
                         }
                         for (i = 0; i < num_readers; i++)
                         {
@@ -475,7 +472,7 @@ public class LASreadPoint {
             else
             {
                 // decompression error
-                last_error = String.format("chunk with index %d of %d is corrupt", current_chunk, tabled_chunks);
+                last_error = "corrupt LAZ chunk " + current_chunk + ": " + exception.getMessage();
                 // if we know where the next chunk starts ...
                 if ((current_chunk+1) < tabled_chunks)
                 {
@@ -520,164 +517,82 @@ public class LASreadPoint {
         return TRUE;
     }
 
-    boolean init_dec()
-    {
-        // maybe read chunk table (only if chunking enabled)
-
-        if (number_chunks == U32_MAX)
-        {
-            if (!read_chunk_table())
-            {
-                return FALSE;
-            }
-            current_chunk = 0;
-            if (chunk_totals != null) chunk_size = chunk_totals[1];
-        }
-
+    void init_dec() {
         point_start = instream.tell();
         readers = null;
-
-        return TRUE;
     }
 
-    boolean read_chunk_table()
-    {
-        // read the 8 bytes that store the location of the chunk table
-        long chunk_table_start_position;
-        try { chunk_table_start_position = instream.get64bitsLE(); } catch (Exception e)
-        {
-            return FALSE;
+    void initialiseChunks(long count, long end) {
+        pointCount = count;
+        pointEnd = end;
+        if (number_chunks != U32_MAX) {
+            return;
         }
-
-        // this is where the chunks start
-        long chunks_start = instream.tell();
-
-        // was compressor interrupted before getting a chance to write the chunk table?
-        if ((chunk_table_start_position + 8) == chunks_start)
-        {
-            // no choice but to fail if adaptive chunking was used
-            if (chunk_size == U32_MAX)
-            {
-                return FALSE;
-            }
-            // otherwise we build the chunk table as we read the file
-            number_chunks = 256;
-            chunk_starts = new long[number_chunks+1];
-            if (chunk_starts == null)
-            {
-                return FALSE;
-            }
-            chunk_starts[0] = chunks_start;
-            tabled_chunks = 1;
-            return TRUE;
+        long locator = instream.tell();
+        long table = instream.get64bitsLE();
+        long first = instream.tell();
+        boolean adaptive = chunk_size == U32_MAX;
+        if (table == locator && !adaptive) {
+            // Fixed chunks can also be decoded sequentially without a table.
+            number_chunks = 0;
+            return;
         }
-
-        // maybe the stream is not seekable
-        if (!instream.isSeekable())
-        {
-            // no choice but to fail if adaptive chunking was used
-            if (chunk_size == U32_MAX)
-            {
-                return FALSE;
+        long tableEnd = end;
+        if (table == -1) {
+            tableEnd -= 8;
+            if (tableEnd < first || !instream.seek(tableEnd)) {
+                throw new IllegalArgumentException("missing LAZ chunk table locator");
             }
-            // then we cannot seek to the chunk table but won't need it anyways
-            number_chunks = U32_MAX-1;
-            tabled_chunks = 0;
-            return TRUE;
+            table = instream.get64bitsLE();
         }
-
-        if (chunk_table_start_position == -1)
-        {
-            // the compressor was writing to a non-seekable stream and wrote the chunk table start at the end
-            if (!instream.seekEnd(8))
-            {
-                return FALSE;
-            }
-            try { chunk_table_start_position = instream.get64bitsLE(); } catch (Exception e)
-            {
-                return FALSE;
-            }
+        if (table < first || table > tableEnd - 8 || !instream.seek(table)
+                || instream.get32bitsLE() != 0) {
+            throw new IllegalArgumentException("invalid LAZ chunk table offset or version");
         }
-
-        // read the chunk table
-        try
-        {
-            instream.seek(chunk_table_start_position);
-            int version = instream.get32bitsLE();
-            if (version != 0)
-            {
-                throw new RuntimeException("1");
-            }
-            number_chunks = instream.get32bitsLE();
-            chunk_totals = null;
-            chunk_starts = null;
-            if (chunk_size == U32_MAX)
-            {
-                chunk_totals = new int[number_chunks+1];
-                chunk_totals[0] = 0;
-            }
-            chunk_starts = new long[number_chunks+1];
-            chunk_starts[0] = chunks_start;
-            tabled_chunks = 1;
-            if (Integer.compareUnsigned(number_chunks, 0) > 0)
-            {
-                int i; // unsigned
-                dec.init(instream);
-                IntegerCompressor ic = new IntegerCompressor(dec, 32, 2);
-                ic.initDecompressor();
-                for (i = 1; Integer.compareUnsigned(i, number_chunks) <= 0; i++)
-                {
-                    if (chunk_size == U32_MAX) chunk_totals[i] = ic.decompress((i>1 ? chunk_totals[i-1] : 0), 0);
-                    chunk_starts[i] = ic.decompress((i>1 ? (int)(chunk_starts[i-1]) : 0), 1);
-                    tabled_chunks++;
-                }
-                dec.done();
-                for (i = 1; i <= number_chunks; i++)
-                {
-                    if (chunk_size == U32_MAX) chunk_totals[i] += chunk_totals[i-1];
-                    chunk_starts[i] += chunk_starts[i-1];
-                    if (chunk_starts[i] <= chunk_starts[i-1])
-                    {
-                        throw new RuntimeException("1");
+        long chunks = Integer.toUnsignedLong(instream.get32bitsLE());
+        long step = Integer.toUnsignedLong(chunk_size);
+        long expected = count == 0 ? 0 : 1 + (count - 1) / step;
+        if (chunks > 1_000_000 || (adaptive ? chunks > count || count != 0 && chunks == 0 : chunks != expected)) {
+            throw new IllegalArgumentException("invalid or oversized LAZ chunk table: " + chunks + " chunks");
+        }
+        number_chunks = (int) chunks;
+        chunk_starts = new long[number_chunks + 1];
+        chunk_starts[0] = first;
+        if (adaptive) {
+            chunk_totals = new int[number_chunks + 1];
+        }
+        if (number_chunks != 0) {
+            dec.init(instream);
+            var integers = new IntegerCompressor(dec, 32, 2);
+            integers.initDecompressor();
+            int previousPoints = 0, previousBytes = 0;
+            long totalPoints = 0;
+            for (int i = 1; i <= number_chunks; i++) {
+                if (adaptive) {
+                    previousPoints = integers.decompress(previousPoints, 0);
+                    totalPoints += Integer.toUnsignedLong(previousPoints);
+                    if (previousPoints == 0 || totalPoints > count || totalPoints > 0xffff_ffffL) {
+                        throw new IllegalArgumentException("invalid adaptive LAZ chunk point count");
                     }
+                    chunk_totals[i] = (int) totalPoints;
                 }
-            }
-        }
-        catch (Exception e)
-        {
-            // something went wrong while reading the chunk table
-            chunk_totals = null;
-            // no choice but to fail if adaptive chunking was used
-            if (chunk_size == U32_MAX)
-            {
-                return FALSE;
-            }
-            // did we not even read the number of chunks
-            if (number_chunks == U32_MAX)
-            {
-                // then compressor was interrupted before getting a chance to write the chunk table
-                number_chunks = 256;
-                chunk_starts = new long[number_chunks+1];
-                chunk_starts[0] = chunks_start;
-                tabled_chunks = 1;
-            }
-            else
-            {
-                // otherwise fix as many additional chunk_starts as possible
-                int i; // unsigned
-                for (i = 1; i < tabled_chunks; i++)
-                {
-                    chunk_starts[i] += chunk_starts[i-1];
+                previousBytes = integers.decompress(previousBytes, 1);
+                long bytes = Integer.toUnsignedLong(previousBytes);
+                if (bytes == 0 || bytes > table - chunk_starts[i - 1]) {
+                    throw new IllegalArgumentException("invalid LAZ chunk length");
                 }
+                chunk_starts[i] = chunk_starts[i - 1] + bytes;
             }
-            // report warning
-            last_warning = "corrupt chunk table";
+            dec.done();
+            if (adaptive && totalPoints != count) {
+                throw new IllegalArgumentException("LAZ chunk point totals do not match the header");
+            }
         }
-        if (!instream.seek(chunks_start))
-        {
-            return FALSE;
+        if (instream.tell() > tableEnd || chunk_starts[number_chunks] != table) {
+            throw new IllegalArgumentException("invalid LAZ chunk table end");
         }
-        return TRUE;
+        tabled_chunks = number_chunks + 1;
+        instream.seek(first);
     }
 
     int search_chunk_table(int index, int lower, int upper)

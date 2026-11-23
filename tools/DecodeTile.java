@@ -1,35 +1,38 @@
-import com.github.mreutegg.laszip4j.laszip.LazDecoder;
+import pointcloud.LasReader;
+import pointcloud.LasWriter;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
 import java.nio.file.Path;
 
 /** Import regression against the P1 Solothurn 2019 baseline. */
 class DecodeTile {
     public static void main(String[] args) throws IOException {
-        var record = ByteBuffer.allocate(34);
+        var record = new byte[34];
         var reference = new byte[34];
-        var vlr = new byte[52];
-        var path = Path.of(args[0]);
         long count = 0, sumX = 0, sumY = 0, sumZ = 0;
-        try (var source = new RandomAccessFile(path.toFile(), "r");
-             var sample = new RandomAccessFile(args[1], "r")) {
-            source.seek(615 - vlr.length);
-            source.readFully(vlr);
+        try (var reader = new LasReader(Path.of(args[0]), LasReader.DEFAULT_BATCH_SIZE);
+             var sample = new RandomAccessFile(args[1], "r");
+             var writer = args.length > 2 ? new LasWriter(reader, Path.of(args[2]), false) : null) {
             sample.seek(509);
-            try (var decoder = new LazDecoder(path, 615, 14_566_627, 3, 34, vlr)) {
-                while (decoder.read(record)) {
-                    sumX += record.getInt(0);
-                    sumY += record.getInt(4);
-                    sumZ += record.getInt(8);
+            for (var batch = reader.readBatch(); batch != null; batch = reader.readBatch()) {
+                for (int point = 0; point < batch.size(); point++) {
+                    sumX += batch.rawX(point);
+                    sumY += batch.rawY(point);
+                    sumZ += batch.rawZ(point);
                     if (++count <= 1024) {
                         sample.readFully(reference);
-                        if (!java.util.Arrays.equals(record.array(), reference)) {
+                        batch.copyRecord(point, record, 0);
+                        if (!java.util.Arrays.equals(record, reference)) {
                             throw new IOException("Unexpected LAS record at " + count);
                         }
+                        if (writer != null) {
+                            writer.write(batch, point);
+                        }
                     }
-                    record.clear();
                 }
+            }
+            if (writer != null) {
+                writer.finish();
             }
         }
         if (count != 14_566_627 || sumX != 3_778_944_994_702_787L

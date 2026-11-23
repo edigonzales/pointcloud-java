@@ -35,6 +35,11 @@ ist neu und übergibt vollständige Records als Bytes. Der Standardbuild
 verpackt den Codec separat in `codec.jar` mit Lizenztexten unter
 `META-INF/licenses/laszip4j/`.
 
+Der Dateistream wurde auf `MemorySegment` mit schliessbarer Arena
+umgestellt. Die lokale Chunkprüfung lehnt ungültige Tabellen und
+überlange Layer vor der Allokation ab. Die jeweiligen geänderten
+Codecquellen tragen einen Änderungshinweis.
+
 ## Realdaten
 
 Quelle ist das Amt für Geoinformation, Kanton Solothurn. Die Kacheln werden
@@ -46,3 +51,13 @@ daraus abgeleitete Punktdateien verbleiben im ignorierten Cache.
 | `so-2019.laz` | [2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz) | 83'247'722 | 23.11.2026 |
 
 [Downloadangebot des Kantons](https://data.geo.so.ch/?filter=ch.so.agi.lidar_2019.pointcloud)
+
+## Kleine Fixtures
+
+`src/test/resources/las` enthält eigene synthetische LAS-Bestände mit
+je fünf Punkten und die mit PDAL 2.10.2/LazPerf daraus erzeugten LAZ-Dateien.
+Die Fixtures verwenden keine kantonalen Punkte oder Upstream-Probedateien.
+Erzeugung ab Repositorywurzel mit `python3 tools/make-fixtures.py /pfad/zu/pdal`.
+Für Format 8 wird `Confidence=uint16` beim Erzeugen angegeben. PDAL
+2.10.2 würde mit `extra_dims=all` auch `Infrared` als zweite Dimension
+hinter den formatüblichen NIR-Wert schreiben.

@@ -10,6 +10,7 @@
     This software is distributed WITHOUT ANY WARRANTY and without even the
     implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
+// PointCloud Java: expose total layer bytes for validation before allocation.
 package com.github.mreutegg.laszip4j.laszip;
 
 import static com.github.mreutegg.laszip4j.laszip.LASzip.LASZIP_DECOMPRESS_SELECTIVE_Z;
@@ -676,7 +677,7 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
     }
 
     @Override
-    public boolean chunk_sizes() {
+    public long chunk_sizes() {
 
         ByteStreamIn instream = instreamProvider.getByteStreamIn();
 
@@ -692,7 +693,15 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
         num_bytes_point_source = instream.get32bitsLE();
         num_bytes_gps_time = instream.get32bitsLE();
 
-        return true;
+        return Integer.toUnsignedLong(num_bytes_channel_returns_XY)
+            + Integer.toUnsignedLong(num_bytes_Z)
+            + Integer.toUnsignedLong(num_bytes_classification)
+            + Integer.toUnsignedLong(num_bytes_flags)
+            + Integer.toUnsignedLong(num_bytes_intensity)
+            + Integer.toUnsignedLong(num_bytes_scan_angle)
+            + Integer.toUnsignedLong(num_bytes_user_data)
+            + Integer.toUnsignedLong(num_bytes_point_source)
+            + Integer.toUnsignedLong(num_bytes_gps_time);
     }
 
     private boolean createAndInitModelsAndDecompressors(int context, PointDataRecordPoint14 seedItem)

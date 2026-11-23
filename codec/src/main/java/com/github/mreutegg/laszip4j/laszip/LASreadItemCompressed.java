@@ -8,10 +8,13 @@
  * This software is distributed WITHOUT ANY WARRANTY and without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
+// PointCloud Java: expose layer length before allocating the layer buffers.
 package com.github.mreutegg.laszip4j.laszip;
 
 public abstract class LASreadItemCompressed extends LASreadItem {
 
     public abstract void init(PointDataRecord seedItem, MutableInteger context);
-    public abstract boolean chunk_sizes();
+    public long chunk_sizes() {
+        throw new IllegalStateException("Point item does not support layered compression");
+    }
 }

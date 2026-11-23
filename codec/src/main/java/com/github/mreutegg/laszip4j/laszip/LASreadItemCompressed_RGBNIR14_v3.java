@@ -10,6 +10,7 @@
     This software is distributed WITHOUT ANY WARRANTY and without even the
     implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
+// PointCloud Java: expose total layer bytes for validation before allocation.
 package com.github.mreutegg.laszip4j.laszip;
 
 import static com.github.mreutegg.laszip4j.laszip.MyDefs.U8_FOLD;
@@ -164,7 +165,7 @@ public class LASreadItemCompressed_RGBNIR14_v3 extends LASreadItemCompressed{
     }
 
     @Override
-    public boolean chunk_sizes() {
+    public long chunk_sizes() {
 
         ByteStreamIn instream = instreamProvider.getByteStreamIn();
 
@@ -172,7 +173,8 @@ public class LASreadItemCompressed_RGBNIR14_v3 extends LASreadItemCompressed{
         num_bytes_RGB = instream.get32bitsLE();
         num_bytes_NIR = instream.get32bitsLE();
 
-        return true;
+        return Integer.toUnsignedLong(num_bytes_RGB)
+            + Integer.toUnsignedLong(num_bytes_NIR);
     }
 
     @Override
