@@ -83,6 +83,12 @@ Punkt hat undefinierte Stichprobenstreuung. Die JSON-Ausgabe verwendet
 kann die Extrema nicht ändern und macht die laufenden Momente undefiniert.
 Bei leerer Auswahl sind alle fünf statistischen Werte `null`.
 
+Im PDAL-Pipeline-Schema steht bei LAS 1.2 die alte Überlappungsklasse 12
+als `Classification == 0` zur Verfügung. Der Batch-Zugriff
+`classification()` liefert weiterhin den kodierten Klassenwert.
+Die Ausgabedatei erhält das zugehörige Rohbyte einschliesslich der Flags.
+[PDAL 2.10.2 LasReader](https://github.com/PDAL/PDAL/blob/2.10.2/io/LasReader.cpp)
+
 `pointcloud pipeline` schreibt `pointsRead`, `pointsSelected`,
 `pointsWritten` und `statistics` als JSON auf stdout beziehungsweise in
 den mit `--metadata` angegebenen Pfad. Jede Statistikstage enthält

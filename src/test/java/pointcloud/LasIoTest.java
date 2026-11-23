@@ -118,6 +118,29 @@ class LasIoTest {
     }
 
     @Test
+    void preservesUndescribedExtraBytes() throws IOException {
+        var fixture = bytes(fixture(8, "las"));
+        int pointOffset = fixture.getInt(96);
+        int descriptorLength = 54 + 192;
+        byte[] input = new byte[fixture.capacity() - descriptorLength];
+        int newOffset = pointOffset - descriptorLength;
+        fixture.putInt(96, newOffset).putInt(100, 1).putLong(235, fixture.getLong(235) - descriptorLength);
+        System.arraycopy(fixture.array(), 0, input, 0, newOffset);
+        System.arraycopy(fixture.array(), pointOffset, input, newOffset, input.length - newOffset);
+        var source = Files.write(tempDir.resolve("opaque.las"), input);
+        var output = tempDir.resolve("copy.las");
+        try (var reader = new LasReader(source, 2); var writer = new LasWriter(reader, output, false)) {
+            for (var batch = reader.readBatch(); batch != null; batch = reader.readBatch()) {
+                for (int point = 0; point < batch.size(); point++) {
+                    writer.write(batch, point);
+                }
+            }
+            writer.finish();
+        }
+        assertArrayEquals(input, Files.readAllBytes(output));
+    }
+
+    @Test
     void writesAndReadsAnEmptyLas() throws IOException {
         Path output = tempDir.resolve("empty.las");
         try (var reader = new LasReader(fixture(3, "laz"), 2); var writer = new LasWriter(reader, output, false)) {
@@ -150,6 +173,11 @@ class LasIoTest {
         assertBadInput(input, "Waveform point format 5");
         Files.write(input, base.putInt(0, 0).array());
         assertBadInput(input, "Invalid LASF");
+        var modern = bytes(fixture(8, "las"));
+        Files.write(input, modern.putLong(247, 1L << 40).array());
+        assertBadInput(input, "Truncated LAS point records");
+        Files.write(input, modern.putLong(247, 5).putInt(96, -1).array());
+        assertBadInput(input, "point data offset");
     }
 
     @Test

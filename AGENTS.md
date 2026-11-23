@@ -18,7 +18,8 @@ liegen ausserhalb des Produktumfangs.
   LiDAR-Bibliotheken, GPU oder Realdatendownloads. Verwende
   `./gradlew clean check` für die Standardtests und `./gradlew installDist`
   für die installierbare CLI. Realdaten beziehen wir separat mit
-  `./gradlew downloadTestData`.
+  `./gradlew downloadTestData` und `./gradlew downloadTestData -Ptile=2014`.
+  Die unabhängige Abnahme läuft mit `python3 tools/check-real-data.py /pfad/zu/pdal`.
 - Wende KISS und Ockham's Razor an. Suche vorhandenen Code und bevorzuge
   direkte Lösungen und Standardwerkzeuge. Jede neue Klasse, Schnittstelle,
   Modulgrenze, Abhängigkeit und Buildaufgabe braucht einen heutigen Verbraucher

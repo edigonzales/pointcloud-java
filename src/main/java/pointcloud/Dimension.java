@@ -20,7 +20,11 @@ enum Dimension {
             case Y -> batch.y(point);
             case Z -> batch.z(point);
             case Intensity -> batch.intensity(point);
-            case Classification -> batch.classification(point);
+            case Classification -> {
+                int code = batch.classification(point);
+                // PDAL exposes the old overlap class as class 0 with a separate overlap flag.
+                yield format < 6 && code == 12 ? 0 : code;
+            }
             case ReturnNumber -> batch.returnNumber(point);
             case NumberOfReturns -> (batch.records.get(start + 14) >>> (format < 6 ? 3 : 4))
                     & (format < 6 ? 7 : 15);

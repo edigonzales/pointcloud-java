@@ -49,6 +49,7 @@ daraus abgeleitete Punktdateien verbleiben im ignorierten Cache.
 | Alias in `.cache/test-data` | Originaldatei | Bytes | Abruf |
 | --- | --- | ---: | --- |
 | `so-2019.laz` | [2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz) | 83'247'722 | 23.11.2026 |
+| `so-2014.laz` | [2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2014.pointcloud/aktuell/2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz) | 74'261'841 | 23.11.2026 |
 
 [Downloadangebot des Kantons](https://data.geo.so.ch/?filter=ch.so.agi.lidar_2019.pointcloud)
 

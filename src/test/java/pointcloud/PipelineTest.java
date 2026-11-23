@@ -167,6 +167,24 @@ class PipelineTest {
         }
     }
 
+    @Test
+    void interpretsLegacyOverlapAsPdalDoesAndWritesTheOriginalFlags() throws IOException {
+        var mini = LasIoTest.bytes(LasIoTest.fixture(3, "las"));
+        byte classification = (byte) (12 | 0xe0);
+        mini.put(mini.getInt(96) + 15, classification);
+        Path source = Files.write(temp.resolve("overlap.las"), mini.array());
+        Path output = temp.resolve("selected.las");
+        var run = pipeline(source, """
+                {"type":"filters.expression","expression":"Classification == 0"},
+                {"type":"filters.stats","dimensions":"Classification"},
+                {"type":"writers.las","filename":"%s","forward":"all","extra_dims":"all"}
+                """.formatted(output)).run(2, false);
+        assertEquals(1, run.pointsWritten());
+        assertEquals(0, run.statistics().getFirst().dimensions().getFirst().average());
+        var written = LasIoTest.bytes(output);
+        assertEquals(classification, written.get(written.getInt(96) + 15));
+    }
+
     private static Pipeline pipeline(Path input, String remaining) {
         return Pipeline.parse(new StringReader("[\"" + input + "\", " + remaining + "]"));
     }

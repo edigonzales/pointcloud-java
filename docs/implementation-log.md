@@ -302,3 +302,83 @@ Die zweite fachliche Ausführung derselben Pipeline hat keinen Altzustand.
 Einfachheitsprüfung mit den Repository-Skills. Feste Stage-Menge,
 ein JSON-Baum, ein kleiner Ausdrucksparser und ein Selektor pro Stage.
 Der Standardbuild bleibt unabhängig von PDAL und Realdaten. P4 abgenommen.
+
+## P5 · Realdaten- und PDAL-Abnahme
+
+23. November 2026. Apple M5/macOS wie P0, Temurin 25.0.5+8-LTS aarch64,
+Gradle 9.9.1 und PDAL 2.10.2 (conda-forge arm64, eigener LazPerf-Decoder).
+Die zweite Kachel ist LAS 1.2 / Format 1 mit 28-B-Records, 14'347'366
+Punkten, Scale 0.01 und Offset −0.0. Ihr einziges VLR ist das LASzip-VLR.
+Das Programm übernimmt weder ein angenommenes CRS noch eine Reprojektion.
+
+```sh
+./gradlew --offline clean check installDist
+./gradlew downloadTestData
+./gradlew downloadTestData -Ptile=2014
+python3 tools/check-real-data.py "$PDAL"
+JAVA_OPTS=-Xmx512m /usr/bin/time -lp build/install/pointcloud/bin/pointcloud \
+  pipeline examples/ground-crop.json --metadata .cache/p5/heap-ground.json
+```
+
+Download 2014 Exit 0, 2.70 s, 74'261'841 B. Vorher 418 GiB frei.
+Zusammen 157'509'563 B für zwei Kacheln (150.21 MiB). Selbst ein
+ungefiltertes Paar LAS-Ausgaben der 2019-Kachel hätte unter der
+1.5-GiB-Datengrenze Platz. Die tatsächlich grösste Ausgabe war 6'655'601 B.
+Die Vergleichssequenz bewegt jede Java-Ausgabe aus dem Originalziel und
+verwendet die gleiche Konfiguration für PDAL. Sie vergleicht die Records
+in Blöcken von höchstens 8'192 und entfernt die erzeugten LAS-Paare.
+Zusätzliche erste Ergebnisdateien aus der Diagnose wurden bereinigt.
+
+| Pipeline | Gelesen | Ausgewählt | Geschrieben / komplett verglichen | Java / PDAL LAS-Bytes | Wandzeit Java / PDAL |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ground-Crop, 2019 | 14'566'627 | 195'738 | 195'738 | 6'655'601 / 6'655'515 | 4.10 / 1.85 s |
+| Stats, 2019 | 14'566'627 | 14'566'627 | 0 | 0 / 0 | 3.87 / 2.14 s |
+| Decimate, 2019 | 14'566'627 | 128'909 | 128'909 | 4'383'415 / 4'383'329 | 3.63 / 1.69 s |
+| Stats und Decimate (500), 2014 | 14'347'366 | 28'695 | 28'695 | 803'689 / 803'687 | 4.26 / 2.24 s |
+
+Gesamte Vergleichssequenz Exit 0, 24.45 s. Alle acht Pipelineläufe Exit 0.
+353'342 verglichene Records, 0 Abweichungen. Reihenfolge, rohe XYZ,
+Flags, Return- und Klassenwerte, GPS-Zeit, Intensität und RGB soweit
+vorhanden sind bytegenau gleich. Format, Recordlänge, Quantisierung,
+Header-Bounds und Return-Zähler stimmen überein. PDAL las jede
+Java-Ausgabe mit `info --stats` vollständig und unabhängig (Exit 0,
+0.10 / 0.09 / 0.05 s). PDAL interpretiert beide 2019-Ausgabepaare mit
+demselben CRS CH1903+ / LV95. Die 2014-Dateien enthalten kein CRS.
+Die übertragenen VLR-Nutzdaten stimmen bei allen Java-Ausgaben mit
+der jeweiligen Quelle überein. PDAL darf seine VLRs anders serialisieren.
+
+Die Toleranz für Mittelwert, Stichprobenvarianz und
+Stichprobenstandardabweichung folgt P4 (`max(1e-10, 5.1e-10 * max(|Java|,|PDAL|))`).
+Alle Statistikzählungen und Extrema gleich. Maximale absolute
+Abweichungen (Mittelwert / Varianz / Standardabweichung):
+Ground-Crop 4.40e-4 / 3.29e-3 / 3.49e-9, Stats 2019
+4.43e-4 / 2.78e-4 / 2.25e-7, Stats 2014 2.27e-5 / 1.54e-6 / 1.58e-8.
+
+Die erste 2014-Abnahme deckte einen Fehler in der Klassensemantik auf.
+Die Klasse 12 floss als 12 statt 0 in die Statistik ein. Die Punkte der
+Dezimierung waren schon bytegleich. Nach Anpassung der Pipeline-Dimension
+an PDAL bleibt Klasse 12 als Rohwert erhalten, wird aber für Filter und
+Statistik wie bei PDAL als 0 ausgewertet. Ein Regressionstest verwendet
+Klasse 12 samt gesetzten Flags, prüft die fachliche Auswahl und das
+unveränderte Ausgabebyte. Die korrigierten vier Pipelinevergleiche wurden
+vollständig wiederholt. Zusätzliche Fixture-Prüfungen sichern nicht
+beschriebene Extra Bytes und die Behandlung grosser Zähler und Offsets.
+
+Speichernachweise mit `-Xmx512m`. Der separate P5-Ground-Crop-CLI-Lauf
+schrieb 195'738 Punkte, Exit 0, 4.62 s, max. RSS 396'754'944 B.
+Eine Java-Quellanwendung mit `Pipeline.read(Path.of("examples/stats.json"))`
+führte dreimal `run(32_768, false)` im selben Prozess aus und verglich die
+drei `Result`-Werte auf Gleichheit. Exit 0, 43'699'881 gelesene Punkte,
+12.03 s, max. RSS 426'655'744 B, keine Punktdateien geschrieben.
+Die Dateizuordnung umfasst bei 2019 83'247'722 B virtueller Adressfläche.
+Je Lauf ist ein Batch mit 32'768 × 34 B (1'114'112 B) offen. Peak-RSS,
+Heapgrenze und Mappingumfang beschreiben verschiedene Grössen.
+
+Finaler Offline-Standardbuild Exit 0 in 1.47 s. `LasIoTest` 14
+erfolgreich (0.114 s), `PipelineTest` 7 (0.081 s), `MainTest` 2 (0.001 s).
+23 ausgeführt und erfolgreich, 0 fehlgeschlagen, 0 Fehler, 0 übersprungen.
+JUnit-XML unter `build/test-results/test/`, HTML unter `build/reports/tests/test/`.
+Einfachheitsprüfung: ein expliziter PDAL-Vergleich für den realen
+Dateivertrag, der temporäre Importversuch bleibt über `git show
+08833a0:tools/DecodeTile.java` reproduzierbar. Alle Produktpflichtläufe
+dieser Etappe erfolgreich. P5 abgenommen.

@@ -1,0 +1,142 @@
+"""Compare complete real-data pipelines against an installed PDAL 2.10.2."""
+
+import json
+import math
+import os
+from pathlib import Path
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def run(args, *, capture=False):
+    started = time.perf_counter()
+    result = subprocess.run(args, capture_output=capture, text=True, check=True,
+                            env=dict(os.environ, JAVA_OPTS="-Xmx512m"))
+    print(f"{time.perf_counter() - started:.2f} s  " + " ".join(map(str, args)), flush=True)
+    if capture:
+        return json.loads(result.stdout)
+
+
+def projection_and_other_vlrs(path):
+    with path.open("rb") as file:
+        header = file.read(227)
+        size, _, count = struct.unpack_from("<HII", header, 94)
+        file.seek(size)
+        records = []
+        for _ in range(count):
+            _, user, record, size = struct.unpack("<H16sHH", file.read(22))
+            file.read(32)
+            data = file.read(size)
+            user = user.rstrip(b"\0 ")
+            if user != b"laszip encoded":
+                records.append((user, record, data))
+        return records
+
+
+def compare_las(java, reference, count):
+    with java.open("rb") as left, reference.open("rb") as right:
+        lh, rh = left.read(227), right.read(227)
+        require(lh[24:26] == rh[24:26] == b"\x01\x02", "LAS version differs")
+        require(lh[104:131] == rh[104:131], "Format, point length, point count or returns differ")
+        require(struct.unpack_from("<12d", lh, 131) == struct.unpack_from("<12d", rh, 131),
+                "Quantization or LAS header bounds differ")
+        length, actual = struct.unpack_from("<HI", lh, 105)
+        require(actual == count, f"{java}: LAS header count differs from reported output")
+        left.seek(struct.unpack_from("<I", lh, 96)[0])
+        right.seek(struct.unpack_from("<I", rh, 96)[0])
+        mismatches = 0
+        for start in range(0, count, 8192):
+            size = min(count - start, 8192) * length
+            a, b = left.read(size), right.read(size)
+            require(len(a) == len(b) == size, "Truncated LAS comparison input")
+            if a != b:
+                mismatches += sum(a[i:i + length] != b[i:i + length] for i in range(0, size, length))
+        require(not left.read(1) and not right.read(1), "Unexpected bytes after the point records")
+    require(mismatches == 0, f"{java}: {mismatches} records differ")
+    print(f"{count} complete records, 0 differences, LAS bytes {java.stat().st_size}/{reference.stat().st_size}")
+
+
+def compare_stats(java, reference, expected_count):
+    actual = {d["name"]: d for d in java[0]["dimensions"]} if java else {}
+    expected = {d["name"]: d for d in reference}
+    require(actual.keys() == expected.keys(), "Statistics dimensions differ")
+    errors = dict.fromkeys(("minimum", "maximum", "average", "variance", "stddev"), 0.0)
+    for name, dimension in actual.items():
+        pr = expected[name]
+        require(dimension["count"] == pr["count"] == expected_count, f"{name}: statistics count differs")
+        for field in errors:
+            a, b = dimension[field], pr[field]
+            require(math.isclose(a, b, rel_tol=5.1e-10, abs_tol=1e-10), f"{name}.{field}: {a} differs from {b}")
+            errors[field] = max(errors[field], abs(a - b))
+    if actual:
+        print("Maximum absolute statistics differences:", errors)
+
+
+def main():
+    pdal = sys.argv[1] if len(sys.argv) > 1 else "pdal"
+    cli = "build/install/pointcloud/bin/pointcloud"
+    run([pdal, "--version"])
+    result_dir = Path("build/results")
+    result_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("ground-crop", "decimate", "so-2014"):
+        target = result_dir / f"{name}.las"
+        require(not os.path.lexists(target), f"Comparison target already exists: {target}")
+    with tempfile.TemporaryDirectory(prefix="pdal-check-", dir=".cache") as scratch:
+        work = Path(scratch)
+        secondary = work / "so-2014.json"
+        secondary.write_text(json.dumps([
+            ".cache/test-data/so-2014.laz",
+            {"type": "filters.stats", "dimensions": "X,Y,Z,Intensity,Classification"},
+            {"type": "filters.decimation", "step": 500},
+            {"type": "writers.las", "filename": str(result_dir / "so-2014.las"),
+             "forward": "all", "extra_dims": "all", "compression": False}
+        ]))
+        for name in ("ground-crop", "stats", "decimate", "so-2014"):
+            year = 2014 if name == "so-2014" else 2019
+            input_count = 14_347_366 if year == 2014 else 14_566_627
+            pipeline = secondary if year == 2014 else Path("examples") / f"{name}.json"
+            target = result_dir / f"{name}.las"
+            java_json, pdal_json = work / "java.json", work / "pdal.json"
+            java_las, pdal_las = work / "java.las", work / "pdal.las"
+            java_json.unlink(missing_ok=True)
+            run([cli, "pipeline", pipeline, "--metadata", java_json])
+            if name != "stats":
+                target.rename(java_las)
+            pdal_json.unlink(missing_ok=True)
+            run([pdal, "pipeline", pipeline, "--stream", "--metadata", pdal_json])
+            java = json.loads(java_json.read_text())
+            stages = json.loads(pdal_json.read_text())["stages"]
+            require(java["pointsRead"] == stages["readers.las"]["count"] == input_count, "Input point count differs")
+            count = java["pointsSelected"]
+            expected = {"ground-crop": 195_738, "stats": input_count, "decimate": 128_909, "so-2014": 28_695}[name]
+            require(count == expected, f"{name}: unexpected selection count {count}")
+            compare_stats(java["statistics"], stages.get("filters.stats", {}).get("statistic", []),
+                          input_count if year == 2014 else count)
+            if name != "stats":
+                target.rename(pdal_las)
+                require(java["pointsWritten"] == count, "Output count differs")
+                compare_las(java_las, pdal_las, count)
+                source_vlrs = projection_and_other_vlrs(Path(f".cache/test-data/so-{year}.laz"))
+                require(projection_and_other_vlrs(java_las) == source_vlrs, "Java VLR payloads differ from the input")
+                info = run([pdal, "info", "--stats", java_las], capture=True)
+                require(all(s["count"] == count for s in info["stats"]["statistic"]), "PDAL read count differs")
+                a = run([pdal, "info", "--summary", java_las], capture=True)["summary"]
+                b = run([pdal, "info", "--summary", pdal_las], capture=True)["summary"]
+                require(a.get("srs") == b.get("srs") and (a.get("srs") is not None) == (year == 2019),
+                        "CRS differs between outputs")
+                java_las.unlink()
+                pdal_las.unlink()
+            else:
+                require(java["pointsWritten"] == 0, "Null writer wrote points")
+
+
+if __name__ == "__main__":
+    main()

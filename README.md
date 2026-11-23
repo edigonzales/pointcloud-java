@@ -1,6 +1,6 @@
 # PointCloud Java
 
-PointCloud Java entsteht als eigenständige Java-25-Bibliothek und CLI für
+PointCloud Java ist eine eigenständige Java-25-Bibliothek und CLI für
 lokale LAS-/LAZ-Dateien. Der [Auftrag](codex-auftrag-pointcloud-java.md) begrenzt
 das Produkt auf LAS-Ausgabe und lineare Pipelines einer definierten PDAL-Teilmenge.
 CRS-Reprojektion, COPC-/EPT-Raumsuche und Plugin-Graphen liegen ausserhalb
@@ -36,3 +36,12 @@ Die Realdatenbeispiele laufen ab Repositorywurzel.
 
 Die [Formatmatrix und Pipeline-Optionen](docs/architecture.md) beschreiben
 den unterstützten Umfang. Die Kachelquelle steht im [Herkunftsnachweis](docs/provenance.md).
+
+Die Referenzabnahme verwendet PDAL 2.10.2 mit LazPerf. Die Vergleichsziele
+`build/results/ground-crop.las`, `decimate.las` und `so-2014.las` müssen
+vor dem Start frei sein.
+
+```sh
+./gradlew downloadTestData -Ptile=2014
+python3 tools/check-real-data.py /pfad/zu/pdal
+```
