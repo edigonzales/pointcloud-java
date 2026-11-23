@@ -382,3 +382,44 @@ Einfachheitsprüfung: ein expliziter PDAL-Vergleich für den realen
 Dateivertrag, der temporäre Importversuch bleibt über `git show
 08833a0:tools/DecodeTile.java` reproduzierbar. Alle Produktpflichtläufe
 dieser Etappe erfolgreich. P5 abgenommen.
+
+## P6 · Skalare Baseline und Allokationen
+
+23. November 2026. Apple M5/macOS, Temurin 25.0.5+8-LTS aarch64,
+Gradle 9.9.1, JMH 1.37, PDAL 2.10.2/LazPerf. E1 wurde als
+[Vier-Ebenen-Messung](experiments.md#e1--baseline-und-batchlayout) mit
+einzelnen CSV-Läufen, JMH-Iterationen und gezielten JFR-Profilen ausgeführt.
+Die kontrollierte Auswahl zeigt, dass die Kosten der zusätzlichen
+Spalten den Vorteil ihres einmaligen Filterkernels übersteigen. Der
+Durchsatz des gesamten Pfades wird hauptsächlich von der Dekodierung
+bestimmt. 32'768 Punkte und vollständige Records bleiben die Vorgabe.
+
+Bei der Profilkommandovariante wurden zunächst JFR-Startmeldungen auf
+stdout geschrieben. Die LAS-Dateien und die JSON-Daten nach den
+Startmeldungen waren exakt gleich. Der dokumentierte und im letzten
+Profil ausgeführte Aufruf trennt dies mit `-Xlog:jfr+startup=off`.
+Eine zunächst als 2 notierte PDAL-Workerzahl wurde anhand des
+Referenzquellcodes in der CSV auf den verwendeten Standard 7 korrigiert.
+
+Median Ground-Crop vor/nach Wiederverwendung von Record und Lesekontext
+3.79/3.58 s und max. RSS im Median 398'508'032/159'203'328 B.
+Je 3 Läufe mit vollen 14'566'627 Eingabepunkten. Alle vollständigen
+Ausgaben und ihre Statistiken stimmen exakt mit der unveränderten
+Ausgangsbasis für die Pipeline überein. Vergleichsdateien jeweils
+pauschal identische Java-Serialisierung, der unabhängige Vergleich
+erfolgt zusätzlich auf Record- und Metadatenebene.
+
+`./gradlew --offline clean check installDist` für die finale Variante
+Exit 0 in 1.01 s. `LasIoTest` 14 erfolgreich (0.078 s),
+`PipelineTest` 7 (0.053 s), `MainTest` 2 (0.001 s).
+23 ausgeführt und erfolgreich, 0 fehlgeschlagen, 0 Fehler, 0 übersprungen.
+JUnit-Berichte unter `build/test-results/test/` und `build/reports/tests/test/`.
+`python3 tools/check-real-data.py "$PDAL"` bestätigte danach in 23.01 s
+mit Exit 0 alle 353'342 Records, Header, CRS, Zähler und Statistikgrenzen
+aus P5. Die Zwischenvariante mit nur Record-Wiederverwendung bestand
+dieselbe Vergleichssequenz (24.19 s, Exit 0).
+
+Einfachheitsprüfung: kurzer, lokaler Speicherlebenszyklus im Decoder
+an Stelle immer neuer Record-Instanzen. Das Experimentprojekt wird
+explizit aktiviert und verwendet Standard-JMH und Gradle-Distribution.
+Der Standardbuild bleibt frei von Experimentabhängigkeiten. P6 abgenommen.

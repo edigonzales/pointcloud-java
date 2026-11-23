@@ -1,3 +1,7 @@
 rootProject.name = 'pointcloud'
 
 include 'codec'
+
+if (providers.gradleProperty('experiments').isPresent()) {
+    include 'experiments'
+}

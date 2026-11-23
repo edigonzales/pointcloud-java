@@ -8,7 +8,7 @@
  * This software is distributed WITHOUT ANY WARRANTY and without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
-// PointCloud Java: use the default non-layered chunk implementation.
+// PointCloud Java: reuse a decoder-local time record.
 package com.github.mreutegg.laszip4j.laszip;
 
 public class LASreadItemCompressed_GPSTIME11_v2 extends LASreadItemCompressed {
@@ -71,8 +71,6 @@ public class LASreadItemCompressed_GPSTIME11_v2 extends LASreadItemCompressed {
     @Override
     public PointDataRecord read(MutableInteger notUsed)
     {
-        PointDataRecordGpsTime result = new PointDataRecordGpsTime();
-
         int multi;
         if (last_gpstime_diff[last] == 0) // if the last integer difference was zero
         {
@@ -96,7 +94,7 @@ public class LASreadItemCompressed_GPSTIME11_v2 extends LASreadItemCompressed {
             else if (multi > 2) // we switch to another sequence
             {
                 last = (last+multi-2)&3;
-                result = (PointDataRecordGpsTime)read(notUsed);
+                return read(notUsed);
             }
         }
         else
@@ -170,13 +168,11 @@ public class LASreadItemCompressed_GPSTIME11_v2 extends LASreadItemCompressed {
             else if (multi >=  LASZIP_GPSTIME_MULTI_CODE_FULL)
             {
                 last = (last+multi-LASZIP_GPSTIME_MULTI_CODE_FULL)&3;
-                result = (PointDataRecordGpsTime)read(notUsed);
+                return read(notUsed);
             }
         }
 
-        result.GPSTime = last_item[last].GPSTime;
-
-        return result;
+        return last_item[last];
     }
 
 }

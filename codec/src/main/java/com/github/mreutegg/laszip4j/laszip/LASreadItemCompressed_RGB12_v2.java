@@ -8,7 +8,7 @@
  * This software is distributed WITHOUT ANY WARRANTY and without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
-// PointCloud Java: use the default non-layered chunk implementation.
+// PointCloud Java: reuse a decoder-local color record.
 package com.github.mreutegg.laszip4j.laszip;
 
 import static com.github.mreutegg.laszip4j.laszip.MyDefs.U8_CLAMP;
@@ -18,6 +18,7 @@ public class LASreadItemCompressed_RGB12_v2 extends LASreadItemCompressed {
 
     private ArithmeticDecoder dec;
     private PointDataRecordRGB last_item = null;
+    private final PointDataRecordRGB result = new PointDataRecordRGB();
 
     private ArithmeticModel m_byte_used;
     private ArithmeticModel m_rgb_diff_0;
@@ -66,8 +67,6 @@ public class LASreadItemCompressed_RGB12_v2 extends LASreadItemCompressed {
         int corr;
         int diff = 0;
         int sym = dec.decodeSymbol(m_byte_used);
-
-        PointDataRecordRGB result = new PointDataRecordRGB();
 
         if ((sym & (1 << 0)) != 0)
         {

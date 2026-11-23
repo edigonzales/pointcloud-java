@@ -28,6 +28,7 @@ public class LASreadPoint {
     private LASreadItem[] readers_raw;
     private LASreadItem[] readers_compressed;
     private ArithmeticDecoder dec;
+    private final MutableInteger context = new MutableInteger(0);
     private boolean layered_las14_compression;
     // used for chunking
     private int chunk_size; // unsigned
@@ -360,10 +361,11 @@ public class LASreadPoint {
         return TRUE;
     }
 
+    /** The records are decoder scratch state and remain valid until the next read. */
     public boolean read(PointDataRecord[] pointRecords)
     {
         int i; // unsigned
-        MutableInteger context = new MutableInteger(0);
+        context.set(0);
 
         try
         {

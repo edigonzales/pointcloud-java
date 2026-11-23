@@ -8,7 +8,7 @@
  * This software is distributed WITHOUT ANY WARRANTY and without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
-// PointCloud Java: use the default non-layered chunk implementation.
+// PointCloud Java: reuse a decoder-local point record.
 package com.github.mreutegg.laszip4j.laszip;
 
 import static com.github.mreutegg.laszip4j.laszip.Common_v2.number_return_level;
@@ -200,9 +200,7 @@ public class LASreadItemCompressed_POINT10_v2 extends LASreadItemCompressed {
         last_item.Z = ic_z.decompress((int)last_height[l], (n==1 ? 1 : 0) + (k_bits < 18 ? U32_ZERO_BIT_0(k_bits) : 18));
         last_height[l] = last_item.Z;
 
-        PointDataRecordPoint10 result = new PointDataRecordPoint10(last_item);
-
-        return result;
+        return last_item;
     }
 
 }
