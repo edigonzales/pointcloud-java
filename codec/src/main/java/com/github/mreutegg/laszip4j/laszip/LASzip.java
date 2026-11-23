@@ -8,6 +8,7 @@
  * This software is distributed WITHOUT ANY WARRANTY and without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
+// PointCloud Java: validate and initialise LASzip VLR items when unpacking.
 package com.github.mreutegg.laszip4j.laszip;
 
 import java.io.PrintStream;
@@ -147,11 +148,14 @@ public class LASzip {
         b += 8;
         offset_to_special_evlrs = buffer.getLong(b);
         b += 8;
-        num_items = buffer.getChar(b);
+        if (buffer.getChar(b) != num_items) return return_error("item count does not match VLR length");
         b += 2;
         for (i = 0; i < num_items; i++)
         {
-            items[i].type = LASitem.Type.fromOrdinal(buffer.getChar(b));
+            int type = buffer.getChar(b);
+            if (type > LASitem.Type.BYTE14.ordinal()) return return_error("invalid item type " + type);
+            items[i] = new LASitem();
+            items[i].type = LASitem.Type.fromOrdinal(type);
             b += 2;
             items[i].size = buffer.getChar(b);
             b += 2;

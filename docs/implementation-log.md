@@ -160,3 +160,45 @@ Download-Task wurde mit Download und Cacheverwendung direkt geprüft.
 Einfachheitsprüfung: eine temporäre Probe mit zwei direkten Aufrufen zum
 Upstream, Standardprogramme für Vergleich und Profiling, keine neue
 Produktabstraktion. P1 abgenommen.
+
+## P2 · Codecquellen übernehmen
+
+23. November 2026, Apple M5/macOS und Temurin 25.0.5+8-LTS aarch64 wie P1.
+In `4434396` die 53 für den direkten Punktdecoder nötigen Java-Dateien
+per `cmp` gegen den unveränderten Checkout geprüft und mit Lizenztexten
+importiert. Der anschliessende Adapter setzt am Punktdatenoffset an und
+schreibt Decoder-Records vollständig in Little Endian. Der Originalport
+erhält zwei kleine Korrekturen für das Entpacken des LASzip-VLR und die
+Fehlerweitergabe. Herkunft, Umfang und Lizenztexte stehen im
+[Herkunftsnachweis](provenance.md).
+
+Der Encoder und die LAStools-Anwendung sind ausserhalb des Imports. Ein
+separates, ersetzbares `codec.jar` entsteht aus dem lokalen Gradle-Projekt.
+`./gradlew --offline dependencies --configuration runtimeClasspath`
+zeigte nur `project :codec` (Exit 0, Gradle 468 ms). Die Dateianbindung
+verwendet den Java-Dateistream des Ports ohne JNI und ohne Prozessaufruf.
+`jar tf codec/build/libs/codec.jar` zeigte alle vier Lizenztexte und
+keine `lastools`- oder `laslib`-Pakete.
+
+```sh
+./gradlew --offline clean check installDist --info
+"$JAVA_HOME/bin/javac" -cp codec/build/libs/codec.jar -d .cache/p2/probe tools/DecodeTile.java
+/usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m -cp codec/build/libs/codec.jar:.cache/p2/probe \
+  DecodeTile .cache/test-data/so-2019.laz .cache/p1/sample.las
+```
+
+| Prüfung | Ergebnis |
+| --- | --- |
+| Standardbuild aus lokalen Quellen | Exit 0, 1.56 s. `MainTest` 2 ausgeführt und erfolgreich, 0 fehlgeschlagen, 0 Fehler, 0 übersprungen. JUnit-Suite 0.020 s, Report `build/test-results/test/TEST-pointcloud.MainTest.xml`, HTML unter `build/reports/tests/test/`. |
+| Importregression gegen P1 | Exit 0, 4.78 s, 3.05 Mio. Punkte/s, max. RSS 372'129'792 B. Gesamte 83'247'722-B-Eingabe in 14'566'627 Records dekodiert. Rohe XYZ-Summen exakt wie P1. Alle 1'024 P1-Ausschnittrecords mit sämtlichen 34 B pro Record und in gleicher Reihenfolge verglichen, 0 Abweichungen. Keine zusätzliche Punktdatei erzeugt. |
+| Trunkierung | Derselbe Befehl mit `.cache/p1/truncated.laz` meldete `corrupt chunk table` als IOException, Exit 1 in 0.07 s. Die Quelle wurde als fehlerhaft erkannt, bevor ein Record an den Aufrufer gelangte. |
+
+Der erste Build zeigte beim Quellvergleich, dass die neue Prüfung des
+Rückgabewerts von `init_dec` in einem Seek-Zweig statt im Lesepfad stand.
+Prüfung an den benötigten Aufrufer verschoben und den Standardbuild sowie
+beide Dekodierversuche mit der korrigierten Basis ausgeführt. Der
+Unverändert-Versuch ist über `git show ba10229:tools/CodecProbe.java`
+reproduzierbar. Er ist aus dem aktuellen Arbeitsbaum entfernt.
+Einfachheitsprüfung: der Adapter nutzt den bestehenden Itemdecoder direkt.
+Ordentliche Dateihülle, Batchverarbeitung und Ressourcenlebensdauer gehören
+zur nächsten Etappe. Keine Pflichtprüfung aus P2 offen. P2 abgenommen.

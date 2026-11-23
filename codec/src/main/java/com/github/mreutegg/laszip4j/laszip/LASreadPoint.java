@@ -8,6 +8,7 @@
  * This software is distributed WITHOUT ANY WARRANTY and without even the
  * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  */
+// PointCloud Java: propagate decoder failures to the caller.
 package com.github.mreutegg.laszip4j.laszip;
 
 import java.io.EOFException;
@@ -385,7 +386,10 @@ public class LASreadPoint {
                             }
                         }
                     }
-                    init_dec();
+                    if (!init_dec()) {
+                        last_error = "cannot initialise LAZ chunk";
+                        return FALSE;
+                    }
                     if (current_chunk == tabled_chunks) // no or incomplete chunk table?
                     {
                         if (current_chunk >= number_chunks)
@@ -470,7 +474,6 @@ public class LASreadPoint {
             }
             else
             {
-                exception.printStackTrace(System.err);
                 // decompression error
                 last_error = String.format("chunk with index %d of %d is corrupt", current_chunk, tabled_chunks);
                 // if we know where the next chunk starts ...

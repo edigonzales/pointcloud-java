@@ -1,0 +1,15 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+tasks.named('jar') {
+    from('licenses') {
+        into 'META-INF/licenses/laszip4j'
+    }
+}

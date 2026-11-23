@@ -28,6 +28,13 @@ Die Original-Root-Lizenz liegt in `codec/licenses/UPSTREAM-LGPL-2.1.txt`.
 Daneben liegen die Texte für LGPL 3.0, das von ihr referenzierte GPL 3.0
 und Apache 2.0. Die Zuordnung ergibt sich aus den jeweiligen Headern.
 
+Lokale Änderungen an `LASzip.java` validieren den LASzip-VLR beim
+Entpacken und initialisieren seine Items. `LASreadPoint.java` reicht Fehler
+beim Chunkstart über seinen Rückgabewert und Diagnose weiter. `LazDecoder`
+ist neu und übergibt vollständige Records als Bytes. Der Standardbuild
+verpackt den Codec separat in `codec.jar` mit Lizenztexten unter
+`META-INF/licenses/laszip4j/`.
+
 ## Realdaten
 
 Quelle ist das Amt für Geoinformation, Kanton Solothurn. Die Kacheln werden
