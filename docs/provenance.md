@@ -37,7 +37,9 @@ verpackt den Codec separat in `codec.jar` mit Lizenztexten unter
 
 Der Dateistream wurde auf `MemorySegment` mit schliessbarer Arena
 umgestellt. Die lokale Chunkprüfung lehnt ungültige Tabellen und
-überlange Layer vor der Allokation ab. Die jeweiligen geänderten
+überlange Layer vor der Allokation ab. Beim LASzip-Abwesenheitsmarker
+prüft sie beim letzten Punkt die exakte Position am Ende des
+Punktdatenbereichs. Die jeweiligen geänderten
 Codecquellen tragen einen Änderungshinweis.
 
 In `POINT10_v2`, `RGB12_v2`, `GPSTIME11_v2` und `LASreadPoint`

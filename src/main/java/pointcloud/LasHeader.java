@@ -51,7 +51,7 @@ public final class LasHeader {
                 throw new IOException("Invalid LAS coordinate scale or offset");
             }
         }
-        if (minor == 4 && (bytes.getLong(227) != 0 || (bytes.getChar(6) & 6) != 0)) {
+        if (minor == 4 && (bytes.getLong(227) != 0 || (globalEncoding() & 6) != 0)) {
             throw new IOException("Waveform data references are unsupported");
         }
         pointCount = minor == 4 ? bytes.getLong(247) : uint(bytes, 107);
@@ -115,6 +115,10 @@ public final class LasHeader {
 
     public int recordLength() {
         return bytes.getChar(105);
+    }
+
+    public int globalEncoding() {
+        return bytes.getChar(6);
     }
 
     public boolean compressed() {

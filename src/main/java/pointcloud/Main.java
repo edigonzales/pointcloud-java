@@ -3,6 +3,7 @@ package pointcloud;
 import java.io.PrintStream;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -100,6 +101,7 @@ public final class Main {
                     header.compressed() ? "LAZ compressed" : "uncompressed");
             out.printf("Header point count: %d%nRecord length: %d%nPoint data offset: %d%n",
                     header.pointCount(), header.recordLength(), header.pointOffset());
+            out.printf("Global encoding: 0x%04x%n", header.globalEncoding());
             for (int axis = 0; axis < 3; axis++) {
                 out.printf("%c scale=%s offset=%s header bounds=[%s,%s]%n", "XYZ".charAt(axis),
                         header.scale(axis), header.offset(axis), header.minimum(axis), header.maximum(axis));
@@ -117,10 +119,58 @@ public final class Main {
             }
             out.println("Standard dimensions: " + String.join(",", names));
             out.println("Extra bytes per record: " + (header.recordLength() - LasHeader.standardLength(header.pointFormat())));
-            LasHeader.RecordVisitor print = record -> out.printf("%s %s/%d (%d bytes)%n",
-                    record.extended() ? "EVLR" : "VLR", record.userId(), record.recordId(), record.length());
+            LasHeader.RecordVisitor print = record -> {
+                out.printf("%s %s/%d (%d bytes)%n", record.extended() ? "EVLR" : "VLR",
+                        record.userId(), record.recordId(), record.length());
+                if (record.userId().equals("LASF_Projection")) {
+                    printProjection(source, record, out);
+                }
+            };
             header.visitMetadata(source, false, print);
             header.visitMetadata(source, true, print);
+        }
+    }
+
+    private static void printProjection(FileChannel source, LasHeader.VariableRecord record, PrintStream out)
+            throws IOException {
+        int size = (int) Math.min(record.length(), 65_535);
+        switch (record.recordId()) {
+            case 2111, 2112, 34737 -> {
+                byte[] bytes = LasHeader.read(source, record.payload(), size).array();
+                int end = 0;
+                while (end < size && bytes[end] != 0) {
+                    end++;
+                }
+                String label = switch (record.recordId()) {
+                    case 2111 -> "Math transform WKT";
+                    case 2112 -> "Coordinate system WKT";
+                    default -> "GeoTIFF citation";
+                };
+                String value = Pipeline.JSON.toJson(new String(bytes, 0, end, StandardCharsets.UTF_8));
+                out.printf("  %s: %s%s%n", label, value, end == size && size < record.length() ? " (truncated)" : "");
+            }
+            case 34735 -> {
+                var keys = LasHeader.read(source, record.payload(), size);
+                if (size < 8 || keys.getChar(0) != 1 || keys.getChar(6) > (size - 8) / 8) {
+                    out.println("  GeoTIFF key directory is invalid or exceeds the display limit");
+                    return;
+                }
+                for (int i = 0; i < keys.getChar(6); i++) {
+                    int offset = 8 + i * 8;
+                    String label = switch (keys.getChar(offset)) {
+                        case 2048 -> "Geodetic CRS";
+                        case 3072 -> "Projected CRS";
+                        case 4096 -> "Vertical CRS";
+                        default -> null;
+                    };
+                    if (label != null && keys.getChar(offset + 2) == 0 && keys.getChar(offset + 4) == 1) {
+                        int value = keys.getChar(offset + 6);
+                        out.printf("  %s: %s%n", label, value >= 1024 && value < 32767
+                                ? "EPSG:" + value : "GeoTIFF code " + value);
+                    }
+                }
+            }
+            default -> { }
         }
     }
 
@@ -152,6 +202,10 @@ public final class Main {
             }
         }
         var pipeline = Pipeline.read(config);
+        Path target = pipeline.output();
+        if (target != null && Files.exists(target) && Files.isSameFile(target, config)) {
+            throw new IOException("LAS output aliases the pipeline configuration: " + target);
+        }
         if (metadata == null) {
             out.println(Pipeline.JSON.toJson(pipeline.run(batchSize, overwrite, inputs, Pipeline::publishLas)));
         } else {

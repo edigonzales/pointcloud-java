@@ -27,8 +27,9 @@ Chunkgrenzen, Tabellenzählung und Gesamtlänge der Layer werden überprüft.
 Die Tabelle ist auf 1'000'000 Chunks begrenzt. Adaptive Tabellen werden mit
 32-Bit-Punktsummen interpretiert, während der Produktpfad Punktanzahlen und
 Offsets als `long` führt. Ein Layer-Chunk darf bis zu 64 MiB komprimierte
-Layerdaten vorhalten. Eine ausdrücklich fehlende Tabelle für feste Chunks
-ist sequenziell lesbar, wenn die Recordanzahl vollständig erreicht wird.
+Layerdaten vorhalten. Der LASzip-Abwesenheitsmarker für feste Chunks ist
+sequenziell lesbar, wenn die deklarierte Recordanzahl genau am Ende des
+Punktdatenbereichs erreicht wird.
 Beliebige formal dekodierbare Bitfehler sind mit diesem Format strukturell
 oft nicht erkennbar.
 
@@ -57,8 +58,11 @@ der Auswahl berechnet. In Format 6–8 sind die Legacy-Zähler null. Für eine
 leere Ausgabe werden Null-Bounds geschrieben. `finish()` benötigt den
 verifizierten Endzustand des Readers. Die vollständige Datei wird im
 Zielverzeichnis temporär geschrieben und nach dem Headerabschluss
-veröffentlicht. Bestehende Ziele erfordern explizites Überschreiben,
-Aliase der Eingabe werden abgelehnt.
+veröffentlicht. Ohne `--overwrite` veröffentlicht der Writer die LAS-Datei
+per Hardlink im Zielverzeichnis. Das Dateisystem muss dafür Hardlinks
+unterstützen. Mit `--overwrite` erfolgt ein atomarer Rename. Der Writer
+lehnt Aliase der Eingabe ab. Die CLI schützt auch die Pipeline-Konfiguration
+vor Überschreiben durch die LAS-Ausgabe.
 
 Die CLI unterbricht einen aktiven Pipelinelauf bei regulärer JVM-
 Beendigung. Der Shutdown-Hook wartet auf dessen Ressourcenschluss
@@ -76,6 +80,13 @@ Vorhandene externe Sidecar-Indizes werden weder gelesen noch erzeugt.
 Bei EVLRs bleiben Rahmen und Nutzdaten erhalten und der Anfangsoffset
 wird angepasst. Der Writer lädt grosse Nutzdaten nicht in den Heap und
 interpretiert die Inhalte unbekannter Metadaten nicht.
+
+`pointcloud info` zeigt die globale Headerkodierung, die Liste der VLRs und
+EVLRs sowie direkt lesbare CRS-Angaben. Es liest EPSG-Codes aus den passenden
+GeoTIFF-Schlüsseln und zeigt GeoTIFF-Zitate sowie vorhandenen WKT-Text. Die
+Anzeige liest höchstens 65'535 Byte pro Projektionsrecord und kennzeichnet
+gekürzten Text. [ASPRS LAS 1.4 R16](https://github.com/ASPRSorg/LAS/releases/tag/1.4.R16) ·
+[OGC GeoTIFF 1.1](https://docs.ogc.org/is/19-008r4/19-008r4.html)
 
 ## Pipelines
 

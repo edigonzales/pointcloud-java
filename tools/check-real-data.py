@@ -125,8 +125,10 @@ def check_cancel(cli, work):
     pipeline["pipeline"][-1]["filename"] = str(target)
     config = work / "interrupted.json"
     config.write_text(json.dumps(pipeline))
+    metadata = work / "interrupted-metadata.json"
     started = time.perf_counter()
-    with subprocess.Popen([cli, "pipeline", config], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    with subprocess.Popen([cli, "pipeline", config, "--metadata", metadata],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           env=dict(os.environ, JAVA_OPTS="-Xmx512m")) as process:
         try:
             deadline = time.monotonic() + 8
@@ -136,7 +138,8 @@ def check_cancel(cli, work):
             process.terminate()
             process.communicate(timeout=8)
             require(process.returncode != 0, "Interrupted CLI reported success")
-            require(not target.exists() and not any(work.glob("*.las.part")), "Cancelled CLI left output files")
+            require(not target.exists() and not metadata.exists() and not any(work.glob("*.part")),
+                    "Cancelled CLI left output files")
             print(f"SIGTERM, CLI exit {process.returncode}, no target or temporary output, "
                   f"{time.perf_counter() - started:.2f} s")
         finally:

@@ -1,4 +1,4 @@
-"""Measure the short pipeline and whole tile on the four verified run paths."""
+"""Measure fresh CLI processes and repeated whole-tile scans in one JVM."""
 
 import csv
 import json
@@ -14,9 +14,10 @@ def main():
     work = Path(".cache/experiments/p9")
     work.mkdir(parents=True, exist_ok=True)
     product_cp = os.pathsep.join(str(p) for p in sorted(Path("build/install/pointcloud/lib").glob("*.jar")))
+    classpath = os.pathsep.join((product_cp, str(work / "warmup.jar")))
     java25 = str(Path(os.environ["JAVA_HOME"], "bin", "java"))
     java27 = sys.argv[1]
-    entry = ["-cp", product_cp, "pointcloud.Main"]
+    entry = ["-cp", classpath, "pointcloud.Main"]
     runtimes = {
         "temurin25": [java25, "-Xmx512m", *entry],
         "temurin27": [java27, "-Xmx512m", *entry],
@@ -36,22 +37,28 @@ def main():
         writer.writerow(["runtime", "job", "run", "points", "seconds", "max_rss_bytes"])
         commands = list(runtimes.items())
         for job, path, points, repeats in [
+            ("startup", None, 0, 7),
             ("mini", short, 5, 7),
             ("ground", Path("examples/ground-crop.json"), 14_566_627, 3),
         ]:
             for iteration in range(1, repeats + 1):
                 first = (iteration - 1) % len(commands)
                 for mode, command in commands[first:] + commands[:first]:
+                    arguments = ["pipeline", str(path)] if path else ["--version"]
                     started = time.perf_counter()
-                    run = subprocess.run(["/usr/bin/time", "-lp", *command, "pipeline", str(path)],
+                    run = subprocess.run(["/usr/bin/time", "-lp", *command, *arguments],
                                          capture_output=True, text=True)
                     elapsed = time.perf_counter() - started
                     if run.returncode:
                         raise RuntimeError(run.stderr)
-                    actual = json.loads(run.stdout)
-                    expected = reference.setdefault(job, actual)
-                    if actual != expected or actual["pointsRead"] != points:
-                        raise RuntimeError(f"Metadata differs for {mode} {job}")
+                    if job == "startup":
+                        if run.stdout.strip() != "pointcloud 0.1.0":
+                            raise RuntimeError(f"Wrong version output for {mode}")
+                    else:
+                        actual = json.loads(run.stdout)
+                        expected = reference.setdefault(job, actual)
+                        if actual != expected or actual["pointsRead"] != points:
+                            raise RuntimeError(f"Metadata differs for {mode} {job}")
                     if job == "ground":
                         subprocess.run(["cmp", str(ground), ".cache/experiments/e1-baseline.las"], check=True)
                         ground.unlink()
@@ -59,6 +66,26 @@ def main():
                     writer.writerow([mode, job, iteration, points, f"{elapsed:.6f}", rss[1]])
                     output.flush()
                     print(mode, job, iteration, f"{elapsed:.6f}", rss[1], flush=True)
+
+    commands = [(mode, command[:-1]) for mode, command in runtimes.items() if mode != "native"]
+    with (work / "warmup.csv").open("w", newline="") as output:
+        writer = csv.writer(output)
+        writer.writerow(["runtime", "process", "scan", "points", "seconds", "process_max_rss_bytes"])
+        for iteration in range(1, 4):
+            first = iteration - 1
+            for mode, command in commands[first:] + commands[:first]:
+                run = subprocess.run(["/usr/bin/time", "-lp", *command, "pointcloud.RuntimeWarmup"],
+                                     capture_output=True, text=True)
+                if run.returncode:
+                    raise RuntimeError(run.stderr)
+                rss = re.search(r"^\s*(\d+)\s+maximum resident set size", run.stderr, re.MULTILINE)
+                scans = list(csv.reader(run.stdout.splitlines()))
+                if len(scans) != 4:
+                    raise RuntimeError(f"Expected four scans for {mode} process {iteration}")
+                for scan, seconds in scans:
+                    writer.writerow([mode, iteration, scan, 14_566_627, seconds, rss[1]])
+                output.flush()
+                print(mode, "in-process", iteration, scans, rss[1], flush=True)
 
 
 if __name__ == "__main__":

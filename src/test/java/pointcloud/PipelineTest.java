@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -183,6 +184,27 @@ class PipelineTest {
         assertEquals(0, run.statistics().getFirst().dimensions().getFirst().average());
         var written = LasIoTest.bytes(output);
         assertEquals(classification, written.get(written.getInt(96) + 15));
+    }
+
+    @Test
+    void selectsModernLasDimensionsWithoutChangingTheRecord() throws IOException {
+        Path output = temp.resolve("modern.las");
+        var run = pipeline(LasIoTest.fixture(8, "laz"), """
+                {"type":"filters.expression","expression":"!(Red < 65004) && Green == 1196 && Blue == 40008 && Infrared == 62004 && GpsTime == 1000.5 && ReturnNumber == 5 && NumberOfReturns == 9"},
+                {"type":"filters.stats","dimensions":"Infrared,GpsTime"},
+                {"type":"writers.las","filename":"%s","forward":"all","extra_dims":"all"}
+                """.formatted(output)).run(2, false);
+        assertEquals(1, run.pointsWritten());
+        var stats = run.statistics().getFirst().dimensions();
+        assertEquals(62_004, stats.getFirst().average());
+        assertEquals(1000.5, stats.getLast().average());
+        var source = LasIoTest.bytes(LasIoTest.fixture(8, "las"));
+        var selected = LasIoTest.bytes(output);
+        int length = source.getChar(105);
+        int start = source.getInt(96) + 4 * length;
+        int selectedStart = selected.getInt(96);
+        assertArrayEquals(Arrays.copyOfRange(source.array(), start, start + length),
+                Arrays.copyOfRange(selected.array(), selectedStart, selectedStart + length));
     }
 
     private static Pipeline pipeline(Path input, String remaining) {

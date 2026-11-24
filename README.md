@@ -45,6 +45,8 @@ Die Realdatenbeispiele laufen ab Repositorywurzel.
 
 Ground-Crop verarbeitet die 14'566'627 Punkte der Pflichtkachel und
 schreibt 195'738 Bodenpunkte im gewählten Ausschnitt.
+`"$cli" info .cache/test-data/so-2019.laz` zeigt unter anderem
+`Projected CRS: EPSG:2056` und den GeoTIFF-Text für CH1903+ / LV95.
 
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.

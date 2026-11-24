@@ -106,11 +106,12 @@ blieben unter beiden Datenlimits.
 ```sh
 ./gradlew downloadTestData
 mkdir -p .cache/laszip4j .cache/p1/classes build/reports/p1
+git show ba10229:tools/CodecProbe.java > .cache/p1/CodecProbe.java
 curl -fLsS https://codeload.github.com/mreutegg/laszip4j/tar.gz/29a01a31607f1029f1330d1a09f19b17ea587005 |
   tar -xz --strip-components=1 -C .cache/laszip4j
 find .cache/laszip4j/src/main/java -name '*.java' > .cache/p1/upstream-sources
 "$JAVA_HOME/bin/javac" -d .cache/p1/classes @.cache/p1/upstream-sources
-"$JAVA_HOME/bin/javac" -cp .cache/p1/classes -d .cache/p1/classes tools/CodecProbe.java
+"$JAVA_HOME/bin/javac" -cp .cache/p1/classes -d .cache/p1/classes .cache/p1/CodecProbe.java
 probe=com.github.mreutegg.laszip4j.laslib.CodecProbe
 /usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m -cp .cache/p1/classes "$probe" \
   low .cache/test-data/so-2019.laz .cache/p1/sample.las
@@ -806,3 +807,64 @@ enthält 287 feste Chunks mit bis zu 50'000 Punkten in Format 1.
   Punktrecords waren bytegleich. CRS, Quell-VLRs und Statistiken bestanden
   die Vergleiche. SIGTERM ergab in 0.18 s Exit 143 ohne Teilausgabe.
   Protokoll unter `build/reports/pdal-standard-2.10.2.log`.
+
+### P11-Nachtrag · Lokale Korrekturen auf Origin übernehmen
+
+24. November 2026, Apple M5, macOS 27.0.1 arm64, 24 GiB RAM,
+Gradle 9.9.1 und Temurin 25.0.5+8-LTS. Die Übernahme von `0a17961`
+setzt auf `1c3a069` auf. Sie ergänzt die CRS-Anzeige, die Endprüfung
+für LAZ ohne Chunktabelle, den Hardlink-Schutz für neue LAS-Ziele und
+den Schutz der Pipeline-Konfiguration. Die Prüfung im Decoder läuft
+beim Chunkabschluss und verändert die Punktschleife nicht. Die
+Origin-Reader, die geordnete Worker-Ausführung und die Veröffentlichung
+und Wiederherstellung der JSON-Metadaten bleiben bestehen.
+
+Die ergänzten Tests zur CRS-Anzeige, zum Dateiende ohne Chunktabelle
+und zur Pipeline-Konfiguration zeigten zunächst den jeweiligen Fehler
+auf `1c3a069`. Der neue Format-8-Test bestand bereits dort und bleibt
+als Nachweis für die vollständige Erhaltung des selektierten Records.
+Die Unterschiede bei PDAL-Literalen waren bereits in der
+Origin-Kompatibilitätsdokumentation enthalten.
+
+| Prüfung | Ergebnis |
+| --- | --- |
+| `./gradlew --offline clean check installDist distZip` | Origin Exit 0 in 6.32 s. Nach Übernahme Exit 0 in 2.06 s. 34 JUnit-Tests erfolgreich, 0 fehlgeschlagen, 0 Fehler, 0 übersprungen. `LasIoTest` 16 (0.107 s), `MainTest` 10 (0.074 s), `PipelineTest` 8 (0.030 s). |
+| `unzip -tq build/distributions/pointcloud.zip` und installierte CLI | ZIP intakt. Hilfe zeigt `--laz-workers`. `info` zeigt EPSG:2056 und das GeoTIFF-Zitat der 2019-Kachel. |
+| `python3 tools/check-real-data.py "$PDAL"` | Exit 0 in 23.37 s, PDAL 2.10.2/LazPerf. Beide Solothurner Kacheln vollständig mit `-Xmx512m`. 195'738, 128'909 und 28'695 Records vollständig verglichen, insgesamt 353'342 und 0 Abweichungen. Quell-VLRs, CRS, Bounds, Quantisierung und Return-Zähler stimmten. Statistikzählungen und Extrema exakt, grösste absolute Abweichungen 4.43e-4 beim Mittelwert, 3.29e-3 bei der Stichprobenvarianz und 2.25e-7 bei der Stichprobenstandardabweichung, innerhalb der P5-Toleranz. SIGTERM mit JSON in 0.11 s, Exit 143, alle Ausgaben und temporären Dateien bereinigt. |
+| `python3 experiments/check-e4-pipeline.py --product --pdal "$PDAL"` | Exit 0 in 2.41 s. Default und vier Worker liefern identische LAS- und JSON-Ausgaben. Geprüft wurden feste Chunks mit und ohne Tabelle (je 16'667 ausgewählte Records), Format 8 (je 5 LAS- und LAZ-Records), adaptive Chunks (200'003) und breite Records (11). Dekodierfehler und SIGTERM ohne veröffentlichte Ausgabe. |
+| `./gradlew --offline -Pexperiments :experiments:installDist` und `python3 experiments/check-e4-pipeline.py --pdal "$PDAL"` | Build Exit 0, Prüflauf Exit 0 in 2.24 s. Identische Ausgaben und bestandene Fehler- und Abbruchfälle auch im Experimentpfad. |
+
+Der erste E4-Prüflauf fand im Fixture ohne Chunktabelle noch 15 Bytes
+der ursprünglichen Tabelle hinter dem Punktdatenbereich. Die CLI
+meldete Exit 2. Die Fixture-Erzeugung entfernt jetzt die Tabelle und setzt
+den Abwesenheitsmarker. Die Produkt- und Experimentläufe bestanden
+anschliessend vollständig. Native JUnit-Berichte unter
+`build/test-results/test/` und `build/reports/tests/test/`. Prüfprotokolle
+unter `.cache/port-0a17961/`.
+
+Die getrennte JVM-Messreihe mit Rohdaten gehört zu `0a17961`. Ihr
+Messhelfer wurde neu kompiliert und gegen den überarbeiteten Stand mit
+`AOTMode=on` ausgeführt. Training und Erzeugung dauerten 3.83 s und
+0.19 s, der Cache belegt 16'515'072 B. Vier vollständige Ground-Crop-Scans
+in derselben JVM dauerten zusammen 14.29 s (Peak-RSS 158'646'272 B) und
+lieferten je bytegleiche LAS- und JSON-Ausgaben. Oracle GraalVM
+25.0.4.1.1 erzeugte in 36.17 s bei 1'583'071'232 B Peak-RSS ein
+arm64-Mach-O-Binary von 19'163'200 B. Der Native-Lauf mit vier Workern
+und `-Xmx512m` benötigte 1.67 s bei 119'767'040 B Peak-RSS und lieferte
+dieselben 195'738 Records und dasselbe JSON. Beide Artefakte wurden
+anschliessend entfernt.
+
+Der eigene [Laufzeitvergleich gegen Origin](experiments.md#laufzeitvergleich-nach-übernahme-von-0a17961)
+umfasst vier Vorläufe und je fünf gemessene Durchläufe pro Stand und
+Workerzahl. Alle LAS-Dateien und JSON-Ausgaben waren bytegleich. Die
+Gesamtzeit des Messskripts betrug 58.21 s. Die Medianzeiten lagen bei
+einem Worker bei 3.59 s (Origin) und 3.60 s (Übernahme), mit vier Workern
+bei 1.17 s und 1.20 s. Die Überlappung der Messbereiche und der Wechsel
+der paarweisen Differenzen zeigen keine konsistente Verlangsamung in
+diesem Versuch. Die beiden Eingabekacheln belegen zusammen 157'509'563 B.
+
+Die Einfachheitsprüfung behielt die Origin-Pipeline, den bestehenden
+Ausgabepfad und die vorhandenen Prüfprogramme. Der AOT-Messhelfer
+bleibt ausserhalb der Distribution. Die Origin-Abnahme des
+Parallelpfads auf der Solothurn-2014-Kachel und Autzen ist mit
+ihren M1-Messwerten beim Basisstand dokumentiert.

@@ -144,7 +144,9 @@ public final class LasWriter implements AutoCloseable {
         if (overwrite) {
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } else {
-            Files.move(temporary, target);
+            // Publish the completed file without replacing a concurrent target.
+            Files.createLink(target, temporary);
+            Files.delete(temporary);
         }
         closed = true;
     }

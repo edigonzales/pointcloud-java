@@ -3,6 +3,9 @@ package pointcloud;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -158,6 +161,65 @@ class MainTest {
         try (var entries = Files.list(temp)) {
             assertFalse(entries.anyMatch(path -> path.getFileName().toString().endsWith(".part")));
         }
+    }
+
+    @Test
+    void infoShowsGeoKeysAndExtendedWkt(@TempDir Path temp) throws IOException {
+        Path legacy = LasIoTest.fixture(3, "las");
+        var geoKeys = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+        for (int value : new int[]{1, 1, 0, 1, 3072, 0, 1, 2056}) {
+            geoKeys.putChar((char) value);
+        }
+        Path geotiff = addProjectionRecord(temp, legacy, 34735, geoKeys.array(), false);
+        var wkt = "GEOGCS[\"WGS 84\",AUTHORITY[\"EPSG\",\"4326\"]]\0".getBytes(StandardCharsets.UTF_8);
+        Path wktLas = addProjectionRecord(temp, LasIoTest.fixture(8, "las"), 2112, wkt, true);
+        var output = new ByteArrayOutputStream();
+        var errors = new ByteArrayOutputStream();
+        for (Path source : new Path[]{geotiff, wktLas}) {
+            assertEquals(0, Main.run(new String[]{"info", source.toString()},
+                    new PrintStream(output), new PrintStream(errors)));
+        }
+        assertTrue(output.toString().contains("Projected CRS: EPSG:2056"));
+        assertTrue(output.toString().contains("EVLR LASF_Projection/2112"));
+        assertTrue(output.toString().contains("GEOGCS["));
+        assertTrue(output.toString().contains("4326"));
+        assertFalse(output.toString().contains("\0"));
+        assertEquals("", errors.toString());
+    }
+
+    @Test
+    void refusesLasOutputThatAliasesPipelineConfiguration(@TempDir Path temp) throws IOException {
+        Path config = temp.resolve("pipeline.las");
+        writePipeline(config, LasIoTest.fixture(3, "laz"), config, "");
+        String before = Files.readString(config);
+        var output = new ByteArrayOutputStream();
+        var errors = new ByteArrayOutputStream();
+        assertEquals(2, Main.run(new String[]{"pipeline", config.toString(), "--overwrite"},
+                new PrintStream(output), new PrintStream(errors)));
+        assertTrue(errors.toString().contains("aliases the pipeline configuration"), errors::toString);
+        assertEquals(before, Files.readString(config));
+    }
+
+    private static Path addProjectionRecord(Path temp, Path path, int id, byte[] payload, boolean extended) throws IOException {
+        var source = LasIoTest.bytes(path);
+        int size = (extended ? 60 : 54) + payload.length;
+        var record = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
+        record.position(2).put("LASF_Projection".getBytes(StandardCharsets.US_ASCII));
+        record.putChar(18, (char) id);
+        int start;
+        if (extended) {
+            record.putLong(20, payload.length).position(60);
+            start = source.capacity();
+            source.putInt(243, source.getInt(243) + 1);
+        } else {
+            record.putChar(20, (char) payload.length).position(54);
+            start = source.getInt(96);
+            source.putInt(96, start + size).putInt(100, source.getInt(100) + 1);
+        }
+        record.put(payload);
+        return Files.write(temp.resolve(id + ".las"), ByteBuffer.allocate(source.capacity() + size)
+                .put(source.array(), 0, start).put(record.array())
+                .put(source.array(), start, source.capacity() - start).array());
     }
 
     private static Path writePipeline(Path directory, Path target) throws IOException {

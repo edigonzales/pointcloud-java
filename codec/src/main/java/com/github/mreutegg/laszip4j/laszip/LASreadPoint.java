@@ -396,6 +396,12 @@ public class LASreadPoint {
 
     public boolean check_end()
     {
+        if (chunk_starts == null && instream.tell() != pointEnd)
+        {
+            last_error = "unexpected end of LAZ point data at byte " + instream.tell()
+                    + "; expected byte " + pointEnd + " without a chunk table";
+            return FALSE;
+        }
         if (readers == readers_compressed)
         {
             if (dec != null)

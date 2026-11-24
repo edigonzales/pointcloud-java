@@ -276,9 +276,11 @@ der Ausgabe wurden mit `pdal info --stats` gelesen (0.14 s, Exit 0).
 Die Ausgabe (63'419 B) enthält das Projektions-VLR und keine
 übernommenen COPC-Indexdaten. Die Verarbeitung nutzt die LAZ-Tabelle.
 
-Am kleinen Fixchunk-Fixture wurde die Unterscheidung geprüft:
-Mit absolutem Tabellenzeiger gleich Punktdatenoffset greift der
-sequenzielle Pfad, 50'003 vollständige Records wurden verglichen.
+Am kleinen Fixchunk-Fixture wurde die Unterscheidung geprüft.
+Mit absolutem Tabellenzeiger gleich Punktdatenoffset und ohne
+Tabellenbytes greift der sequenzielle Pfad. Der Regressionstest
+`tablelessLazRequiresTheFullDeclaredStream` vergleicht alle 50'003
+rohen X-Werte und weist widersprüchliche Headerpunktzahlen zurück.
 Wird an der vorhandenen Tabellenposition die vier Byte lange
 Tabellenversion auf 1 gesetzt, meldet der Versuch einen Eingabefehler
 und erzeugt keine Ausgabedatei.
@@ -415,6 +417,50 @@ Autzen-Laufzeitbereiche überlappen. Der Spitzen-RSS des Java-Pfads war
 auf beiden Datensätzen höher. Die CLI bietet den Parallelpfad explizit
 über `--laz-workers` an und liest standardmässig seriell.
 
+### Laufzeitvergleich nach Übernahme von `0a17961`
+
+Verglichen wurden der Origin-Stand `1c3a069` und die CLI nach Übernahme
+der lokalen Änderungen. Beide liefen auf dem Apple M5 mit macOS 27.0.1,
+24 GiB RAM, Temurin 25.0.5+8 arm64 und `-Xmx512m`. Die Pipeline
+las jeweils 14'566'627 Punkte aus Solothurn 2019 und schrieb 195'738
+Punkte sowie das JSON mit der Statistik. Der serielle Batch hatte
+32'768 Punkte, die LAZ-Chunks im Parallelpfad bis zu 50'000 Punkte.
+
+Beide Stände wurden mit `./gradlew --offline clean check installDist distZip`
+gebaut. Die Origin-Installation wurde unter
+`.cache/port-0a17961/origin` gesichert. Die Messaufrufe starteten ab
+Repositorywurzel mit `cli` als `.cache/port-0a17961/origin/bin/pointcloud`
+oder `build/install/pointcloud/bin/pointcloud` und `workers` als 1 oder 4.
+
+```sh
+JAVA_OPTS=-Xmx512m LC_ALL=C /usr/bin/time -lp "$cli" \
+  pipeline examples/ground-crop.json --laz-workers "$workers" --metadata "$result"
+```
+
+Nach dem Vorwärmen des Dateisystemcaches lief jeder Pfad einmal zur
+Korrektheitsprüfung und danach fünfmal in einem jeweils frischen Prozess.
+Die Reihenfolge Origin/1, Port/1, Origin/4, Port/4 wechselte pro
+Runde mit der umgekehrten Reihenfolge. Vergleiche und Entfernen der
+Ausgaben liefen ausserhalb der Messung. Die LAS-Datei und das Statistik-JSON
+waren in allen Läufen bytegleich. Die Messung lief ohne konkurrierende Builds,
+Tests oder Benchmarks.
+
+| Stand | Worker | Wandzeit, Median (Min–Max) | Mio. Punkte/s | Max. RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Origin | 1 | 3.59 (3.54–3.63) s | 4.06 | 153.91 MiB |
+| Übernahme | 1 | 3.60 (3.58–4.10) s | 4.05 | 152.88 MiB |
+| Origin | 4 | 1.17 (1.10–1.23) s | 12.45 | 173.38 MiB |
+| Übernahme | 4 | 1.20 (1.13–1.22) s | 12.14 | 173.80 MiB |
+
+Die gemessenen Medianzeiten stiegen um 0.3 % und 2.6 %. Bei vier Workern
+war der Median der paarweisen Zeitdifferenzen pro Runde 0.00 s.
+Die Messbereiche überlappen. Die Serie zeigt für Ground-Crop
+keine konsistente Verlangsamung. CRS-Ausgabe, zusätzliche Pfadprüfung
+und Hardlink-Veröffentlichung liegen ausserhalb der Punktschleife.
+Beim Chunkabschluss prüft eine zusätzliche Bedingung das Dateiende
+für den seriellen Fall ohne Tabelle.
+[Einzelmessungen](measurements/port-0a17961-runtime.csv)
+
 ## E6 und E7 · JVM-Versionen, AOT-Cache und Native Image
 
 Basis ist der Standardbuild nach P8 (`978f38d`). Zweite VM ist Temurin
@@ -439,30 +485,45 @@ Vor Download und Build waren 414 GiB frei.
 [Adoptium-Release](https://github.com/adoptium/temurin27-binaries/releases/tag/jdk-27.0.1.1%2B4) ·
 [Java-25-AOT-Optionen](https://docs.oracle.com/en/java/javase/25/docs/specs/man/java.html)
 
-Die Befehle verwenden denselben Klassenpfad aus der installierten
-JVM-Distribution. Für das Vergleichsskript muss die Ground-Crop-Referenz
-aus E1 unter `.cache/experiments/e1-baseline.las` und `e1-baseline.json`
-liegen. Alternativ kann sie mit dem installierten Standardprodukt
-erzeugt und vor der Messung aus `build/results` verschoben werden.
+Die Befehle verwenden die JARs der installierten JVM-Distribution.
+Für die getrennte Warm-up-Messung kommt eine kleine Messklasse als
+separates JAR auf den Klassenpfad. Die Ground-Crop-Referenz aus E1
+liegt unter `.cache/experiments/e1-baseline.las` und `e1-baseline.json`.
+Fehlt sie, wird sie abseits der Messung mit dem installierten
+Standardprodukt erzeugt. `JAVA_HOME` zeigt auf Temurin 25,
+`graal` auf GraalVM und `java27` auf den Java-27-Launcher.
 
 ```sh
 ./gradlew --offline installDist
 work=.cache/experiments/p9
-mkdir -p "$work"
+graal=/pfad/zu/graalvm
+java27=.cache/jdks/temurin27/Contents/Home/bin/java
+mkdir -p "$work/classes"
 product_cp=$(printf '%s\n' build/install/pointcloud/lib/*.jar | paste -sd ':' -)
+measure_cp="$product_cp:$work/warmup.jar"
+"$JAVA_HOME/bin/javac" -cp "$product_cp" -d "$work/classes" experiments/RuntimeWarmup.java
+"$JAVA_HOME/bin/jar" --create --file "$work/warmup.jar" -C "$work/classes" .
+if [ ! -f .cache/experiments/e1-baseline.las ]; then
+  JAVA_OPTS=-Xmx512m build/install/pointcloud/bin/pointcloud pipeline examples/ground-crop.json \
+    > .cache/experiments/e1-baseline.json
+  mv build/results/ground-crop.las .cache/experiments/e1-baseline.las
+fi
 /usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m -XX:AOTMode=record \
-  -XX:AOTConfiguration="$work/ground.aotconfig" -cp "$product_cp" \
-  pointcloud.Main pipeline examples/ground-crop.json --metadata "$work/train.json"
+  -XX:AOTConfiguration="$work/ground.aotconfig" -cp "$measure_cp" \
+  pointcloud.Main pipeline examples/ground-crop.json --metadata "$work/warmup-train.json"
+cmp "$work/warmup-train.json" .cache/experiments/e1-baseline.json
 cmp build/results/ground-crop.las .cache/experiments/e1-baseline.las
-rm build/results/ground-crop.las
+rm -- build/results/ground-crop.las "$work/warmup-train.json"
 /usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m -XX:AOTMode=create \
-  -XX:AOTConfiguration="$work/ground.aotconfig" -XX:AOTCache="$work/ground.aot" -cp "$product_cp"
+  -XX:AOTConfiguration="$work/ground.aotconfig" -XX:AOTCache="$work/ground.aot" -cp "$measure_cp"
+"$JAVA_HOME/bin/java" -Xmx512m -XX:AOTMode=on -XX:AOTCache="$work/ground.aot" \
+  -Xlog:aot=info:stderr -cp "$measure_cp" pointcloud.Main --version
 JAVA_HOME="$graal" /usr/bin/time -lp "$graal/bin/native-image" -J-Xmx8g \
   -H:ConfigurationFileDirectories=experiments/native-image -cp "$product_cp" \
   -o "$work/pointcloud-native" pointcloud.Main
 file "$work/pointcloud-native"
 otool -L "$work/pointcloud-native"
-python3 experiments/p9-runtimes.py .cache/jdks/temurin27/Contents/Home/bin/java
+python3 experiments/p9-runtimes.py "$java27"
 ```
 
 Das Training lief 5.67 s, Peak-RSS 151'126'016 B, und erzeugte
@@ -521,6 +582,55 @@ verarbeitet die vollständige Kachel aber langsamer als der
 JVM-Standard. Der Cache bleibt an JVM, Architektur und
 identischen Produktklassenpfad gebunden.
 
+### Nachprüfung mit getrennter Start- und Warm-up-Messung
+
+Die Messung vom 24. November 2026 verwendet den Stand `0a17961`
+auf dem M5 vor der Übernahme auf `1c3a069`. Temurin 25.0.5+8,
+Temurin 27.0.1.1+4 und Oracle GraalVM 25.0.4.1.1 laufen als arm64
+mit `-Xmx512m`.
+Der Batch hat 32'768 Punkte, ein Thread verarbeitet die Daten. Alle
+Laufzeiten verwenden dieselbe Ground-Crop-Eingabe und schreiben je
+195'738 Punkte. Das Skript wechselt die Startreihenfolge. Die Eingabedatei
+war durch die Referenzläufe und das AOT-Training bereits im Betriebssystemcache.
+
+| Laufzeit | Start `--version`, Median (Min–Max) | Mini, Median (Min–Max) | Ground-Crop aus frischem Prozess, Median (Min–Max) | Max. Ground-Crop-RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Temurin 25 | 29.6 (28.4–33.4) ms | 78.2 (72.8–108.0) ms | 3.628 (3.612–3.688) s | 155.91 MiB |
+| Temurin 27 | 34.5 (32.6–167.2) ms | 87.7 (83.0–126.7) ms | 3.725 (3.643–3.746) s | 157.91 MiB |
+| Temurin 25 mit AOT | 28.8 (28.0–39.0) ms | 54.4 (45.3–65.7) ms | 3.726 (3.623–3.757) s | 152.67 MiB |
+| Native Image | 6.6 (6.4–277.3) ms | 9.1 (7.9–19.7) ms | 4.099 (4.017–4.346) s | 94.33 MiB |
+
+Sieben frische Prozesse pro kurzer Aufgabe und drei pro Ganzkachel.
+Die ersten `--version`-Aufrufe dauerten 33.4, 167.2, 39.0 und
+277.3 ms in der Tabellenreihenfolge. Damit sind die Ausreisser beim
+ersten Temurin-27- und Native-Start in der Streuung enthalten.
+Mit AOT sparte die Mini-Pipeline im Median rund 30 % gegenüber Java 25.
+Der frische Ganzkachellauf mit Native Image benötigte 13 % mehr Zeit
+bei deutlich geringerem Spitzen-RSS.
+[Einzelmessungen der frischen Prozesse](measurements/e6-e7-audit-runtime.csv)
+
+Für Warm-up und Dauerbetrieb lief Ground-Crop viermal in derselben JVM.
+Jede der drei JDK-Konfigurationen startete drei separate Prozesse.
+Die Messung des ersten Scans beginnt nach dem Prozessstart und umfasst
+die erstmalige Pipelineinitialisierung und das Anlaufen des JIT.
+Die Scans 2–4 benutzen dieselbe bereits aufgewärmte JVM. Jede
+Zeitmessung umfasst Konfiguration, Lesen, Auswahl, Statistik und
+Veröffentlichung der LAS-Datei. Prüfung gegen Referenz-JSON und
+Referenz-LAS sowie Löschen der Ausgabe erfolgen danach.
+
+| JVM | Erster Scan, Median (Min–Max) | Warme Scans, Median (Min–Max) | Warmer Durchsatz | Max. RSS pro Prozess |
+| --- | ---: | ---: | ---: | ---: |
+| Temurin 25 | 3.659 (3.602–3.809) s | 3.530 (3.465–4.235) s | 4.13 Mio. Punkte/s | 159.16 MiB |
+| Temurin 27 | 3.812 (3.708–3.828) s | 3.535 (3.458–3.852) s | 4.12 Mio. Punkte/s | 157.55 MiB |
+| Temurin 25 mit AOT | 3.632 (3.577–3.771) s | 3.565 (3.533–3.731) s | 4.09 Mio. Punkte/s | 161.67 MiB |
+
+Alle 68 frischen Aufrufe und 36 Scans in neun wiederverwendeten JVMs
+lieferten die geprüften Ergebnisse. Beim warmen Ganzkacheldurchsatz lagen
+die Unterschiede zwischen den drei JVM-Medianen innerhalb der Streuung.
+Die Messreihe bestätigt den Java-25-Standard und die Entscheidung,
+AOT und Native Image als Experimente zu behalten.
+[Einzelmessungen der JVM-Scans](measurements/e6-audit-warmup.csv)
+
 ## E8 · TornadoVM auf Apple M5
 
 Hypothese nach E2: Ein GPU-Kernel kann die Auswahlmaske schnell
@@ -551,9 +661,14 @@ mit `'double' is not supported in Metal` abgelehnt.
 
 ```sh
 swift experiments/probe-metal.swift
-./gradlew -Pexperiments -Ptornado :experiments:installDist
+./gradlew -Pexperiments -Ptornado installDist :experiments:installDist
 work=.cache/experiments/p10
 mkdir -p "$work"
+if [ ! -f .cache/experiments/kernel.las ]; then
+  JAVA_OPTS=-Xmx512m build/install/pointcloud/bin/pointcloud pipeline examples/decimate.json \
+    > "$work/sample.json"
+  mv build/results/decimate.las .cache/experiments/kernel.las
+fi
 for run in 1 2 3; do
   /usr/bin/time -lp "$JAVA_HOME/bin/java" -Xmx512m --enable-native-access=ALL-UNNAMED \
     -Dtornado.enabled.backends=metal -Dtornado.home="$work" \

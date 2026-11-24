@@ -165,10 +165,11 @@ def main():
 
         no_table = bytearray(fixed.read_bytes())
         start = struct.unpack_from("<I", no_table, 96)[0]
+        table = struct.unpack_from("<Q", no_table, start)[0]
         # A fixed-size chunk stream can explicitly point to the locator instead of a table.
         struct.pack_into("<Q", no_table, start, start)
         fallback = scratch / "fixed-no-table.laz"
-        fallback.write_bytes(no_table)
+        fallback.write_bytes(no_table[:table])
         require(check_modes(command, modes, scratch, fallback, filters, 50_003, len(expected), counts)
                 == output, "Sequential fallback with no chunk table changed the LAS output")
 

@@ -214,6 +214,27 @@ class LasIoTest {
     }
 
     @Test
+    void tablelessLazRequiresTheFullDeclaredStream() throws IOException {
+        var base = bytes(Path.of("src/test/resources/las/chunks.laz"));
+        int offset = base.getInt(96);
+        int table = Math.toIntExact(base.getLong(offset));
+        base.putLong(offset, offset);
+        Path input = Files.write(tempDir.resolve("tableless.laz"), Arrays.copyOf(base.array(), table));
+        int count = 0;
+        try (var reader = new LasReader(input, 4096)) {
+            for (var batch = reader.readBatch(); batch != null; batch = reader.readBatch()) {
+                for (int i = 0; i < batch.size(); i++) {
+                    assertEquals(count++, batch.rawX(i));
+                }
+            }
+        }
+        assertEquals(50_003, count);
+
+        Files.write(input, Arrays.copyOf(base.putInt(107, 0).array(), table));
+        assertBadInput(input, "end of LAZ point data");
+    }
+
+    @Test
     void rejectsAnOversizedLayerBeforeAllocationAndDiscardsTheOutput() throws IOException {
         Path input = tempDir.resolve("broken.laz");
         Path output = tempDir.resolve("broken.las");
