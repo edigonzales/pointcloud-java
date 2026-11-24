@@ -748,3 +748,61 @@ oder der Wiederverwendung von Tabelle, Mapping und Decoderzustand.
   Statistiken bestanden die Vergleiche. SIGTERM lieferte in 0.20 s Exit
   143 und hinterliess keine Ausgabe. Log unter
   `build/reports/pdal-2.10.2-e4.log`.
+
+### P11-Nachtrag · Parallele LAZ-Dekodierung als CLI-Option
+
+24. November 2026, Apple M1/macOS 15.8.1 arm64, Temurin 25.0.3+9,
+Gradle 9.9.1 und PDAL 2.10.2/LazPerf (`h151f718_4`). Ausgangspunkt
+`6dfcd0c`. Die CLI unterstützt `--laz-workers 1` bis `4` mit Standard 1.
+Der Produktpfad und die E4-Vergleiche verwenden denselben Scheduler.
+Die Worker teilen die validierte Chunktabelle und geben Batches in
+Dateireihenfolge an die bestehende Pipeline. Die [Speichergrenzen und
+seriellen Rückfälle](architecture.md#lesen-und-schreiben) gelten vor
+dem Start der Worker.
+
+Autzen wurde vollständig bezogen. Die drei gespeicherten Realdatendateien
+belegen 238'632'605 B. Autzen enthält 278 adaptive Chunks für 10'653'336
+Punkte in Format 7 mit 36 B pro Record. Der grösste dekodierte Chunk
+belegt 2'774'232 B, der grösste komprimierte 763'258 B. Solothurn 2014
+enthält 287 feste Chunks mit bis zu 50'000 Punkten in Format 1.
+[Dateiquellen](provenance.md#realdaten)
+
+- `./gradlew --offline -Pexperiments clean check installDist distZip`
+  bestand mit Exit 0 in 6.54 s. Alle 30 JUnit-Tests bestanden, 0 Fehler,
+  0 fehlgeschlagen, 0 übersprungen. `LasIoTest` 15 (0.340 s), `MainTest`
+  8 (0.364 s), `PipelineTest` 7 (0.137 s). XML unter
+  `build/test-results/test/`, HTML unter `build/reports/tests/test/`.
+  `unzip -tq` prüfte das 469'766 B grosse JVM-ZIP erfolgreich.
+- `python3 experiments/check-e4-pipeline.py --product --pdal "$PDAL"`
+  bestand mit Exit 0 in 4.95 s. Feste Chunks und gültig fehlende Tabellen
+  lieferten je 16'667 geordnete Records. Format 8 behielt NIR und Extra
+  Bytes bei, auch beim LAS-Rückfall. Bei fünf adaptiven Chunks stimmten
+  alle 200'003 Records. Ein Format-6-Chunktest mit 178 B pro Punkt und
+  8'900'000 B dekodiertem Chunk prüfte den seriellen Rückfall. Beschädigte
+  Daten und SIGTERM führten zu Exit 2 beziehungsweise 143 ohne Teilausgabe.
+  Der bisherige Experimentaufruf ohne `--product` bestand in 4.72 s.
+- Der Kurztest auf dem M1 verwendete die fünf Punkte der Format-8-Fixture
+  mit Statistik und `writers.null`. Je neun frische Prozesse lieferten
+  identische Metadaten. Median 135.93 ms (107.04–166.35) im Standard und
+  118.03 ms (110.07–163.87) mit `--laz-workers 4`. Die Datei hat nur einen
+  Chunk, beide Pfade lesen seriell und die Laufzeitbereiche überlappen.
+- `./gradlew --offline check installDist distZip downloadTestData -Ptile=autzen`
+  bestand mit Exit 0 in 0.72 s und verwendete den vollständigen Download.
+  Die Produkttests stammten aus dem frischen Build oben.
+- `python3 tools/check-parallel-data.py "$PDAL" .cache/experiments/parallel-real-data.csv`
+  bestand mit Exit 0. Alle 18 Messläufe verglichen pro Lauf 28'695
+  Solothurner oder 106'534 Autzen-Records vollständig. Gegen PDAL gab es
+  null Recordabweichungen. Java-LAS und -JSON stimmten seriell und
+  parallel bytegenau überein. PDAL las beide Java-LAS vollständig und
+  bestätigte die CRS. Java bewahrte Autzens WKT und entfernte dessen
+  COPC-Indexrecords bei LAS-Ausgabe. Die Statistiken lagen innerhalb
+  der P5-Toleranz. Die Headerprüfung dokumentierte die numerisch gleichen
+  Null-Offsets von Solothurn und den Unterschied von einem ULP in Autzens
+  minimaler Z-Grenze. Protokoll unter `build/reports/pdal-parallel-2.10.2.log`.
+  [Messwerte](experiments.md#produktabnahme--laz-workers-4)
+- `python3 tools/check-real-data.py "$PDAL"` bestand im seriellen
+  Standard mit Exit 0 in 33.88 s. Beide Solothurner Kacheln und die
+  drei Beispiele liefen mit `-Xmx512m`. Alle 353'342 verglichenen
+  Punktrecords waren bytegleich. CRS, Quell-VLRs und Statistiken bestanden
+  die Vergleiche. SIGTERM ergab in 0.18 s Exit 143 ohne Teilausgabe.
+  Protokoll unter `build/reports/pdal-standard-2.10.2.log`.

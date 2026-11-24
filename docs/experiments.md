@@ -365,7 +365,57 @@ eine spätere Prüfung als Produktoption. Vor einer solchen Entscheidung
 sind unterschiedliche Kachelgrössen und Chunkverteilungen, das
 Speicherverhalten breiter Records und weitere Laufumgebungen zu messen.
 
-## E6 und E7 · JVM-Version, AOT-Cache und Native Image
+### Produktabnahme · `--laz-workers 4`
+
+24. November 2026, Apple M1 arm64, macOS 15.8.1, 16 GiB RAM,
+Temurin 25.0.3+9, `-Xmx512m` und PDAL 2.10.2/LazPerf
+(conda-forge arm64, `libpdal-core h151f718_4`). Der Vergleich startet
+die installierte Produkt-CLI einmal mit dem seriellen Standard und
+einmal mit `--laz-workers 4`. PDAL verwendet `--stream` mit vier
+`readers.las`-Workern. Autzen wird in physischer LAZ-Dateireihenfolge gelesen.
+
+Solothurn 2014 berechnet Statistiken auf allen Punkten und schreibt
+mit Schrittweite 500 exakt 28'695 Records. Autzen wählt jeden hundertsten
+Punkt aus und berechnet Statistik inklusive RGB auf den 106'534 Treffern.
+Die Eingaben bleiben vollständig gelesen. Je Datensatz liegen ein
+Vorvergleich und drei rotierende Messrunden pro Variante vor. Der
+Dateicache ist warm. Dateivergleich und Statistikprüfung sind ausserhalb
+der Zeitmessung.
+
+```sh
+./gradlew installDist
+./gradlew downloadTestData -Ptile=2014
+./gradlew downloadTestData -Ptile=autzen
+python3 tools/check-parallel-data.py "$PDAL" .cache/experiments/parallel-real-data.csv
+```
+
+| Datensatz | Variante | Wandzeit, Median (Min–Max) | CPU-Zeit, Median | Höchster RSS |
+| --- | --- | ---: | ---: | ---: |
+| Solothurn 2014 | Java seriell | 5.32 (5.28–5.40) s | 5.74 s | 147.03 MiB |
+| Solothurn 2014 | Java, vier Worker | 1.50 (1.46–1.54) s | 6.97 s | 161.92 MiB |
+| Solothurn 2014 | PDAL, vier Worker | 2.76 (2.74–2.84) s | 7.54 s | 106.22 MiB |
+| Autzen | Java seriell | 5.02 (5.01–5.05) s | 5.75 s | 327.78 MiB |
+| Autzen | Java, vier Worker | 1.76 (1.72–2.48) s | 7.21 s | 358.20 MiB |
+| Autzen | PDAL, vier Worker | 2.39 (2.16–2.56) s | 7.15 s | 190.50 MiB |
+
+Java seriell und parallel lieferten bytegleiche LAS- und JSON-Dateien.
+Alle 28'695 Solothurner und 106'534 Autzen-Punktrecords stimmten auch mit
+PDAL bytegenau und in derselben Reihenfolge überein. Die Referenz las
+die Java-Ausgaben vollständig. CRS und Statistik bestanden den Vergleich.
+Bei Solothurn bewahrt Java das Vorzeichenbit der drei Null-Offsets aus
+dem Quellheader. PDAL schreibt positive Nullen. In Autzens minimaler
+Z-Ausgabegrenze stehen die benachbarten Double-Werte `406.29999999999995`
+und `406.3`. Diese Rundung betrifft die abgeleitete Grenze, während
+Quantisierung und gespeicherte Punktrecords übereinstimmen.
+[Einzelmessungen](measurements/parallel-real-data.csv)
+
+Vier Java-Worker erreichten auf dem M1 gegenüber PDAL den 1.84-fachen
+Durchsatz für Solothurn 2014 und den 1.36-fachen für Autzen. Die
+Autzen-Laufzeitbereiche überlappen. Der Spitzen-RSS des Java-Pfads war
+auf beiden Datensätzen höher. Die CLI bietet den Parallelpfad explizit
+über `--laz-workers` an und liest standardmässig seriell.
+
+## E6 und E7 · JVM-Versionen, AOT-Cache und Native Image
 
 Basis ist der Standardbuild nach P8 (`978f38d`). Zweite VM ist Temurin
 27 auf derselben Architektur. Temurin 25 wird mit Standardstart und

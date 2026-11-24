@@ -46,6 +46,9 @@ Die Realdatenbeispiele laufen ab Repositorywurzel.
 Ground-Crop verarbeitet die 14'566'627 Punkte der Pflichtkachel und
 schreibt 195'738 Bodenpunkte im gewählten Ausschnitt.
 
+Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
+unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
+
 Die [Formatmatrix und Pipeline-Optionen](docs/architecture.md) beschreiben
 den unterstützten Umfang. Die Unterschiede bei Ausdrücken und Extra Bytes
 stehen unter [Kompatibilität mit PDAL 2.10.2](docs/architecture.md#kompatibilität-mit-pdal-2102).
@@ -59,6 +62,14 @@ vor dem Start frei sein.
 ```sh
 ./gradlew downloadTestData -Ptile=2014
 python3 tools/check-real-data.py /pfad/zu/pdal
+```
+
+Der Parallelvergleich auf macOS prüft Solothurn 2014 und Autzen mit
+seriellem Java, `--laz-workers 4` und PDAL mit vier Reader-Workern.
+
+```sh
+./gradlew downloadTestData -Ptile=autzen
+python3 tools/check-parallel-data.py /pfad/zu/pdal .cache/experiments/parallel-real-data.csv
 ```
 
 Die [Realdatenabnahme](docs/implementation-log.md#p11--konsolidierung-und-lieferung)

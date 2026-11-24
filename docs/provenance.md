@@ -63,16 +63,19 @@ Die JVM-Distribution hält den Codec in einem separaten JAR.
 
 ## Realdaten
 
-Quelle ist das Amt für Geoinformation, Kanton Solothurn. Die Kacheln werden
-für die lokale Abnahme aus dem kantonalen Downloadangebot bezogen. Sie und
-daraus abgeleitete Punktdateien verbleiben im ignorierten Cache.
+Die Solothurner Kacheln stammen vom Amt für Geoinformation des Kantons.
+Autzen ist eine veröffentlichte COPC-Beispieldatei von Hobu aus dem
+PDAL-Datenbestand. Die Dateien für die lokale Abnahme liegen im ignorierten Cache.
 
 | Alias in `.cache/test-data` | Originaldatei | Bytes | Abruf |
 | --- | --- | ---: | --- |
 | `so-2019.laz` | [2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz) | 83'247'722 | 23.11.2026 |
 | `so-2014.laz` | [2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2014.pointcloud/aktuell/2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz) | 74'261'841 | 23.11.2026 |
+| `autzen-classified.copc.laz` | [Autzen Stadium](https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz) | 81'123'042 | 24.11.2026 |
 
 [Downloadangebot des Kantons](https://data.geo.so.ch/?filter=ch.so.agi.lidar_2019.pointcloud)
+· [COPC-Beispieldaten](https://copc.io/#example-data)
+· [Lizenz der PDAL-Beispieldaten (CC BY 4.0)](https://github.com/PDAL/data/blob/main/LICENSE)
 
 ## Kleine Fixtures
 

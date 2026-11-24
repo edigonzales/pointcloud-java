@@ -64,7 +64,7 @@ public final class Main {
                               --help
                               --version
                               info <input.las|input.laz>
-                              pipeline <pipeline.json> [--metadata <file>] [--batch-size <points>] [--overwrite]
+                              pipeline <pipeline.json> [--metadata <file>] [--batch-size <points>] [--laz-workers <1-4>] [--overwrite]
                             """);
                     return 0;
                 }
@@ -142,6 +142,10 @@ public final class Main {
                     if (batchSize < 1) {
                         throw new IllegalArgumentException("--batch-size must be positive");
                     }
+                }
+                case "--laz-workers" -> {
+                    int workers = lazWorkers(value(args, ++i, option));
+                    inputs = (path, size) -> ParallelLazReader.open(path, size, workers);
                 }
                 case "--overwrite" -> overwrite = true;
                 default -> throw new IllegalArgumentException("Unknown pipeline option " + option);
@@ -254,6 +258,18 @@ public final class Main {
         }
         return parent == null ? absolute.normalize()
                 : parent.toRealPath().resolve(parent.relativize(absolute)).normalize();
+    }
+
+    private static int lazWorkers(String value) {
+        try {
+            int workers = Integer.parseInt(value);
+            if (workers >= 1 && workers <= 4) {
+                return workers;
+            }
+        } catch (NumberFormatException ignored) {
+            // Use the same option-specific diagnostic for invalid numbers and values outside the range.
+        }
+        throw new IllegalArgumentException("--laz-workers must be an integer between 1 and 4");
     }
 
     private static String value(String[] args, int index, String option) {

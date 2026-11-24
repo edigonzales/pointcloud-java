@@ -32,6 +32,24 @@ ist sequenziell lesbar, wenn die Recordanzahl vollständig erreicht wird.
 Beliebige formal dekodierbare Bitfehler sind mit diesem Format strukturell
 oft nicht erkennbar.
 
+Mit `--laz-workers 1` liest die CLI seriell. Werte von 2 bis 4 erlauben
+parallele Dekodierung indizierter LAZ-Chunks. Ein Worker besitzt seinen
+Decoder und zwei wiederverwendete Punktpuffer. Alle Worker teilen die
+einmal validierte Chunktabelle. Die Pipeline erhält die Chunks in
+Dateireihenfolge und berechnet Statistik und LAS-Ausgabe in dieser
+Reihenfolge. Die Workerzahl ist durch die Zahl verfügbarer Chunks begrenzt.
+Lokale COPC-Dateien werden über ihre LAZ-Chunks in physischer
+Dateireihenfolge gelesen.
+
+Unkomprimierte LAS-Dateien, LAZ-Dateien mit gültig fehlender Chunktabelle
+oder weniger als zwei Chunks sowie Dateien mit einem dekodierten Chunk
+über 8 MiB werden seriell gelesen. Bei LAS 1.4 gilt die 8-MiB-Grenze
+zusätzlich für den komprimierten Chunkbereich, da der Decoder seine Layer
+in Puffern hält. Bei vier Workern sind damit höchstens acht dekodierte
+Chunkpuffer mit zusammen 64 MiB unterwegs. Decoderzustand, komprimierte
+Layer, Chunktabelle und Dateizugriffe erhöhen den Prozessspeicher zusätzlich.
+Beschädigte Chunktabellen führen zu einem Eingabefehler.
+
 `LasWriter` übernimmt ausgewählte Records in der vom Aufrufer übergebenen
 Reihenfolge und quantisiert sie nicht erneut. Version, Format und Scale/
 Offset folgen der Quelle. Anzahl, Return-Zähler und Bounds werden aus
@@ -100,9 +118,11 @@ den mit `--metadata` angegebenen Pfad. Jede Statistikstage enthält
 `stage` und `dimensions` mit `name`, `count`, `minimum`, `maximum`,
 `average`, `variance` und `stddev`. Bei `writers.null` ist
 `pointsWritten` gleich 0 und `pointsSelected` die Anzahl konsumierter
-Punkte. `--batch-size` wählt die Batchgrösse und `--overwrite` erlaubt
-das Ersetzen vorhandener Ziele. `pointcloud --diagnostics ...` aktiviert
-Stacktraces.
+Punkte. `--laz-workers` wählt die maximale Zahl der LAZ-Decoder-Worker
+(Standard 1). Im Parallelbetrieb bestimmt die Datei die Chunkgrösse.
+`--batch-size` wählt die Batchgrösse für die serielle Verarbeitung.
+`--overwrite` erlaubt das Ersetzen vorhandener Ziele.
+`pointcloud --diagnostics ...` aktiviert Stacktraces.
 
 Mit `--metadata` schreibt die CLI zuerst das JSON in eine temporäre Datei.
 Sie veröffentlicht die Metadaten vor der LAS-Datei. Schlägt der LAS-Abschluss
@@ -125,6 +145,12 @@ typisierte Ergebnis. Ein erneuter Aufruf erstellt frischen Stage-Zustand.
 - Die Realdatenabnahme vergleicht die drei mitgelieferten Pipelines und eine
   zusätzliche Pipeline für die 2014-Kachel mit PDAL im Streaming-Modus
   (`--stream`). [Referenzprüfung](../tools/check-real-data.py)
+- Die Abnahme des Parallelpfads vergleicht Solothurn 2014 und Autzen
+  in Dateireihenfolge mit seriellem Java und PDAL `readers.las`.
+  Für berechnete LAS-1.4-Ausgabegrenzen toleriert dieser Vergleich
+  höchstens eine Gleitkommaeinheit (ULP) Unterschied zu PDAL.
+  Rohrecords, Quantisierung und Java-Ausgaben werden exakt geprüft.
+  [Parallelvergleich](../tools/check-parallel-data.py)
 
 [ASPRS LAS-Spezifikation](https://github.com/ASPRSorg/LAS) ·
 [Herkunft und Fixtures](provenance.md)

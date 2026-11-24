@@ -41,26 +41,65 @@ def projection_and_other_vlrs(path):
         return records
 
 
-def compare_las(java, reference, count):
+def read_las_header(file):
+    header = file.read(227)
+    require(len(header) == 227 and header[:4] == b"LASF", f"Invalid LAS header in {file.name}")
+    if header[24:26] == b"\x01\x04":
+        header += file.read(148)
+        require(len(header) == 375, f"Truncated LAS 1.4 header in {file.name}")
+    return header
+
+
+def compare_las(java, reference, count, *, allow_one_ulp_bounds=False):
     with java.open("rb") as left, reference.open("rb") as right:
-        lh, rh = left.read(227), right.read(227)
-        require(lh[24:26] == rh[24:26] == b"\x01\x02", "LAS version differs")
-        require(lh[104:131] == rh[104:131], "Format, point length, point count or returns differ")
-        require(struct.unpack_from("<12d", lh, 131) == struct.unpack_from("<12d", rh, 131),
-                "Quantization or LAS header bounds differ")
-        length, actual = struct.unpack_from("<HI", lh, 105)
+        lh, rh = read_las_header(left), read_las_header(right)
+        version = lh[24:26]
+        require(version == rh[24:26] and version in (b"\x01\x02", b"\x01\x04"), "LAS version differs")
+        require(lh[104:131] == rh[104:131], "Format, point length or legacy point counts differ")
+        require(lh[104] < 64, "Point comparison requires uncompressed LAS")
+        left_quantization, right_quantization = struct.unpack_from("<6d", lh, 131), struct.unpack_from("<6d", rh, 131)
+        require(left_quantization == right_quantization,
+                f"LAS scale or offset differs: {left_quantization}/{right_quantization}")
+        if lh[131:179] != rh[131:179]:
+            print(f"LAS scale/offset signed-zero encoding differs (Java/PDAL): {left_quantization}/{right_quantization}")
+        left_bounds, right_bounds = struct.unpack_from("<6d", lh, 179), struct.unpack_from("<6d", rh, 179)
+        if left_bounds != right_bounds:
+            differences = [(axis, a, b) for axis, a, b in zip(("maxX", "minX", "maxY", "minY", "maxZ", "minZ"),
+                                                            left_bounds, right_bounds) if a != b]
+            require(allow_one_ulp_bounds and version == b"\x01\x04"
+                    and all(math.nextafter(a, b) == b for _, a, b in differences),
+                    f"LAS header bounds differ (Java/PDAL): {differences}")
+            print(f"LAS 1.4 header bounds differ by one ULP (Java/PDAL): {differences}")
+        length = struct.unpack_from("<H", lh, 105)[0]
+        if version == b"\x01\x04":
+            require(lh[247:375] == rh[247:375], "LAS 1.4 point count or returns differ")
+            actual = struct.unpack_from("<Q", lh, 247)[0]
+            if lh[104] >= 6:
+                require(lh[107:131] == bytes(24), "LAS 1.4 legacy count fields must be zero for modern point formats")
+        else:
+            actual = struct.unpack_from("<I", lh, 107)[0]
         require(actual == count, f"{java}: LAS header count differs from reported output")
         left.seek(struct.unpack_from("<I", lh, 96)[0])
         right.seek(struct.unpack_from("<I", rh, 96)[0])
         mismatches = 0
+        first_difference = ""
         for start in range(0, count, 8192):
             size = min(count - start, 8192) * length
             a, b = left.read(size), right.read(size)
             require(len(a) == len(b) == size, "Truncated LAS comparison input")
             if a != b:
-                mismatches += sum(a[i:i + length] != b[i:i + length] for i in range(0, size, length))
-        require(not left.read(1) and not right.read(1), "Unexpected bytes after the point records")
-    require(mismatches == 0, f"{java}: {mismatches} records differ")
+                for offset in range(0, size, length):
+                    left_point, right_point = a[offset:offset + length], b[offset:offset + length]
+                    if left_point != right_point:
+                        if mismatches == 0:
+                            first_difference = f"; first at {start + offset // length}: {left_point.hex()}/{right_point.hex()}"
+                        mismatches += 1
+        for file, header in ((left, lh), (right, rh)):
+            if version == b"\x01\x04" and struct.unpack_from("<I", header, 243)[0] != 0:
+                require(file.tell() == struct.unpack_from("<Q", header, 235)[0], "Invalid EVLR start after point records")
+            else:
+                require(not file.read(1), "Unexpected bytes after the point records")
+    require(mismatches == 0, f"{java}: {mismatches} records differ{first_difference}")
     print(f"{count} complete records, 0 differences, LAS bytes {java.stat().st_size}/{reference.stat().st_size}")
 
 
