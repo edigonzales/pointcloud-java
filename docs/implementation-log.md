@@ -707,3 +707,44 @@ wählten in beiden Engines dieselben Punktzahlen. Die fünf Format-8-Records
 blieben in Java bei 40 B. PDAL schrieb durch das zusätzliche `Infrared`
 42 B pro Record. Die Standardattribute und der `Confidence`-Wert stimmten
 überein. Protokoll unter `build/reports/pdal-2.10.2-fixtures.log`.
+
+### E4-Nachversuch · Vollständige Pipeline
+
+24. November 2026, Apple M1/macOS 15.8.1 arm64, Gradle 9.9.1,
+Temurin 25.0.3+9 und PDAL 2.10.2/LazPerf (`h151f718_4`). Ausgangspunkt
+`cc31a43`. Eine interne Batch-Eingabe verbindet den Chunkleser aus dem
+Experimentmodul mit der bestehenden CLI und Pipeline. Beide
+Parallelvarianten verarbeiten dieselben Stages und teilen das geordnete
+Pufferschema. Der Unterschied liegt in der Initialisierung pro Chunk
+oder der Wiederverwendung von Tabelle, Mapping und Decoderzustand.
+
+- `./gradlew -Pexperiments clean check installDist distZip` bestand mit
+  Exit 0 in 3.55 s inklusive lokal fehlender JMH-Abhängigkeiten aus dem
+  regulären Gradle-Repository. Der abschliessende Standardbuild
+  `./gradlew --offline clean check installDist distZip` bestand mit Exit 0
+  in 1.89 s. 27 Tests, 0 Fehler, 0 fehlgeschlagen, 0 übersprungen.
+  `LasIoTest` 15 (0.144 s), `MainTest` 5 (0.034 s), `PipelineTest` 7
+  (0.070 s). XML unter `build/test-results/test/`, HTML unter
+  `build/reports/tests/test/`. `unzip -tq` prüfte das 462'719 B grosse ZIP.
+- `python3 experiments/check-e4-pipeline.py --pdal "$PDAL"` bestand mit
+  Exit 0 in 2.96 s. Feste Chunks und die gültige Datei ohne Chunktabelle
+  lieferten je 16'667 geordnete Records. Format 8 behielt NIR und Extra
+  Bytes bei. Fünf adaptive Chunks mit insgesamt 200'003 Records prüften
+  die Wiederverwendung über mehr Chunks hinweg als Worker vorhanden sind.
+  Beschädigte Layer ergaben in allen drei Modi Exit 2. SIGTERM ergab bei
+  beiden Parallelvarianten Exit 143. Bei Fehler und Abbruch blieben keine
+  LAS-, JSON- oder Temporärdateien zurück.
+- Der bisherige Aufruf `ChunkParallel 4 ... --verify` verglich zusätzlich
+  alle 14'566'627 dekodierten Eingaberecords bytegenau und in Reihenfolge
+  gegen den seriellen Reader. Exit 0 in 5.30 s, 195'738 Punkte geschrieben.
+- `python3 experiments/e4-pipeline.py "$PDAL" .cache/experiments/e4-pipeline.csv`
+  beendete vier Vorläufe und 20 Messläufe mit Exit 0 in 69.73 s. Pro Lauf
+  14'566'627 Eingabepunkte und 195'738 bytegleiche Ausgaberecords. Die
+  Java-Metadaten waren identisch, PDAL innerhalb der P5-Toleranz.
+  [Messwerte und Entscheidung](experiments.md#e4-nachversuch--vollständige-ground-crop-pipeline-gegen-pdal)
+- `python3 tools/check-real-data.py "$PDAL"` bestand im Standardbuild
+  mit Exit 0 in 34.39 s. Beide Kacheln und alle drei Beispiele liefen
+  mit `-Xmx512m`. 353'342 Records waren bytegleich. Header, VLRs, CRS und
+  Statistiken bestanden die Vergleiche. SIGTERM lieferte in 0.20 s Exit
+  143 und hinterliess keine Ausgabe. Log unter
+  `build/reports/pdal-2.10.2-e4.log`.

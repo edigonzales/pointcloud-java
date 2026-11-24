@@ -401,15 +401,13 @@ public class LASreadPoint {
             if (dec != null)
             {
                 dec.done();
-                current_chunk++;
-                // check integrity
-                if (current_chunk < tabled_chunks)
+                int next_chunk = current_chunk + 1;
+                if (next_chunk < tabled_chunks)
                 {
                     long here = instream.tell();
-                    if (chunk_starts[current_chunk] != here)
+                    if (chunk_starts[next_chunk] != here)
                     {
-                        // last chunk was corrupt
-                        last_error = String.format("chunk with index %d of %d is corrupt", current_chunk, tabled_chunks);
+                        last_error = String.format("chunk with index %d of %d is corrupt", next_chunk, tabled_chunks);
                         return FALSE;
                     }
                 }
@@ -437,6 +435,14 @@ public class LASreadPoint {
         return chunk_starts[index];
     }
 
+    long[] chunkStarts() {
+        return chunk_starts;
+    }
+
+    int[] chunkTotals() {
+        return chunk_totals;
+    }
+
     long chunkFirstPoint(int index) {
         if (index == number_chunks) {
             return pointCount;
@@ -447,6 +453,7 @@ public class LASreadPoint {
 
     void startChunk(int index) {
         dec.done();
+        last_error = null;
         current_chunk = index;
         instream.seek(chunk_starts[index]);
         if (chunk_totals != null) {
@@ -454,6 +461,17 @@ public class LASreadPoint {
         }
         chunk_count = 0;
         init_dec();
+    }
+
+    /** The arrays belong to a validated table and remain read-only. */
+    void useChunks(long count, long end, long[] starts, int[] totals) {
+        pointCount = count;
+        pointEnd = end;
+        chunk_starts = starts;
+        chunk_totals = totals;
+        number_chunks = starts.length - 1;
+        tabled_chunks = starts.length;
+        instream.seek(starts[0]);
     }
 
     void initialiseChunks(long count, long end) {

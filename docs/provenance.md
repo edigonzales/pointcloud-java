@@ -47,6 +47,9 @@ wiederverwendet. Die Vorhersage- und Entropiemodelle bleiben identisch.
 Der Chunkversuch nutzt aus dem Codec die validierten Offset- und
 Punktbereiche und startet an der Seed-Record-Grenze. Der nicht
 verwendete 32-Bit-Punktseek des Ports wurde dabei entfernt.
+Im E4-Nachversuch teilen die wiederverwendeten Decoder die einmal
+validierte Chunktabelle derselben geöffneten Datei. Mapping, Cursor
+und Decodiermodelle gehören jeweils einem Worker.
 
 Das Native Binary ist ein lokales Versuchsartefakt. Eine spätere
 Verteilung muss die jeweiligen Codec-Hinweise und Lizenztexte,

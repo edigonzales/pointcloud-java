@@ -301,6 +301,70 @@ Abbruchverhalten, Speicherauslegung für breite Records, Scheduler
 und mehrere Pipelineformen zusätzlich qualifiziert werden.
 [Einzelmessungen](measurements/e4-chunks.csv)
 
+### E4-Nachversuch · Vollständige Ground-Crop-Pipeline gegen PDAL
+
+24. November 2026, Apple M1 arm64, macOS 15.8.1, 16 GiB RAM,
+Temurin 25.0.3+9, `-Xmx512m`, PDAL 2.10.2/LazPerf
+(conda-forge arm64, `libpdal-core h151f718_4`).
+
+Der Versuch verwendet `examples/ground-crop.json` mit einem temporären
+Ausgabeziel. Alle Varianten lesen 14'566'627 Punkte, filtern nach Box und
+Klasse, berechnen X-, Y-, Z- und Intensitätsstatistik und schreiben
+195'738 LAS-Records plus JSON-Metadaten. PDAL läuft mit `--stream` und
+vier Reader-Workern. Die drei Java-Varianten nutzen dieselben Filter,
+Statistiken, Writer und Abschlusslogik über eine interne Batch-Eingabe.
+
+Der parallele Teil liegt im Experimentmodul. Beide Parallelvarianten
+verteilen Chunks zyklisch auf vier Worker und verwenden je zwei
+Punktpuffer pro Worker. Damit sind höchstens acht Chunks gleichzeitig
+offen. `per-chunk` initialisiert Mapping, Decoder und Chunktabelle erneut
+für jedes Arbeitspaket. `reused` validiert die Tabelle einmal und behält
+Mapping und Codeczustand pro Worker. Jeder Chunk beginnt mit korrekt
+initialisierten Modellen. Die Hauptpipeline verarbeitet die Batches in
+Dateireihenfolge, sodass sich die Reihenfolge der Statistikoperationen
+und der LAS-Records erhält.
+
+```sh
+./gradlew -Pexperiments installDist :experiments:installDist
+python3 experiments/check-e4-pipeline.py --pdal "$PDAL"
+python3 experiments/e4-pipeline.py "$PDAL" .cache/experiments/e4-pipeline.csv
+```
+
+`JAVA_HOME` verweist auf das verwendete JDK 25. Bei der hier verwendeten
+PDAL-Installation verweist `PROJ_DATA` auf `share/proj` im Conda-Prefix.
+Der Runner wärmt den Dateicache, prüft einen Lauf je Variante und misst
+danach fünf frische Prozesse je Variante in rotierender Reihenfolge.
+`/usr/bin/time -lp` erfasst Wandzeit, Prozess-CPU-Zeit und Spitzen-RSS.
+Ausserhalb der Zeitmessung prüft der Runner jede Ausgabe gegen die
+serielle Java-Referenz. Die Punktrecords müssen bytegleich und geordnet
+sein, die Java-Metadaten bytegleich. Für PDAL gilt die P5-Statistiktoleranz.
+
+| Variante | Decoder-Worker | Wandzeit, Median (Min–Max) | CPU-Zeit, Median | Mio. Eingangspunkte/s | Höchster RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Java seriell | 1 | 5.11 (5.08–5.42) s | 5.54 s | 2.85 | 154.84 MiB |
+| Java `per-chunk` | 4 | 1.62 (1.55–2.21) s | 7.08 s | 8.99 | 191.27 MiB |
+| Java `reused` | 4 | 1.54 (1.51–1.99) s | 6.86 s | 9.46 | 175.72 MiB |
+| PDAL `--stream` | 4 | 2.85 (2.81–3.24) s | 7.96 s | 5.11 | 134.95 MiB |
+
+Alle vier Vorläufe und 20 Messläufe waren erfolgreich. Jede Ausgabe
+enthielt 195'738 vollständige Records in gleicher Reihenfolge, mit null
+Abweichungen zur seriellen Java-Referenz. Die Java-Metadaten waren
+bytegleich. Für PDAL stimmten Minimum und Maximum exakt. Die maximalen
+absoluten Differenzen bei Mittelwert, Varianz und Standardabweichung
+lagen bei `4.40e-4`, `3.29e-3` und `3.49e-9`, innerhalb der P5-Toleranz.
+
+`reused` erzielte den 3.32-fachen Durchsatz gegenüber seriellem Java und
+den 1.85-fachen gegenüber PDAL in dieser Messreihe. Die Wiederverwendung
+senkte den Median gegenüber `per-chunk` um 0.08 s und den höchsten RSS um
+15.55 MiB. Der schnellste Java-Pfad beanspruchte mehr Spitzen-RSS als
+PDAL. Das Ergebnis gilt für diese Kachel, Pipeline und Maschine.
+[Einzelmessungen](measurements/e4-pipeline.csv)
+
+**Als Experiment behalten.** Die gemessene Beschleunigung rechtfertigt
+eine spätere Prüfung als Produktoption. Vor einer solchen Entscheidung
+sind unterschiedliche Kachelgrössen und Chunkverteilungen, das
+Speicherverhalten breiter Records und weitere Laufumgebungen zu messen.
+
 ## E6 und E7 · JVM-Version, AOT-Cache und Native Image
 
 Basis ist der Standardbuild nach P8 (`978f38d`). Zweite VM ist Temurin

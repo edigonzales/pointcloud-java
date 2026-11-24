@@ -17,6 +17,10 @@ public final class Main {
     private Main() {}
 
     public static void main(String[] args) {
+        launch(args, Pipeline::openSequential);
+    }
+
+    static void launch(String[] args, Pipeline.InputFactory inputs) {
         int command = args.length > 0 && args[0].equals("--diagnostics") ? 1 : 0;
         int status;
         if (command < args.length && args[command].equals("pipeline")) {
@@ -33,17 +37,21 @@ public final class Main {
                 }
             }, "pointcloud-cancel"));
             try {
-                status = run(args, System.out, System.err);
+                status = run(args, System.out, System.err, inputs);
             } finally {
                 completed.countDown();
             }
         } else {
-            status = run(args, System.out, System.err);
+            status = run(args, System.out, System.err, inputs);
         }
         System.exit(status);
     }
 
     static int run(String[] args, PrintStream out, PrintStream err) {
+        return run(args, out, err, Pipeline::openSequential);
+    }
+
+    private static int run(String[] args, PrintStream out, PrintStream err, Pipeline.InputFactory inputs) {
         boolean diagnostics = args.length > 0 && args[0].equals("--diagnostics");
         if (diagnostics) {
             args = Arrays.copyOfRange(args, 1, args.length);
@@ -72,7 +80,7 @@ public final class Main {
                 return 0;
             }
             if (args.length >= 2 && args[0].equals("pipeline")) {
-                pipeline(args, out);
+                pipeline(args, out, inputs);
                 return 0;
             }
             throw new IllegalArgumentException("Invalid command. Run pointcloud --help.");
@@ -116,7 +124,7 @@ public final class Main {
         }
     }
 
-    private static void pipeline(String[] args, PrintStream out) throws IOException {
+    private static void pipeline(String[] args, PrintStream out, Pipeline.InputFactory inputs) throws IOException {
         Path config = Path.of(args[1]);
         Path metadata = null;
         boolean overwrite = false;
@@ -141,14 +149,14 @@ public final class Main {
         }
         var pipeline = Pipeline.read(config);
         if (metadata == null) {
-            out.println(Pipeline.JSON.toJson(pipeline.run(batchSize, overwrite)));
+            out.println(Pipeline.JSON.toJson(pipeline.run(batchSize, overwrite, inputs, Pipeline::publishLas)));
         } else {
-            runWithMetadata(pipeline, config, metadata, batchSize, overwrite);
+            runWithMetadata(pipeline, config, metadata, batchSize, overwrite, inputs);
         }
     }
 
     private static void runWithMetadata(Pipeline pipeline, Path config, Path metadata, int batchSize,
-                                        boolean overwrite) throws IOException {
+                                        boolean overwrite, Pipeline.InputFactory inputs) throws IOException {
         checkMetadata(metadata, pipeline, config, overwrite);
         if (pipeline.output() != null) {
             Path las = destinationLocation(pipeline.output());
@@ -160,7 +168,7 @@ public final class Main {
         Files.createDirectories(metadata.getParent());
         Path temporary = Files.createTempFile(metadata.getParent(), ".pointcloud-meta-", ".part");
         try {
-            pipeline.run(batchSize, overwrite, (result, writer) -> {
+            pipeline.run(batchSize, overwrite, inputs, (result, writer) -> {
                 Files.writeString(temporary, Pipeline.JSON.toJson(result) + System.lineSeparator());
                 publishWithMetadata(temporary, metadata, pipeline, config, overwrite, writer);
             });

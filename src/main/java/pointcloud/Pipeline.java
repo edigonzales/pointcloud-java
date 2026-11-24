@@ -7,8 +7,10 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.Strictness;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.Reader;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -16,6 +18,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Pattern;
 
 /** A linear PDAL-subset pipeline. Execution state is created afresh for each run. */
@@ -111,11 +114,7 @@ public final class Pipeline {
     }
 
     public Result run(int batchSize, boolean overwrite) throws IOException {
-        return run(batchSize, overwrite, (result, writer) -> {
-            if (writer != null) {
-                writer.finish();
-            }
-        });
+        return run(batchSize, overwrite, Pipeline::openSequential, Pipeline::publishLas);
     }
 
     @FunctionalInterface
@@ -123,12 +122,41 @@ public final class Pipeline {
         void publish(Result result, LasWriter writer) throws IOException;
     }
 
-    Result run(int batchSize, boolean overwrite, ResultOutput resultOutput) throws IOException {
+    @FunctionalInterface
+    interface BatchReader {
+        PointBatch readBatch() throws IOException;
+    }
+
+    @FunctionalInterface
+    interface InputFactory {
+        BatchInput open(Path path, int batchSize) throws IOException;
+    }
+
+    record BatchInput(LasHeader header, FileChannel channel, BatchReader reader, BooleanSupplier finished,
+                      Closeable source) implements Closeable {
+        @Override
+        public void close() throws IOException {
+            source.close();
+        }
+    }
+
+    static BatchInput openSequential(Path path, int batchSize) throws IOException {
+        var reader = new LasReader(path, batchSize);
+        return new BatchInput(reader.header(), reader.source, reader::readBatch, reader::finished, reader::close);
+    }
+
+    static void publishLas(Result result, LasWriter writer) throws IOException {
+        if (writer != null) {
+            writer.finish();
+        }
+    }
+
+    Result run(int batchSize, boolean overwrite, InputFactory inputs, ResultOutput resultOutput) throws IOException {
         var filters = new Filter[stages.size() - 2];
         for (int i = 0; i < filters.length; i++) {
             filters[i] = compile(i + 2);
         }
-        try (var reader = new LasReader(input, batchSize)) {
+        try (var reader = inputs.open(input, batchSize)) {
             for (var filter : filters) {
                 for (var dimension : filter.dimensions) {
                     if (!dimension.available(reader.header().pointFormat())) {
@@ -137,9 +165,10 @@ public final class Pipeline {
                     }
                 }
             }
-            try (var writer = output == null ? null : new LasWriter(reader, output, overwrite)) {
+            try (var writer = output == null ? null
+                    : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output, overwrite)) {
                 long selected = 0;
-                for (var batch = reader.readBatch(); batch != null; batch = reader.readBatch()) {
+                for (var batch = reader.reader().readBatch(); batch != null; batch = reader.reader().readBatch()) {
                     points:
                     for (int point = 0; point < batch.size(); point++) {
                         for (var filter : filters) {
