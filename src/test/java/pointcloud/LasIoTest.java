@@ -192,6 +192,28 @@ class LasIoTest {
     }
 
     @Test
+    void failedLazEndCheckPreventsRetryAndOutputPublication() throws IOException {
+        var base = bytes(fixture(3, "laz"));
+        Path input = Files.write(tempDir.resolve("bad-count.laz"), base.putInt(107, 4).array());
+        Path output = tempDir.resolve("output.las");
+        try (var reader = new LasReader(input, 2); var writer = new LasWriter(reader, output, false)) {
+            var first = reader.readBatch();
+            assertEquals(2, first.size());
+            writer.write(first, 0);
+            writer.write(first, 1);
+
+            IOException failure = assertThrows(IOException.class, reader::readBatch);
+            assertTrue(failure.getMessage().contains("corrupt"), failure::getMessage);
+            assertThrows(IOException.class, reader::readBatch);
+            assertThrows(IOException.class, writer::finish);
+        }
+        assertFalse(Files.exists(output));
+        try (var files = Files.list(tempDir)) {
+            assertEquals(1, files.count());
+        }
+    }
+
+    @Test
     void rejectsAnOversizedLayerBeforeAllocationAndDiscardsTheOutput() throws IOException {
         Path input = tempDir.resolve("broken.laz");
         Path output = tempDir.resolve("broken.las");

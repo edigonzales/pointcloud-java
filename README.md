@@ -47,7 +47,9 @@ Ground-Crop verarbeitet die 14'566'627 Punkte der Pflichtkachel und
 schreibt 195'738 Bodenpunkte im gewählten Ausschnitt.
 
 Die [Formatmatrix und Pipeline-Optionen](docs/architecture.md) beschreiben
-den unterstützten Umfang. Die Kachelquelle steht im [Herkunftsnachweis](docs/provenance.md).
+den unterstützten Umfang. Die Unterschiede bei Ausdrücken und Extra Bytes
+stehen unter [Kompatibilität mit PDAL 2.10.2](docs/architecture.md#kompatibilität-mit-pdal-2102).
+Die Kachelquelle steht im [Herkunftsnachweis](docs/provenance.md).
 
 Die Referenzabnahme auf macOS oder Linux verwendet PDAL 2.10.2 mit LazPerf.
 Die Vergleichsziele

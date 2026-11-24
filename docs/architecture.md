@@ -104,9 +104,27 @@ Punkte. `--batch-size` wählt die Batchgrösse und `--overwrite` erlaubt
 das Ersetzen vorhandener Ziele. `pointcloud --diagnostics ...` aktiviert
 Stacktraces.
 
+Mit `--metadata` schreibt die CLI zuerst das JSON in eine temporäre Datei.
+Sie veröffentlicht die Metadaten vor der LAS-Datei. Schlägt der LAS-Abschluss
+fehl, entfernt sie die neuen Metadaten oder stellt die vorherige Datei wieder
+her. Die Veröffentlichung erfolgt in zwei Dateisystemoperationen.
+
 Im Bibliotheksaufruf verwendet `Pipeline.read(Path.of("examples/stats.json"))`
 dieselbe Konfiguration. `pipeline.run(32_768, false)` liefert das
 typisierte Ergebnis. Ein erneuter Aufruf erstellt frischen Stage-Zustand.
+
+## Kompatibilität mit PDAL 2.10.2
+
+- PointCloud Java akzeptiert in `filters.expression` die Literale `+2.1e1`
+  und `.5`. PDAL 2.10.2 weist diese Schreibweisen zurück. Verwende `2.1e1`
+  und `0.5` für Pipelines, die mit beiden Engines laufen sollen.
+- Beim Format-8-Fixture schreibt PointCloud Java die ursprünglichen 40 Bytes
+  pro Punkt unverändert. PDAL 2.10.2 schreibt mit `extra_dims: "all"` 42 Bytes
+  pro Punkt, weil es `Infrared` zusätzlich zum NIR-Standardfeld als Extra
+  Bytes ablegt. [Fixture-Erzeugung](provenance.md#kleine-fixtures)
+- Die Realdatenabnahme vergleicht die drei mitgelieferten Pipelines und eine
+  zusätzliche Pipeline für die 2014-Kachel mit PDAL im Streaming-Modus
+  (`--stream`). [Referenzprüfung](../tools/check-real-data.py)
 
 [ASPRS LAS-Spezifikation](https://github.com/ASPRSorg/LAS) ·
 [Herkunft und Fixtures](provenance.md)

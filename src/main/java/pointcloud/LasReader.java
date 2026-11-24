@@ -16,6 +16,7 @@ public final class LasReader implements AutoCloseable {
     private final PointBatch batch;
     private long position;
     private boolean finished;
+    private IOException failure;
 
     public LasReader(Path path, int batchSize) throws IOException {
         if (batchSize < 1) {
@@ -42,10 +43,16 @@ public final class LasReader implements AutoCloseable {
         return header;
     }
 
-    /** Returns a batch valid until the next read, or null after verified EOF. */
+    /**
+     * Returns a batch valid until the next read, or null after verified EOF.
+     * An I/O failure while reading or validating records ends the scan.
+     */
     public PointBatch readBatch() throws IOException {
         if (!source.isOpen()) {
             throw new IOException("LAS reader is closed");
+        }
+        if (failure != null) {
+            throw new IOException("LAS reader cannot continue after a read failure", failure);
         }
         if (Thread.currentThread().isInterrupted()) {
             throw new InterruptedIOException("LAS read cancelled");
@@ -53,20 +60,25 @@ public final class LasReader implements AutoCloseable {
         int size = (int) Math.min(header.pointCount() - position, batch.capacity());
         batch.size = 0;
         batch.records.clear().limit(size * header.recordLength());
-        if (decoder == null) {
-            LasHeader.readFully(source, header.pointOffset() + position * header.recordLength(), batch.records);
-        } else {
-            for (int i = 0; i < size; i++) {
-                decoder.read(batch.records);
+        try {
+            if (decoder == null) {
+                LasHeader.readFully(source, header.pointOffset() + position * header.recordLength(), batch.records);
+            } else {
+                for (int i = 0; i < size; i++) {
+                    decoder.read(batch.records);
+                }
             }
+            if (!finished && position + size == header.pointCount()) {
+                if (decoder != null) {
+                    decoder.read(batch.records);
+                }
+                finished = true;
+            }
+        } catch (IOException e) {
+            failure = e;
+            throw e;
         }
         position += size;
-        if (!finished && position == header.pointCount()) {
-            if (decoder != null) {
-                decoder.read(batch.records);
-            }
-            finished = true;
-        }
         batch.size = size;
         return size == 0 ? null : batch;
     }

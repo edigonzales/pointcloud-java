@@ -653,3 +653,57 @@ M5-Maschine bis zum Faktor 2.83 schneller und bleibt isoliert.
 SIMD, Batchpool, I/O, JVM-Wechsel, AOT, Native und Metal-GPU
 sind mit Messwerten und einem dokumentierten Entscheid
 abgeschlossen. Keine Pflichtprüfung offen. P11 abgenommen.
+
+### P11-Nachprüfung · Fehlerpfade und PDAL-Kompatibilität
+
+24. November 2026, Apple M1/macOS 15.8.1 arm64, Gradle 9.9.1,
+Temurin 25.0.3+9 und PDAL 2.10.2/LazPerf aus `libpdal-core` für
+conda-forge arm64 (`h151f718_4`). Die zwei Solothurn-Kacheln wurden
+über `downloadTestData` und `downloadTestData -Ptile=2014` bezogen
+und belegen 157'509'563 B.
+
+Ein Lese- oder LAZ-Endprüfungsfehler beendet den Scan dauerhaft.
+Mit `--metadata` prüft die CLI die Zielpfade vor dem Schreiben, legt das
+JSON temporär ab und veröffentlicht es vor der LAS-Datei. Scheitert der
+LAS-Abschluss, wird der vorherige Metadatenstand wiederhergestellt. Der
+zusätzliche Abschlussaufruf bleibt auf die Pipeline und die CLI begrenzt.
+Die direkten Regressionstests prüfen den erneuten Leseversuch, die
+verweigerte Ausgabe, den Erhalt bestehender Dateien, verschachtelte Zielpfade
+und das Aufräumen. Die Tests zum LAZ-Endfehler, ungültigen Metadatenziel und
+verschachtelten Ziel schlugen vor der jeweiligen Korrektur fehl.
+
+`./gradlew --offline clean check installDist distZip` lief in 2.67 s mit
+Exit 0. Alle 27 JUnit-Tests bestanden, 0 Fehler, 0 fehlgeschlagen und
+0 übersprungen. `LasIoTest` 15 (0.227 s), `MainTest` 5 (0.052 s) und
+`PipelineTest` 7 (0.116 s). Die Berichte liegen unter
+`build/test-results/test/` und `build/reports/tests/test/`. `unzip -tq`
+prüfte das 458'680 B grosse JVM-ZIP erfolgreich.
+
+`python3 tools/check-real-data.py "$PDAL"` lief mit `-Xmx512m` in
+48.13 s mit Exit 0. Das Protokoll liegt unter `build/reports/pdal-2.10.2.log`.
+
+| Pipeline | Gelesen | Ausgewählt | Geschrieben und vollständig verglichen | Java / PDAL LAS-Bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Ground-Crop 2019 | 14'566'627 | 195'738 | 195'738 | 6'655'601 / 6'655'515 |
+| Statistik 2019 | 14'566'627 | 14'566'627 | 0 | – |
+| Dezimierung 2019 | 14'566'627 | 128'909 | 128'909 | 4'383'415 / 4'383'329 |
+| Solothurn 2014 | 14'347'366 | 28'695 | 28'695 | 803'689 / 803'687 |
+
+Alle 353'342 Punktrecords stimmten bytegenau überein. Header, Bounds,
+Quantisierung, Return-Zähler, Quell-VLRs und CRS bestanden die Vergleiche.
+PDAL las alle drei Java-Ausgaben vollständig. Minimum und Maximum waren
+exakt. Die grössten absoluten Abweichungen von Mittelwert, Varianz und
+Standardabweichung waren `4.43e-4`, `3.29e-3` und `2.25e-7`, jeweils
+innerhalb der P5-Toleranz. SIGTERM beendete den Lauf in 0.20 s mit Exit 143
+und ohne Ziel- oder Temporärdatei. Ein zusätzlicher SIGTERM-Test mit
+`--metadata --overwrite` endete in 0.23 s mit Exit 143. Die vorherigen
+Metadaten blieben bytegleich. LAS-Ziel und temporäre Dateien waren
+bereinigt. Protokoll unter `build/reports/cli-metadata-cancel.log`.
+
+Kleine Fixtures bestätigten die dokumentierten
+[Kompatibilitätsgrenzen](architecture.md#kompatibilität-mit-pdal-2102).
+PDAL wies `+2.1e1` und `.5` mit Exit 1 zurück. `2.1e1` und `0.5`
+wählten in beiden Engines dieselben Punktzahlen. Die fünf Format-8-Records
+blieben in Java bei 40 B. PDAL schrieb durch das zusätzliche `Infrared`
+42 B pro Record. Die Standardattribute und der `Confidence`-Wert stimmten
+überein. Protokoll unter `build/reports/pdal-2.10.2-fixtures.log`.

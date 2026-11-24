@@ -111,6 +111,19 @@ public final class Pipeline {
     }
 
     public Result run(int batchSize, boolean overwrite) throws IOException {
+        return run(batchSize, overwrite, (result, writer) -> {
+            if (writer != null) {
+                writer.finish();
+            }
+        });
+    }
+
+    @FunctionalInterface
+    interface ResultOutput {
+        void publish(Result result, LasWriter writer) throws IOException;
+    }
+
+    Result run(int batchSize, boolean overwrite, ResultOutput resultOutput) throws IOException {
         var filters = new Filter[stages.size() - 2];
         for (int i = 0; i < filters.length; i++) {
             filters[i] = compile(i + 2);
@@ -140,9 +153,6 @@ public final class Pipeline {
                         }
                     }
                 }
-                if (writer != null) {
-                    writer.finish();
-                }
                 var results = new ArrayList<StageStatistics>();
                 for (var filter : filters) {
                     if (filter.stats != null) {
@@ -150,8 +160,10 @@ public final class Pipeline {
                                 filter.stats.stream().map(Accumulator::result).toList()));
                     }
                 }
-                return new Result(reader.header().pointCount(), selected, writer == null ? 0 : writer.pointCount(),
+                var result = new Result(reader.header().pointCount(), selected, writer == null ? 0 : writer.pointCount(),
                         List.copyOf(results));
+                resultOutput.publish(result, writer);
+                return result;
             }
         }
     }

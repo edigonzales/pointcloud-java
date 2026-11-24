@@ -140,41 +140,112 @@ public final class Main {
             }
         }
         var pipeline = Pipeline.read(config);
-        if (metadata != null) {
-            checkMetadata(metadata, pipeline, config, overwrite);
-        }
-        var result = pipeline.run(batchSize, overwrite);
-        String json = Pipeline.JSON.toJson(result) + System.lineSeparator();
         if (metadata == null) {
-            out.print(json);
+            out.println(Pipeline.JSON.toJson(pipeline.run(batchSize, overwrite)));
         } else {
-            checkMetadata(metadata, pipeline, config, overwrite);
-            Files.createDirectories(metadata.getParent());
-            Path temporary = Files.createTempFile(metadata.getParent(), ".pointcloud-meta-", ".part");
-            try {
-                Files.writeString(temporary, json);
-                if (overwrite) {
-                    Files.move(temporary, metadata, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } else {
-                    Files.move(temporary, metadata);
-                }
-            } finally {
-                Files.deleteIfExists(temporary);
+            runWithMetadata(pipeline, config, metadata, batchSize, overwrite);
+        }
+    }
+
+    private static void runWithMetadata(Pipeline pipeline, Path config, Path metadata, int batchSize,
+                                        boolean overwrite) throws IOException {
+        checkMetadata(metadata, pipeline, config, overwrite);
+        if (pipeline.output() != null) {
+            Path las = destinationLocation(pipeline.output());
+            Path json = destinationLocation(metadata);
+            if (las.startsWith(json) || json.startsWith(las)) {
+                throw new IOException("LAS and metadata destinations must be separate files: " + las + " and " + json);
             }
+        }
+        Files.createDirectories(metadata.getParent());
+        Path temporary = Files.createTempFile(metadata.getParent(), ".pointcloud-meta-", ".part");
+        try {
+            pipeline.run(batchSize, overwrite, (result, writer) -> {
+                Files.writeString(temporary, Pipeline.JSON.toJson(result) + System.lineSeparator());
+                publishWithMetadata(temporary, metadata, pipeline, config, overwrite, writer);
+            });
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static void publishWithMetadata(Path temporary, Path metadata, Pipeline pipeline, Path config,
+                                            boolean overwrite, LasWriter writer) throws IOException {
+        checkMetadata(metadata, pipeline, config, overwrite);
+        Path previous = null;
+        boolean published = false;
+        try {
+            if (overwrite && Files.exists(metadata, LinkOption.NOFOLLOW_LINKS)) {
+                previous = saveMetadata(metadata);
+            }
+            if (overwrite) {
+                Files.move(temporary, metadata, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.move(temporary, metadata);
+            }
+            published = true;
+            if (writer != null) {
+                // Publishing metadata can make an alias of a previously absent LAS target visible.
+                checkMetadataAliases(metadata, pipeline, config);
+                writer.finish();
+            }
+        } catch (IOException | RuntimeException failure) {
+            try {
+                if (previous != null) {
+                    Files.move(previous, metadata, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } else if (published) {
+                    Files.deleteIfExists(metadata);
+                }
+            } catch (IOException | RuntimeException rollback) {
+                failure.addSuppressed(rollback);
+            }
+            throw failure;
+        }
+        if (previous != null) {
+            Files.delete(previous);
+        }
+    }
+
+    private static Path saveMetadata(Path metadata) throws IOException {
+        Path previous = Files.createTempFile(metadata.getParent(), ".pointcloud-previous-meta-", ".part");
+        try {
+            return Files.move(metadata, previous, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException | RuntimeException failure) {
+            try {
+                Files.deleteIfExists(previous);
+            } catch (IOException | RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
         }
     }
 
     private static void checkMetadata(Path metadata, Pipeline pipeline, Path config, boolean overwrite)
             throws IOException {
+        checkMetadataAliases(metadata, pipeline, config);
+        if (Files.exists(metadata, LinkOption.NOFOLLOW_LINKS)
+                && (!overwrite || Files.isDirectory(metadata, LinkOption.NOFOLLOW_LINKS))) {
+            throw new FileAlreadyExistsException(metadata.toString());
+        }
+    }
+
+    private static void checkMetadataAliases(Path metadata, Pipeline pipeline, Path config) throws IOException {
         for (Path path : new Path[]{pipeline.input(), pipeline.output(), config}) {
             if (path != null && (metadata.normalize().equals(path.toAbsolutePath().normalize())
                     || Files.exists(metadata) && Files.exists(path) && Files.isSameFile(metadata, path))) {
                 throw new IOException("Metadata destination aliases a pipeline file: " + metadata);
             }
         }
-        if (!overwrite && Files.exists(metadata, LinkOption.NOFOLLOW_LINKS)) {
-            throw new FileAlreadyExistsException(metadata.toString());
+    }
+
+    private static Path destinationLocation(Path path) throws IOException {
+        Path absolute = path.toAbsolutePath();
+        Path parent = absolute.getParent();
+        while (parent != null && !Files.exists(parent)) {
+            parent = parent.getParent();
         }
+        return parent == null ? absolute.normalize()
+                : parent.toRealPath().resolve(parent.relativize(absolute)).normalize();
     }
 
     private static String value(String[] args, int index, String option) {
