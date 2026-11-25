@@ -105,7 +105,7 @@ Punktformat geprüft.
 | `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. Optional `count: "Classification"`. |
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
-| `writers.raster` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width`, `height`, `output_type` mit `min,max,mean,count`. |
+| `writers.raster` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width`, `height`, `output_type` mit `min,max,mean,count`. Optional `window_size: 0` (Standard) oder `1`. |
 
 `polygon` verwendet die XY-Koordinaten im CRS der Eingabedatei.
 JTS liest und validiert das Polygon beim Aufbau der Filterstage. Punkte
@@ -170,6 +170,14 @@ Leere Zellen verwenden `-9999` für die drei Höhenbänder und `0` im Count-Band
 Die in allen Bändern deklarierte NoData-Kennung ist `-9999`. Auch eine leere
 Selektion schreibt das vollständige Gitter.
 
+Mit `window_size: 1` erhält jede leere Zelle aus ihren bis zu acht direkt
+angrenzenden Messzellen einen Mittelwert je Höhenband. Jede Messzelle trägt
+gleich viel zum Mittelwert bei. Die Nachbarschaft endet am Gitterrand.
+`count` bleibt die Zahl der gemessenen Punkte. Zellen mit `count = 0` und
+einem gültigen Höhenwert sind interpoliert. Sie dienen keiner weiteren
+Zelle als Nachbarwert. Fehlen gemessene Nachbarn, bleiben die Höhenbänder
+auf NoData. `pointsBinned` zählt weiterhin die eingerasterten Punkte.
+
 Die einzige unterstützte Dimension ist `Z`, der Datentyp ist `double`.
 Die Defaults lassen sich mit `dimension: "Z"`, `data_type: "double"` und
 `nodata: -9999` explizit setzen. GeoTools liest das horizontale CRS aus
@@ -191,6 +199,7 @@ Die Stage-Optionen sind direkt übertragbar.
 
 - Der GeoTIFF-Writer heisst in PointCloud Java `writers.raster`. Für den
   PDAL-Referenzlauf setzt das Abnahmeskript den Typ auf `writers.gdal`.
+  Der unterstützte Bereich für `window_size` umfasst `0` und `1`.
   [Rasterabnahme](../tools/check-ground-grid.py)
 - PointCloud Java akzeptiert in `filters.expression` die Literale `+2.1e1`
   und `.5`. PDAL 2.10.2 weist diese Schreibweisen zurück. Verwende `2.1e1`

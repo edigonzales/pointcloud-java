@@ -13,7 +13,7 @@ import java.nio.file.StandardCopyOption;
 
 /** Accumulates Z by pixel and stages a north-up GeoTIFF for publication. */
 final class GroundGridWriter implements AutoCloseable {
-    record Grid(double originX, double originY, double resolution, int width, int height) {
+    record Grid(double originX, double originY, double resolution, int width, int height, boolean fillGaps) {
         static final int MAX_CELLS = 1_000_000;
 
         Grid {
@@ -75,9 +75,7 @@ final class GroundGridWriter implements AutoCloseable {
         }
         bands[0][cell] = Math.min(bands[0][cell], z);
         bands[1][cell] = Math.max(bands[1][cell], z);
-        double mean = bands[2][cell];
-        double delta = z - mean;
-        bands[2][cell] = Double.isFinite(delta) ? mean + delta / count : (mean - mean / count) + z / count;
+        bands[2][cell] = updatedMean(bands[2][cell], z, count);
     }
 
     long pointsBinned() {
@@ -97,10 +95,60 @@ final class GroundGridWriter implements AutoCloseable {
             }
             bands[3][cell] = counts[cell];
         }
+        if (grid.fillGaps) {
+            fillGaps();
+            checkInterrupted();
+        }
         Files.createDirectories(target.getParent());
         temporary = Files.createTempFile(target.getParent(), ".pointcloud-", ".tif.part");
         GeoTiffOutput.write(temporary, crs, grid.originX, grid.originY, grid.resolution, grid.width, grid.height, bands);
         checkInterrupted();
+    }
+
+    private void fillGaps() throws InterruptedIOException {
+        double[] minima = bands[0];
+        double[] maxima = bands[1];
+        double[] means = bands[2];
+        int width = grid.width;
+        for (int row = 0; row < grid.height; row++) {
+            checkInterrupted();
+            int north = Math.max(0, row - 1);
+            int south = Math.min(grid.height - 1, row + 1);
+            for (int column = 0; column < width; column++) {
+                int cell = row * width + column;
+                if (counts[cell] != 0) {
+                    continue;
+                }
+                int west = Math.max(0, column - 1);
+                int east = Math.min(width - 1, column + 1);
+                double min = 0;
+                double max = 0;
+                double mean = 0;
+                int neighbors = 0;
+                for (int y = north; y <= south; y++) {
+                    for (int x = west; x <= east; x++) {
+                        int neighbor = y * width + x;
+                        // Counts identify measured cells even after earlier gaps have been filled.
+                        if (counts[neighbor] > 0) {
+                            neighbors++;
+                            min = updatedMean(min, minima[neighbor], neighbors);
+                            max = updatedMean(max, maxima[neighbor], neighbors);
+                            mean = updatedMean(mean, means[neighbor], neighbors);
+                        }
+                    }
+                }
+                if (neighbors > 0) {
+                    minima[cell] = min;
+                    maxima[cell] = max;
+                    means[cell] = mean;
+                }
+            }
+        }
+    }
+
+    private static double updatedMean(double mean, double value, long count) {
+        double delta = value - mean;
+        return Double.isFinite(delta) ? mean + delta / count : (mean - mean / count) + value / count;
     }
 
     void finish() throws IOException {

@@ -1239,3 +1239,61 @@ Eine separate JFR-Aufnahme mit vier Java-Workern wies dem
 gewichtete Allokationsstichproben von 383 bzw. 166 MiB zu. Diese
 Schätzung bezieht sich auf das Allokationsvolumen über den gesamten
 Lauf. Der Spitzen-RSS stammt aus den unprofilierten Vergleichsläufen.
+
+## Bodenpunktraster mit Lückenfüllung gegen PDAL
+
+25. November 2026, Apple M1 arm64, macOS 15.8.1, 16 GiB RAM, Netzbetrieb.
+Java mit Temurin 25.0.3+9, `-Xmx512m` und GeoTools 35.1.
+PDAL 2.10.2/LazPerf aus `libpdal-core h151f718_4` mit GDAL 3.13.3.
+Die [Beispielpipeline](../examples/ground-grid-fill.json) liest alle
+14'566'627 Punkte der Solothurn-2019-Kachel und schreibt das 200 × 200 Raster
+mit 195'715 eingerasterten Bodenpunkten. Die Laufzeit umfasst Prozessstart,
+LAZ-Dekodierung, Rechteckzuschnitt, Bodenfilter, Z-Statistik und die Ausgabe
+von GeoTIFF und JSON-Metadaten. Beide GeoTIFFs enthalten vier unkomprimierte
+Float64-Bänder. Java speichert sie pixelweise, PDAL bandweise.
+
+Java verwendet `--laz-workers 1` oder `4`. PDAL verwendet `--stream` und
+`--readers.las.threads=1` oder `4`. Pro Engine und Workerzahl werden
+`window_size: 0` und `window_size: 1` ausgeführt. Nach je einem Warmlauf
+folgen acht Runden mit zyklisch rotierender Reihenfolge, sodass jede
+Variante an jeder Position einmal läuft. Jeder Lauf startet einen neuen
+Prozess bei warmem Dateicache und schreibt in ein eigenes temporäres
+Verzeichnis. Wandzeit kommt von `perf_counter_ns()`, Prozess-CPU und
+Spitzen-RSS von `/usr/bin/time -lp`. GDAL-Prüfung, Vergleich der Zellwerte
+und Metadaten sowie Dateigrössenerfassung liegen ausserhalb der Messung.
+
+```sh
+./gradlew installDist
+python3 tools/check-ground-grid.py /pfad/zu/pdal \
+  --benchmark-csv .cache/ground-grid-fill-pdal.csv
+```
+
+| `window_size` | Reader-Worker | Engine | Wandzeit, Median (Min–Max) in s | Prozess-CPU, Median in s | Median der Spitzen-RSS in MiB | Mio. Eingabepunkte/s |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 0 | 1 | Java | 5.319 (5.242–5.735) | 6.71 | 241.11 | 2.74 |
+| 0 | 1 | PDAL | 4.921 (4.874–5.195) | 7.53 | 72.94 | 2.96 |
+| 0 | 4 | Java | 2.061 (1.971–2.089) | 8.29 | 259.50 | 7.07 |
+| 0 | 4 | PDAL | 2.923 (2.849–3.044) | 8.12 | 95.17 | 4.98 |
+| 1 | 1 | Java | 5.377 (5.295–5.708) | 6.74 | 241.03 | 2.71 |
+| 1 | 1 | PDAL | 4.934 (4.913–5.026) | 7.54 | 72.89 | 2.95 |
+| 1 | 4 | Java | 2.045 (1.966–2.242) | 8.29 | 259.88 | 7.12 |
+| 1 | 4 | PDAL | 2.942 (2.807–3.054) | 8.05 | 100.66 | 4.95 |
+
+Java schrieb je Lauf 1'280'904 Byte GeoTIFF und 435 Byte JSON.
+PDAL schrieb 1'283'156 Byte GeoTIFF und 12'235 Byte JSON.
+Die gepaarten Prozentsätze sind Mediane der Verhältnisse innerhalb
+derselben Messrunde.
+
+| Reader-Worker | Java relativ zu PDAL, Fenster 0 | Java relativ zu PDAL, Fenster 1 | Zusatzzeit durch Füllung, Java (Min–Max) | Zusatzzeit durch Füllung, PDAL (Min–Max) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | +7.50 % | +9.19 % | +0.60 % (−4.69 bis +5.15 %) | +0.00 % (−4.93 bis +2.54 %) |
+| 4 | −29.75 % | −29.36 % | +0.54 % (−1.60 bis +11.38 %) | +0.24 % (−3.02 bis +4.89 %) |
+
+PDAL benötigte in allen acht Ein-Worker-Runden weniger Wandzeit als Java.
+Java benötigte in allen acht Vier-Worker-Runden weniger Wandzeit als PDAL.
+Die zusätzlichen Zeiten für die Lückenfüllung liegen in der Streuung
+der vollständigen Pipeline. Jede Variante hatte Runden, in denen die
+Füllung schneller war, und Runden mit zusätzlicher Wandzeit.
+Mit vier Workern und Füllung lag die mediane Spitzen-RSS von Java bei
+260 MiB und die von PDAL bei 101 MiB.
+[64 Einzelmessungen](measurements/ground-grid-fill-pdal.csv)

@@ -298,7 +298,7 @@ Relative Dateipfade werden wie beim Referenzlauf relativ zum Arbeitsverzeichnis 
 | `filters.stats` | Explizite `dimensions` als kommaseparierte Liste; Anzahl, Minimum, Maximum, Mittelwert und Stichprobenvarianz/-standardabweichung nach überprüfter Referenzsemantik. Keine globalen Mediane oder vollständigen Wertelisten |
 | `writers.las` | `filename`, ausdrücklich `forward: "all"`, `compression: false` und `extra_dims: "all"`. Für diese erste Teilmenge sind diese Einstellungen verbindlich; andere Header-/Quantisierungseinstellungen klar zurückweisen |
 | `writers.null` | Terminierung ohne Punktdatei; für Statistik- und Dekodiermessungen |
-| `writers.raster` | Lokales Float64-GeoTIFF mit Zellstatistik für `Z`. `binmode: true`, explizites Gitter und die vier Bänder `min,max,mean,count`. |
+| `writers.raster` | Lokales Float64-GeoTIFF mit Zellstatistik für `Z`. `binmode: true`, explizites Gitter und die vier Bänder `min,max,mean,count`. Optional `window_size: 1` zur Lückenfüllung aus direkt benachbarten Messzellen, Standard `0`. |
 
 Die Rastererweiterung verarbeitet höchstens eine Million Zellen. Das Gitter
 verwendet die skalierten XY-Koordinaten und das horizontale CRS der LAS-Eingabe.

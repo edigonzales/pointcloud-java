@@ -68,6 +68,15 @@ von `"type": "writers.gdal"` zu `"type": "writers.raster"`.
 "$cli" pipeline examples/polygon-ground-grid.json --metadata build/results/polygon-ground-grid.json
 ```
 
+[Ground-Grid-Fill](examples/ground-grid-fill.json) rastert einen rechteckigen
+Solothurn-Ausschnitt und füllt mit `window_size: 1` Lücken aus direkt
+benachbarten Messzellen. Im Band `mean` entsteht ein Geländemodell.
+Das Band `count` gibt weiterhin die Anzahl gemessener Punkte je Zelle an.
+
+```sh
+"$cli" pipeline examples/ground-grid-fill.json --metadata build/results/ground-grid-fill.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 

@@ -479,7 +479,7 @@ public final class Pipeline {
 
     private static GroundGridWriter.Grid parseRasterGrid(JsonObject stage) {
         options(stage, "filename", "binmode", "resolution", "origin_x", "origin_y", "width", "height",
-                "output_type", "dimension", "data_type", "nodata");
+                "output_type", "dimension", "data_type", "nodata", "window_size");
         if (!bool(stage, "binmode", false)) {
             throw new IllegalArgumentException("binmode must be true");
         }
@@ -500,13 +500,17 @@ public final class Pipeline {
         if (stage.has("nodata") && number(stage, "nodata") != GeoTiffOutput.NODATA) {
             throw new IllegalArgumentException("nodata must be -9999");
         }
+        long windowSize = integer(stage, "window_size", 0);
+        if (windowSize > 1) {
+            throw new IllegalArgumentException("window_size must be 0 or 1");
+        }
         long width = integer(stage, "width", 0);
         long height = integer(stage, "height", 0);
         if (width > GroundGridWriter.Grid.MAX_CELLS || height > GroundGridWriter.Grid.MAX_CELLS) {
             throw new IllegalArgumentException("grid may have at most " + GroundGridWriter.Grid.MAX_CELLS + " cells");
         }
         return new GroundGridWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
-                number(stage, "resolution"), (int) width, (int) height);
+                number(stage, "resolution"), (int) width, (int) height, windowSize == 1);
     }
 
     private static double number(JsonObject stage, String key) {

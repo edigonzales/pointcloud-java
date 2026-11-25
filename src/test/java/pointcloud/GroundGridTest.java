@@ -64,12 +64,14 @@ class GroundGridTest {
         }
     }
 
-    @Test
-    void writesAnEmptyGridAndReportsZeroBinnedPoints() throws Exception {
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1})
+    void writesAnEmptyGridAndReportsZeroBinnedPoints(int windowSize) throws Exception {
         Path target = temp.resolve("empty.tif");
-        var result = parse(fixture(3), target, """
+        String config = config(fixture(3), target, """
                 {"type":"filters.expression","expression":"Z < 0"},
-                """).run(2, false);
+                """, 2, 2, ",\"window_size\":" + windowSize);
+        var result = Pipeline.parse(new StringReader(config)).run(2, false);
         assertEquals(5, result.pointsRead());
         assertEquals(0, result.pointsSelected());
         assertEquals(0, result.pointsBinned());
@@ -85,6 +87,58 @@ class GroundGridTest {
         } finally {
             reader.dispose();
         }
+    }
+
+    @Test
+    void fillsOnlyGapsAdjacentToMeasuredCells() throws Exception {
+        Path input = fixture(3, new int[][]{{0, 0, 4}, {1, 1, 12}, {3, 3, 20}, {8, 8, 40}, {11, 11, 48}});
+        Path implicit = temp.resolve("default.tif");
+        Path disabled = temp.resolve("disabled.tif");
+        Path filled = temp.resolve("filled.tif");
+        var baseline = Pipeline.parse(new StringReader(config(input, implicit, "", 5, 5))).run(2, false);
+        var zero = Pipeline.parse(new StringReader(config(input, disabled, "", 5, 5, ",\"window_size\":0")))
+                .run(2, false);
+        var one = Pipeline.parse(new StringReader(config(input, filled, "", 5, 5, ",\"window_size\":1")))
+                .run(2, false);
+        assertEquals(baseline, zero);
+        assertEquals(baseline, one);
+        assertEquals(5, one.pointsBinned());
+        assertEquals(-1, Files.mismatch(implicit, disabled));
+
+        double[] measuredA = {702, 710, 706, 3};
+        double[] measuredB = {720, 724, 722, 2};
+        double[] fromA = {702, 710, 706, 0};
+        double[] fromB = {720, 724, 722, 0};
+        double[] fromBoth = {711, 717, 714, 0};
+        double[][][] expected = {
+                {EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL},
+                {EMPTY_CELL, fromB, fromB, fromB, EMPTY_CELL},
+                {EMPTY_CELL, fromB, measuredB, fromB, EMPTY_CELL},
+                {fromA, fromBoth, fromB, fromB, EMPTY_CELL},
+                {measuredA, fromA, EMPTY_CELL, EMPTY_CELL, EMPTY_CELL}
+        };
+        var reader = new GeoTiffReader(filled.toFile());
+        try {
+            var raster = reader.read().getRenderedImage().getData();
+            for (int row = 0; row < expected.length; row++) {
+                for (int column = 0; column < expected[row].length; column++) {
+                    assertArrayEquals(expected[row][column], raster.getPixel(column, row, (double[]) null),
+                            "row " + row + ", column " + column);
+                }
+            }
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"-1", "2", "1.0", "\"1\"", "true", "null", "9223372036854775808"})
+    void rejectsInvalidWindowSizeDuringParsing(String value) {
+        Path target = temp.resolve("invalid-window.tif");
+        String config = config(temp.resolve("missing.las"), target, "", 2, 2, ",\"window_size\":" + value);
+        var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
+        assertTrue(error.getMessage().startsWith("Stage 2 (writers.raster): window_size "), error::getMessage);
+        assertFalse(Files.exists(target));
     }
 
     @Test
@@ -119,7 +173,7 @@ class GroundGridTest {
     @Test
     void discardsStagedRasterWhenInterruptedBeforePublication() throws Exception {
         Path target = temp.resolve("interrupted.tif");
-        var pipeline = parse(fixture(3), target, "");
+        var pipeline = Pipeline.parse(new StringReader(config(fixture(3), target, "", 2, 2, ",\"window_size\":1")));
         assertThrows(InterruptedIOException.class, () -> pipeline.run(2, false, Pipeline::openSequential,
                 (result, finish) -> {
                     assertFalse(Files.exists(target));
@@ -163,22 +217,29 @@ class GroundGridTest {
     }
 
     private static String config(Path input, Path target, String filter, int width, int height) {
+        return config(input, target, filter, width, height, "");
+    }
+
+    private static String config(Path input, Path target, String filter, int width, int height, String writerOptions) {
         return """
                 [%s, %s
                  {"type":"writers.raster","filename":%s,"binmode":true,"resolution":1,
                   "origin_x":%s,"origin_y":%s,"width":%d,"height":%d,
-                  "output_type":"count,mean,min,max","dimension":"Z","data_type":"double","nodata":-9999}]
+                  "output_type":"count,mean,min,max","dimension":"Z","data_type":"double","nodata":-9999%s}]
                 """.formatted(Pipeline.JSON.toJson(input.toString()), filter, Pipeline.JSON.toJson(target.toString()),
-                ORIGIN_X, ORIGIN_Y, width, height);
+                ORIGIN_X, ORIGIN_Y, width, height, writerOptions);
     }
 
     private Path fixture(int format) throws Exception {
+        return fixture(format, new int[][]{{0, 0, 2}, {3, 3, 10}, {4, 4, 20}, {8, 0, 200}, {0, 8, 400}});
+    }
+
+    private Path fixture(int format, int[][] coordinates) throws Exception {
         var las = LasIoTest.bytes(LasIoTest.fixture(format, "las"));
         las.putDouble(131, .25).putDouble(139, .25).putDouble(147, .5);
         las.putDouble(155, ORIGIN_X).putDouble(163, ORIGIN_Y).putDouble(171, 700);
         int points = las.getInt(96);
         int stride = las.getChar(105);
-        int[][] coordinates = {{0, 0, 2}, {3, 3, 10}, {4, 4, 20}, {8, 0, 200}, {0, 8, 400}};
         for (int i = 0; i < coordinates.length; i++) {
             int offset = points + i * stride;
             las.putInt(offset, coordinates[i][0]).putInt(offset + 4, coordinates[i][1]).putInt(offset + 8, coordinates[i][2]);
