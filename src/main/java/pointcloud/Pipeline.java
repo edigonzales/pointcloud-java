@@ -41,6 +41,7 @@ import java.util.regex.Pattern;
 
 /** A linear PDAL-subset pipeline. Execution state is created afresh for each run. */
 public final class Pipeline {
+    private static final String RASTER_WRITER = "writers.raster";
     private static final String BOUND = "\\s*\\[\\s*(" + Expression.NUMBER + ")\\s*,\\s*("
             + Expression.NUMBER + ")\\s*]\\s*";
     private static final Pattern BOX = Pattern.compile("\\s*\\(" + BOUND + "," + BOUND
@@ -126,7 +127,7 @@ public final class Pipeline {
         JsonObject writer = stageObject(stages.get(position - 1), position);
         String type = type(writer, position);
         try {
-            rasterGrid = type.equals("writers.gdal") ? parseRasterGrid(writer) : null;
+            rasterGrid = type.equals(RASTER_WRITER) ? parseRasterGrid(writer) : null;
             output = switch (type) {
                 case "writers.las" -> {
                     options(writer, "filename", "forward", "compression", "extra_dims");
@@ -137,7 +138,7 @@ public final class Pipeline {
                     }
                     yield filename(string(writer, "filename"), false);
                 }
-                case "writers.gdal" -> {
+                case RASTER_WRITER -> {
                     String name = string(writer, "filename");
                     String lower = name.toLowerCase(Locale.ROOT);
                     if (!lower.endsWith(".tif") && !lower.endsWith(".tiff")) {
@@ -149,7 +150,8 @@ public final class Pipeline {
                     options(writer);
                     yield null;
                 }
-                default -> throw new IllegalArgumentException("expected writers.las, writers.gdal or writers.null");
+                case "writers.gdal" -> throw new IllegalArgumentException("change the stage type to " + RASTER_WRITER);
+                default -> throw new IllegalArgumentException("expected writers.las, " + RASTER_WRITER + " or writers.null");
             };
         } catch (IllegalArgumentException e) {
             throw atStage(position, type, e.getMessage());
@@ -231,7 +233,7 @@ public final class Pipeline {
         try {
             return new GroundGridWriter(input, output, overwrite, rasterGrid, reader.header(), reader.channel());
         } catch (IOException e) {
-            throw new IOException("Stage " + stages.size() + " (writers.gdal): " + e.getMessage(), e);
+            throw new IOException("Stage " + stages.size() + " (" + RASTER_WRITER + "): " + e.getMessage(), e);
         }
     }
 

@@ -2,7 +2,7 @@
 
 PointCloud Java ist eine eigenständige Java-25-Bibliothek und CLI für
 lokale LAS-/LAZ-Dateien. Der [Auftrag](codex-auftrag-pointcloud-java.md) begrenzt
-das Produkt auf LAS-Ausgabe und lineare Pipelines einer definierten PDAL-Teilmenge.
+das Produkt auf LAS- und GeoTIFF-Ausgabe sowie lineare Pipelines einer definierten PDAL-Teilmenge.
 CRS-Reprojektion, COPC-/EPT-Raumsuche und Plugin-Graphen liegen ausserhalb
 dieses Umfangs. Der aktuelle Stand ist im [Etappenprotokoll](docs/implementation-log.md)
 festgehalten.
@@ -61,7 +61,8 @@ die Punktzahlen und die Statistik der ausgewählten Punkte.
 Bodenpunkte im L-Perimeter in ein 200 × 200-Zellen-GeoTIFF mit 1 m Zellbreite.
 Die vier Bänder enthalten minimale, maximale und mittlere Höhe sowie
 Punktzahl je Zelle. Die Metadaten zählen die 143'238
-eingerasterten Punkte separat.
+eingerasterten Punkte separat. Bestehende Java-Pipelines migrieren
+von `"type": "writers.gdal"` zu `"type": "writers.raster"`.
 
 ```sh
 "$cli" pipeline examples/polygon-ground-grid.json --metadata build/results/polygon-ground-grid.json

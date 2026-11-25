@@ -1120,3 +1120,22 @@ GeoTIFF erhält die bestehende Metadatenpublikation und deren Rollback.
   vollständige LAS-Rohrecords, Statistik und CRS. SIGTERM ergab Exit
   143 und hinterliess keine Zieldateien oder temporären Dateien.
   Das JVM-ZIP mit GeoTools ist rund 24 MiB gross.
+
+## Pipeline-API für die Rasterausgabe
+
+PointCloud Java verwendet `writers.raster` für den GeoTIFF-Writer.
+`writers.gdal` wird beim Parsen mit einem Migrationshinweis abgewiesen.
+Das Raster-Abnahmeskript setzt den Stage-Typ für PDAL auf `writers.gdal`.
+
+- `./gradlew clean check installDist` bestand auf macOS 15.8.1 (arm64)
+  mit Temurin 25.0.3 und Gradle 9.9.1. Alle 87 JUnit-Fälle liefen ohne
+  Fehler oder übersprungene Tests. Der neue Test prüft die Ablehnung
+  des alten Typs vor dem Öffnen der Eingabe.
+- `tools/check-ground-grid.py` bestätigte auf Solothurn 2019 mit
+  PDAL 2.10.2 und GDAL 3.13.3 die Georeferenzierung, NoData und alle
+  160'000 Zellwerte exakt. Java seriell und mit vier Workern lieferte
+  identische Rasterwerte und JSON-Metadaten. Das Raster enthält
+  143'238 Punkte in 26'114 belegten Zellen.
+- `tools/check-real-data.py` bestätigte 496'586 LAS-Rohrecords,
+  Statistik und CRS. SIGTERM ergab Exit 143 und entfernte die
+  temporären Ausgaben.

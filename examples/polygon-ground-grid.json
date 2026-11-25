@@ -17,7 +17,7 @@
       "dimensions": "Z"
     },
     {
-      "type": "writers.gdal",
+      "type": "writers.raster",
       "filename": "build/results/polygon-ground-grid.tif",
       "resolution": 1,
       "origin_x": 2594100,

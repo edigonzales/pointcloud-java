@@ -81,21 +81,23 @@ def compare_values(java, pdal):
 def check_grid(args, gdalinfo, gdalsrsinfo, translate):
     source = (args.data / "so-2019.laz").resolve()
     require(source.is_file(), f"Missing real-data input: {source}")
-    pipeline = json.loads(Path("examples/polygon-ground-grid.json").read_text())
-    pipeline["pipeline"][0]["filename"] = str(source)
+    stages = json.loads(Path("examples/polygon-ground-grid.json").read_text())["pipeline"]
+    stages[0]["filename"] = str(source)
     with tempfile.TemporaryDirectory(prefix="pointcloud-raster-") as scratch:
         work = Path(scratch)
         config = work / "pipeline.json"
         outputs = []
         for variant in ("serial", "parallel", "pdal"):
             target, metadata = work / f"{variant}.tif", work / f"{variant}.json"
-            pipeline["pipeline"][-1]["filename"] = str(target)
-            config.write_text(json.dumps(pipeline))
+            writer = {**stages[-1], "filename": str(target)}
             if variant == "pdal":
-                run([args.pdal, "pipeline", config, "--stream", "--readers.las.threads=4", "--metadata", metadata])
+                writer["type"] = "writers.gdal"
+                command = [args.pdal, "pipeline", config, "--stream", "--readers.las.threads=4", "--metadata", metadata]
             else:
                 workers = "1" if variant == "serial" else "4"
-                run([args.cli, "pipeline", config, "--metadata", metadata, "--laz-workers", workers])
+                command = [args.cli, "pipeline", config, "--metadata", metadata, "--laz-workers", workers]
+            config.write_text(json.dumps({"pipeline": [*stages[:-1], writer]}))
+            run(command)
             inspect(gdalinfo, gdalsrsinfo, target)
             outputs.append((metadata, read_bands(translate, target)))
 
