@@ -92,9 +92,19 @@ class GroundGridTest {
         Path target = temp.resolve("missing-crs.tif");
         var pipeline = parse(LasIoTest.fixture(3, "las"), target, "");
         var error = assertThrows(IOException.class, () -> pipeline.run(2, false));
-        assertTrue(error.getMessage().contains("Stage 2 (writers.gdal): Missing LAS CRS"), error::getMessage);
+        assertTrue(error.getMessage().contains("Stage 2 (writers.raster): Missing LAS CRS"), error::getMessage);
         assertFalse(Files.exists(target));
         assertNoPartFiles();
+    }
+
+    @Test
+    void rejectsOldRasterWriterNameDuringParsing() {
+        Path target = temp.resolve("grid.tif");
+        String config = config(temp.resolve("missing.las"), target, "", 2, 2)
+                .replace("\"writers.raster\"", "\"writers.gdal\"");
+        var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
+        assertEquals("Stage 2 (writers.gdal): change the stage type to writers.raster", error.getMessage());
+        assertFalse(Files.exists(target));
     }
 
     @Test
@@ -155,7 +165,7 @@ class GroundGridTest {
     private static String config(Path input, Path target, String filter, int width, int height) {
         return """
                 [%s, %s
-                 {"type":"writers.gdal","filename":%s,"binmode":true,"resolution":1,
+                 {"type":"writers.raster","filename":%s,"binmode":true,"resolution":1,
                   "origin_x":%s,"origin_y":%s,"width":%d,"height":%d,
                   "output_type":"count,mean,min,max","dimension":"Z","data_type":"double","nodata":-9999}]
                 """.formatted(Pipeline.JSON.toJson(input.toString()), filter, Pipeline.JSON.toJson(target.toString()),

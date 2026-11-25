@@ -277,7 +277,11 @@ Solange komprimiertes Schreiben nicht implementiert und abgenommen ist, `.laz`-A
 
 Unterstütze eine lineare Pipeline mit **einem Reader, null oder mehr Filtern und genau einem terminalen Writer**. Akzeptiere sowohl `{"pipeline":[...]}` als auch das entsprechende JSON-Array. Die erste Datei darf als Reader-Kurzform angegeben werden. Für die Ausgabe verwende einen expliziten Writer mit den unterstützten Optionen.
 
-PDAL-kompatibel bedeutet hier: Die unterstützte JSON-Eingabe und die fachliche Wirkung der aufgeführten Stages/Optionen stimmen mit dem dokumentierten PDAL-Referenzstand überein. Das bedeutet keine vollständige Nachbildung aller PDAL-Optionen, CLI-Schalter oder des gesamten Metadaten-JSON-Schemas.
+Für die unterstützten Stages entsprechen die JSON-Optionen und ihre fachliche
+Wirkung dem dokumentierten PDAL-Referenzstand. Der GeoTIFF-Writer trägt in
+PointCloud Java den Typ `writers.raster`. Für den PDAL-Referenzlauf wird
+dieser Typ auf `writers.gdal` gesetzt. Die [Pipeline-Dokumentation](docs/architecture.md#pipelines)
+definiert die unterstützte JSON-Eingabe und die Ausgabemetadaten.
 
 Unbekannte Stage-Typen, unbekannte Optionen und Syntax ausserhalb der Teilmenge **vor dem Start der eigentlichen Verarbeitung** zurückweisen. Fehlermeldung mit Stage-Position, Typ und problematischer Option. Nichts stillschweigend ignorieren.
 
@@ -294,7 +298,7 @@ Relative Dateipfade werden wie beim Referenzlauf relativ zum Arbeitsverzeichnis 
 | `filters.stats` | Explizite `dimensions` als kommaseparierte Liste; Anzahl, Minimum, Maximum, Mittelwert und Stichprobenvarianz/-standardabweichung nach überprüfter Referenzsemantik. Keine globalen Mediane oder vollständigen Wertelisten |
 | `writers.las` | `filename`, ausdrücklich `forward: "all"`, `compression: false` und `extra_dims: "all"`. Für diese erste Teilmenge sind diese Einstellungen verbindlich; andere Header-/Quantisierungseinstellungen klar zurückweisen |
 | `writers.null` | Terminierung ohne Punktdatei; für Statistik- und Dekodiermessungen |
-| `writers.gdal` | Lokales Float64-GeoTIFF mit Zellstatistik für `Z`. `binmode: true`, explizites Gitter und die vier Bänder `min,max,mean,count`. |
+| `writers.raster` | Lokales Float64-GeoTIFF mit Zellstatistik für `Z`. `binmode: true`, explizites Gitter und die vier Bänder `min,max,mean,count`. |
 
 Die Rastererweiterung verarbeitet höchstens eine Million Zellen. Das Gitter
 verwendet die skalierten XY-Koordinaten und das horizontale CRS der LAS-Eingabe.

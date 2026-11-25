@@ -105,7 +105,7 @@ Punktformat geprüft.
 | `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. Optional `count: "Classification"`. |
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
-| `writers.gdal` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width`, `height`, `output_type` mit `min,max,mean,count`. |
+| `writers.raster` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width`, `height`, `output_type` mit `min,max,mean,count`. |
 
 `polygon` verwendet die XY-Koordinaten im CRS der Eingabedatei.
 JTS liest und validiert das Polygon beim Aufbau der Filterstage. Punkte
@@ -160,7 +160,7 @@ typisierte Ergebnis. Ein erneuter Aufruf erstellt frischen Stage-Zustand.
 
 ### Rasterausgabe
 
-`writers.gdal` rastert die Z-Werte der gefilterten Punkte in ein explizites,
+`writers.raster` rastert die Z-Werte der gefilterten Punkte in ein explizites,
 nordorientiertes XY-Gitter mit höchstens 1'000'000 Zellen. `resolution` ist
 die Zellbreite in den Einheiten des horizontalen CRS. Der Ursprung ist
 die linke untere Ecke. Linker und unterer Rand sind inklusive, rechter und
@@ -183,8 +183,15 @@ CRS-Angaben, die sich nicht auflösen lassen, ergeben einen Stagefehler.
 das GeoTIFF nach verifiziertem Dateiende. Zur JVM-Distribution gehören
 GeoTools und die [zugehörigen Lizenzhinweise](../licenses/geotools/NOTICE.md).
 
+Für bestehende Java-Pipelines mit `"type": "writers.gdal"` reicht es,
+den Typ der letzten Stage auf `"type": "writers.raster"` zu setzen.
+Die Stage-Optionen sind direkt übertragbar.
+
 ## Kompatibilität mit PDAL 2.10.2
 
+- Der GeoTIFF-Writer heisst in PointCloud Java `writers.raster`. Für den
+  PDAL-Referenzlauf setzt das Abnahmeskript den Typ auf `writers.gdal`.
+  [Rasterabnahme](../tools/check-ground-grid.py)
 - PointCloud Java akzeptiert in `filters.expression` die Literale `+2.1e1`
   und `.5`. PDAL 2.10.2 weist diese Schreibweisen zurück. Verwende `2.1e1`
   und `0.5` für Pipelines, die mit beiden Engines laufen sollen.
