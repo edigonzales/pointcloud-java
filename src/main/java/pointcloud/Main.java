@@ -204,10 +204,10 @@ public final class Main {
         var pipeline = Pipeline.read(config);
         Path target = pipeline.output();
         if (target != null && Files.exists(target) && Files.isSameFile(target, config)) {
-            throw new IOException("LAS output aliases the pipeline configuration: " + target);
+            throw new IOException("Point cloud output aliases the pipeline configuration: " + target);
         }
         if (metadata == null) {
-            out.println(Pipeline.JSON.toJson(pipeline.run(batchSize, overwrite, inputs, Pipeline::publishLas)));
+            out.println(Pipeline.JSON.toJson(pipeline.run(batchSize, overwrite, inputs, Pipeline::publishOutput)));
         } else {
             runWithMetadata(pipeline, config, metadata, batchSize, overwrite, inputs);
         }
@@ -217,18 +217,18 @@ public final class Main {
                                         boolean overwrite, Pipeline.InputFactory inputs) throws IOException {
         checkMetadata(metadata, pipeline, config, overwrite);
         if (pipeline.output() != null) {
-            Path las = destinationLocation(pipeline.output());
+            Path target = destinationLocation(pipeline.output());
             Path json = destinationLocation(metadata);
-            if (las.startsWith(json) || json.startsWith(las)) {
-                throw new IOException("LAS and metadata destinations must be separate files: " + las + " and " + json);
+            if (target.startsWith(json) || json.startsWith(target)) {
+                throw new IOException("Output and metadata destinations must be separate files: " + target + " and " + json);
             }
         }
         Files.createDirectories(metadata.getParent());
         Path temporary = Files.createTempFile(metadata.getParent(), ".pointcloud-meta-", ".part");
         try {
-            pipeline.run(batchSize, overwrite, inputs, (result, writer) -> {
+            pipeline.run(batchSize, overwrite, inputs, (result, finish) -> {
                 Files.writeString(temporary, Pipeline.JSON.toJson(result) + System.lineSeparator());
-                publishWithMetadata(temporary, metadata, pipeline, config, overwrite, writer);
+                publishWithMetadata(temporary, metadata, pipeline, config, overwrite, finish);
             });
         } finally {
             Files.deleteIfExists(temporary);
@@ -236,7 +236,7 @@ public final class Main {
     }
 
     private static void publishWithMetadata(Path temporary, Path metadata, Pipeline pipeline, Path config,
-                                            boolean overwrite, LasWriter writer) throws IOException {
+                                            boolean overwrite, Pipeline.OutputFinish finish) throws IOException {
         checkMetadata(metadata, pipeline, config, overwrite);
         Path previous = null;
         boolean published = false;
@@ -250,10 +250,10 @@ public final class Main {
                 Files.move(temporary, metadata);
             }
             published = true;
-            if (writer != null) {
-                // Publishing metadata can make an alias of a previously absent LAS target visible.
+            if (finish != null) {
+                // Publishing metadata can make an alias of a previously absent output target visible.
                 checkMetadataAliases(metadata, pipeline, config);
-                writer.finish();
+                finish.finish();
             }
         } catch (IOException | RuntimeException failure) {
             try {

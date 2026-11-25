@@ -105,6 +105,7 @@ Punktformat geprüft.
 | `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. Optional `count: "Classification"`. |
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
+| `writers.gdal` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width`, `height`, `output_type` mit `min,max,mean,count`. |
 
 `polygon` verwendet die XY-Koordinaten im CRS der Eingabedatei.
 JTS liest und validiert das Polygon beim Aufbau der Filterstage. Punkte
@@ -149,13 +150,38 @@ Punkte. `--laz-workers` wählt die maximale Zahl der LAZ-Decoder-Worker
 `pointcloud --diagnostics ...` aktiviert Stacktraces.
 
 Mit `--metadata` schreibt die CLI zuerst das JSON in eine temporäre Datei.
-Sie veröffentlicht die Metadaten vor der LAS-Datei. Schlägt der LAS-Abschluss
-fehl, entfernt sie die neuen Metadaten oder stellt die vorherige Datei wieder
-her. Die Veröffentlichung erfolgt in zwei Dateisystemoperationen.
+Sie veröffentlicht die Metadaten vor der LAS- oder GeoTIFF-Datei.
+Schlägt der Abschluss der Ausgabe fehl, entfernt sie die neuen Metadaten
+oder stellt die vorherige Datei wieder her. Die Veröffentlichung erfolgt in zwei Dateisystemoperationen.
 
 Im Bibliotheksaufruf verwendet `Pipeline.read(Path.of("examples/stats.json"))`
 dieselbe Konfiguration. `pipeline.run(32_768, false)` liefert das
 typisierte Ergebnis. Ein erneuter Aufruf erstellt frischen Stage-Zustand.
+
+### Rasterausgabe
+
+`writers.gdal` rastert die Z-Werte der gefilterten Punkte in ein explizites,
+nordorientiertes XY-Gitter mit höchstens 1'000'000 Zellen. `resolution` ist
+die Zellbreite in den Einheiten des horizontalen CRS. Der Ursprung ist
+die linke untere Ecke. Linker und unterer Rand sind inklusive, rechter und
+oberer Rand exklusiv. Innere Zellgrenzen gehören zur östlichen beziehungsweise
+nördlichen Zelle. Die Bänder sind immer `min`, `max`, `mean`, `count`.
+Leere Zellen verwenden `-9999` für die drei Höhenbänder und `0` im Count-Band.
+Die in allen Bändern deklarierte NoData-Kennung ist `-9999`. Auch eine leere
+Selektion schreibt das vollständige Gitter.
+
+Die einzige unterstützte Dimension ist `Z`, der Datentyp ist `double`.
+Die Defaults lassen sich mit `dimension: "Z"`, `data_type: "double"` und
+`nodata: -9999` explizit setzen. GeoTools liest das horizontale CRS aus
+LAS-WKT oder direkten EPSG-GeoKeys und schreibt ein GeoTIFF mit
+`PixelIsArea`. Die Ausgabe übernimmt die XY-Koordinaten der Eingabe.
+CRS-Angaben, die sich nicht auflösen lassen, ergeben einen Stagefehler.
+
+`pointsSelected` zählt alle Punkte nach dem letzten Filter.
+`pointsBinned` zählt die davon ins Gitter gefallenen Punkte.
+`pointsWritten` bleibt bei einer Rasterausgabe 0. Die CLI veröffentlicht
+das GeoTIFF nach verifiziertem Dateiende. Zur JVM-Distribution gehören
+GeoTools und die [zugehörigen Lizenzhinweise](../licenses/geotools/NOTICE.md).
 
 ## Kompatibilität mit PDAL 2.10.2
 

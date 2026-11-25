@@ -57,6 +57,16 @@ die Punktzahlen und die Statistik der ausgewählten Punkte.
 "$cli" pipeline examples/polygon-ground-crop.json --metadata build/results/polygon-ground-crop.json
 ```
 
+[Polygon-Ground-Grid](examples/polygon-ground-grid.json) rastert die
+Bodenpunkte im L-Perimeter in ein 200 × 200-Zellen-GeoTIFF mit 1 m Zellbreite.
+Die vier Bänder enthalten minimale, maximale und mittlere Höhe sowie
+Punktzahl je Zelle. Die Metadaten zählen die 143'238
+eingerasterten Punkte separat.
+
+```sh
+"$cli" pipeline examples/polygon-ground-grid.json --metadata build/results/polygon-ground-grid.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 
@@ -83,6 +93,14 @@ PDAL-Vergleich prüft Solothurn 2019 und Autzen.
 ```sh
 ./gradlew downloadTestData -Ptile=autzen
 python3 tools/check-las-flags.py /pfad/zu/pdal
+```
+
+Die Rasterabnahme verwendet zusätzlich GDAL für Georeferenzierung und
+Float64-Zellwerte. Die GDAL-Werkzeuge müssen im `PATH` oder neben `pdal`
+verfügbar sein.
+
+```sh
+python3 tools/check-ground-grid.py /pfad/zu/pdal
 ```
 
 Der Parallelvergleich auf macOS prüft Solothurn 2014 und Autzen mit
