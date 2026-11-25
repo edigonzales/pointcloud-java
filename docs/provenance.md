@@ -68,6 +68,14 @@ and Conditions und die Hinweise zu separat lizenzierten Teilen.
 Die JVM-Distribution hält den Codec in einem separaten JAR.
 [Oracle GraalVM-Lizenz](https://www.oracle.com/downloads/licenses/graal-free-license.html)
 
+## Polygongeometrie
+
+Der Polygonfilter verwendet das unveränderte Maven-Artefakt
+`org.locationtech.jts:jts-core:1.20.0`. Die Distribution enthält
+die Eclipse Distribution License 1.0 und die Lizenzhinweise von JTS
+unter `licenses/jts/`.
+[JTS 1.20.0](https://central.sonatype.com/artifact/org.locationtech.jts/jts-core/1.20.0)
+
 ## Realdaten
 
 Die Solothurner Kacheln stammen vom Amt für Geoinformation des Kantons.

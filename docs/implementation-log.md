@@ -1045,3 +1045,24 @@ dokumentiert. Die vier betroffenen Alphabetgrössen sind 33, 64, 128 und 256.
   Die unabhängige Abnahme mit PDAL 2.10.2 verglich 353'342 Rohrecords in
   Dateireihenfolge ohne Abweichung. Statistik und CRS bestanden.
   SIGTERM ergab Exit 143 und entfernte die temporären Ausgaben.
+
+## Polygonzuschnitt mit JTS
+
+`filters.crop` unterstützt ein gültiges, nicht leeres 2D-WKT-Polygon
+mit optionalen Löchern im CRS der Eingabedatei. JTS 1.20.0 liest und
+validiert es einmal pro Pipeline-Ausführung. Polygon- und Lochränder
+gehören zur Auswahl. `outside: true` invertiert genau diese Auswahl.
+
+- `./gradlew --offline clean check installDist distZip` bestand mit
+  74 JUnit-Fällen ohne Fehler oder übersprungene Tests. Die direkten
+  Fälle prüfen Polygonkanten und Eckpunkte, Löcher, Inversion,
+  fehlerhafte Einstellungen und bytegenaue Rohrecords über Batchgrenzen.
+- `python3 tools/check-real-data.py /pfad/zu/pdal` bestand mit PDAL
+  2.10.2. Polygon-Ground-Crop las 14'566'627 Punkte und schrieb
+  143'244 Records. Die LAS- und JSON-Ausgaben mit einem und vier
+  Java-Workern waren bytegleich. Gegen PDAL stimmten alle Rohrecords
+  in Dateireihenfolge überein. CRS und Statistik bestanden die
+  Vergleichsregeln. Die Java-Ausgabe behielt die übertragbaren VLRs.
+- Ground-Crop, Statistik, Dezimierung, Solothurn 2014 und SIGTERM
+  bestanden ebenfalls. Der Abbruch lieferte Exit 143 und räumte die
+  temporären Ausgaben auf.

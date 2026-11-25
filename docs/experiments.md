@@ -1197,3 +1197,45 @@ die Rückführung des GPU-Ergebnisses zählen gegen den
 Kernelvorteil. **Produktive Übernahme verworfen.** Der
 TornadoVM-Versuch bleibt getrennt reproduzierbar.
 [Einzelmessungen](measurements/e8-metal.csv)
+
+## Polygon-Ground-Crop gegen PDAL
+
+25. November 2026, Apple M1 arm64, macOS 15.8.1, 16 GiB RAM.
+Java mit Temurin 25.0.3+9, `-Xmx512m` und JTS 1.20.0.
+PDAL 2.10.2/LazPerf aus `libpdal-core h151f718_4`.
+Die [Beispielpipeline](../examples/polygon-ground-crop.json) liest
+14'566'627 LAZ-Punkte und schreibt 143'244 Bodenpunkte als LAS.
+Der Lauf umfasst LAZ-Dekodierung, Polygon- und Klassenfilter,
+Statistik sowie LAS- und JSON-Ausgabe.
+
+Die vier Kombinationen liefen je achtmal in frischen Prozessen bei
+warmem Dateicache. Die Reihenfolge rotiert und wird nach der vierten
+Runde umgekehrt. Die Prozesswandzeit kommt von `perf_counter_ns()`.
+`/usr/bin/time -lp` liefert CPU-Zeit und Spitzen-RSS. Java verwendet
+`--laz-workers 1` bzw. `4`, PDAL `--stream --readers.las.threads=1`
+bzw. `4`. Beide CLIs erhalten `--metadata`. Die Pipeline verweist
+für die Messung auf temporäre Ausgabeziele. Ausserhalb der Messung
+wurden LAS-Records und Statistiken in jedem Durchlauf verglichen.
+Der Vorlauf bestätigte auch CRS und bytegleiche Java-LAS- und
+-JSON-Ausgaben.
+
+| Reader-Worker | Engine | Wandzeit, Median (Min–Max) | Prozess-CPU, Median | Median der Spitzen-RSS | Mio. Eingabepunkte/s |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Java | 5.049 (5.025–5.427) s | 5.61 s | 303.99 MiB | 2.88 |
+| 1 | PDAL | 4.944 (4.888–5.312) s | 7.53 s | 66.80 MiB | 2.95 |
+| 4 | Java | 1.661 (1.613–2.093) s | 7.69 s | 327.22 MiB | 8.77 |
+| 4 | PDAL | 3.026 (2.930–3.477) s | 8.44 s | 92.58 MiB | 4.81 |
+
+Java benötigte mit einem Reader-Worker im gepaarten Median 2.22 %
+mehr und mit vier Workern 44.81 % weniger Wandzeit. PDAL gewann
+alle acht Ein-Worker-Vergleiche, Java alle acht Vier-Worker-Vergleiche.
+Der gepaarte Spitzen-RSS von Java lag beim 4.52- bzw. 3.54-Fachen.
+Die Angaben zur Workerzahl gelten für den Reader. Prozess-CPU summiert
+die Zeit aller Threads.
+[32 Einzelmessungen](measurements/polygon-ground-crop-pdal.csv)
+
+Eine separate JFR-Aufnahme mit vier Java-Workern wies dem
+`RayCrossingCounter` und dem `SegmentVisitor` des JTS-Polygonpfads
+gewichtete Allokationsstichproben von 383 bzw. 166 MiB zu. Diese
+Schätzung bezieht sich auf das Allokationsvolumen über den gesamten
+Lauf. Der Spitzen-RSS stammt aus den unprofilierten Vergleichsläufen.
