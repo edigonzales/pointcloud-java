@@ -1,15 +1,20 @@
 """Compare the Solothurn ground raster with PDAL 2.10.2 and GDAL."""
 
 import argparse
+import csv
 import json
 import math
+import os
 from pathlib import Path
+import platform
 import re
 import runpy
 import shutil
 import struct
 import subprocess
 import tempfile
+import time
+from typing import NamedTuple
 
 
 REFERENCE = runpy.run_path(str(Path(__file__).with_name("check-real-data.py")))
@@ -18,19 +23,31 @@ require = REFERENCE["require"]
 run = REFERENCE["run"]
 
 POINTS_READ = 14_566_627
-POINTS_SELECTED = 143_244
-POINTS_BINNED = 143_238
-OCCUPIED_CELLS = 26_114
 WIDTH = HEIGHT = 200
 NODATA = -9999
 BANDS = ("min", "max", "mean", "count")
 TRANSFORM = [2594100, 1, 0, 1227800, 0, -1]
-MEAN_TOLERANCE = 1e-9
+HEIGHT_TOLERANCE = 1e-9
+ROUNDS = 8
+
+
+class GridCase(NamedTuple):
+    example: str
+    selected: int
+    binned: int
+    measured: int
+    filled: int
+
+
+POLYGON = GridCase("polygon-ground-grid", 143_244, 143_238, 26_114, 0)
+RECTANGLE = GridCase("ground-grid-fill", 195_738, 195_715, 35_261, 4_491)
 
 
 def inspect(gdalinfo, gdalsrsinfo, raster):
     info = json.loads(subprocess.check_output([gdalinfo, "-json", raster], text=True))
     require(info["driverShortName"] == "GTiff", f"{raster.name}: not a GeoTIFF")
+    require(info["metadata"].get("IMAGE_STRUCTURE", {}).get("COMPRESSION", "NONE") == "NONE",
+            f"{raster.name}: expected an uncompressed GeoTIFF")
     require(info["size"] == [WIDTH, HEIGHT], f"{raster.name}: incorrect grid size")
     require(info["geoTransform"] == TRANSFORM, f"{raster.name}: incorrect north-up transform {info['geoTransform']}")
     require(info["metadata"][""].get("AREA_OR_POINT") == "Area", f"{raster.name}: incorrect pixel reference")
@@ -59,58 +76,164 @@ def read_bands(translate, raster):
     return tuple(struct.unpack_from(f"{endian}{cells}d", data, index * cells * 8) for index in range(len(BANDS)))
 
 
-def compare_values(java, pdal):
+def compare_values(java, pdal, case, window_size):
     maximum_error = 0.0
+    filled = 0
     for index, (actual, expected) in enumerate(zip(zip(*java), zip(*pdal))):
         location = f"row {index // WIDTH}, column {index % WIDTH}"
-        require(actual[0] == expected[0] and actual[1] == expected[1] and actual[3] == expected[3],
-                f"{location}: min, max or count differ: {actual} (Java), {expected} (PDAL)")
-        require(math.isclose(actual[2], expected[2], rel_tol=0.0, abs_tol=MEAN_TOLERANCE),
-                f"{location}: mean differs: {actual[2]} (Java), {expected[2]} (PDAL)")
-        if actual[3] == 0:
-            require(actual[:3] == (NODATA,) * 3, f"{location}: empty cell must have NoData in all height bands")
-        maximum_error = max(maximum_error, abs(actual[2] - expected[2]))
+        require(actual[3] == expected[3], f"{location}: count differs: {actual[3]} vs {expected[3]}")
+        if actual[3] > 0:
+            require(actual[:2] == expected[:2], f"{location}: measured extrema differ: {actual} vs {expected}")
+        elif actual[2] != NODATA:
+            filled += 1
+        for band, a, b in zip(BANDS[:3], actual, expected):
+            equal = a == b if NODATA in (a, b) else math.isclose(a, b, rel_tol=0.0, abs_tol=HEIGHT_TOLERANCE)
+            require(equal, f"{location}: {band} differs: {a} (Java), {b} (PDAL)")
+            maximum_error = max(maximum_error, abs(a - b))
 
     count_band = java[-1]
-    require(sum(count_band) == POINTS_BINNED, "Incorrect raster point count")
-    require(sum(value > 0 for value in count_band) == OCCUPIED_CELLS, "Incorrect occupied cell count")
-    print(f"{POINTS_BINNED:,} points in {OCCUPIED_CELLS:,} occupied cells, "
-          f"all {WIDTH * HEIGHT:,} cells agree, max mean error {maximum_error:.3g} m.", flush=True)
+    require(sum(count_band) == case.binned, "Incorrect raster point count")
+    require(sum(value > 0 for value in count_band) == case.measured, "Incorrect measured cell count")
+    require(filled == (case.filled if window_size else 0), f"Incorrect filled cell count: {filled}")
+    print(f"{case.example}, window {window_size or 0}: {case.binned:,} points in {case.measured:,} measured cells, "
+          f"{filled:,} filled and {WIDTH * HEIGHT - case.measured - filled:,} NoData. "
+          f"All {WIDTH * HEIGHT:,} cells agree; max height error {maximum_error:.3g} m.", flush=True)
 
 
-def check_grid(args, gdalinfo, gdalsrsinfo, translate):
+def pipeline_stages(args, case):
     source = (args.data / "so-2019.laz").resolve()
     require(source.is_file(), f"Missing real-data input: {source}")
-    stages = json.loads(Path("examples/polygon-ground-grid.json").read_text())["pipeline"]
+    stages = json.loads(Path(f"examples/{case.example}.json").read_text())["pipeline"]
     stages[0]["filename"] = str(source)
+    return stages
+
+
+def pipeline_command(args, stages, work, engine, workers, window_size):
+    target, metadata, config = (work / name for name in ("grid.tif", "metadata.json", "pipeline.json"))
+    writer = {**stages[-1], "filename": str(target)}
+    if window_size is not None:
+        writer["window_size"] = window_size
+    if engine == "pdal":
+        writer["type"] = "writers.gdal"
+        command = [args.pdal, "pipeline", config, "--stream", f"--readers.las.threads={workers}", "--metadata", metadata]
+    else:
+        command = [args.cli, "pipeline", config, "--metadata", metadata, "--laz-workers", str(workers)]
+    config.write_text(json.dumps({"pipeline": [*stages[:-1], writer]}))
+    return list(map(str, command)), target, metadata
+
+
+def read_output(geo_tools, target, metadata):
+    gdalinfo, gdalsrsinfo, translate = geo_tools
+    inspect(gdalinfo, gdalsrsinfo, target)
+    return metadata.read_bytes(), read_bands(translate, target)
+
+
+def pdal_stats(metadata):
+    stages = json.loads(metadata)["stages"]
+    return stages["readers.las"]["count"], stages["filters.stats"]["statistic"]
+
+
+def compare_outputs(case, window_size, serial, parallel, reference):
+    require(serial == parallel, "Serial and parallel Java raster values or metadata differ")
+    java = json.loads(serial[0])
+    points_read, stats = pdal_stats(reference[0])
+    require(java["pointsRead"] == points_read == POINTS_READ, "Input read count differs")
+    require((java["pointsSelected"], java["pointsBinned"], java["pointsWritten"])
+            == (case.selected, case.binned, 0), f"Incorrect Java raster point counts: {java}")
+    compare_stats(java["statistics"], stats, case.selected)
+    compare_values(serial[1], reference[1], case, window_size)
+
+
+def check_grid(args, geo_tools, case, window_size=None):
+    stages = pipeline_stages(args, case)
+    outputs = []
+    for engine, workers in (("java", 1), ("java", 4), ("pdal", 4)):
+        with tempfile.TemporaryDirectory(prefix="pointcloud-raster-") as scratch:
+            command, target, metadata = pipeline_command(args, stages, Path(scratch), engine, workers, window_size)
+            run(command)
+            outputs.append(read_output(geo_tools, target, metadata))
+    compare_outputs(case, window_size, *outputs)
+    return outputs[0]
+
+
+def check_filling(baseline, filled):
+    require(baseline[0] == filled[0], "Filling changes point metadata")
+    measured = baseline[1]
+    require(measured[3] == filled[1][3], "Filling changes counts")
+    for index, count in enumerate(measured[3]):
+        if count > 0:
+            require(all(a[index] == b[index] for a, b in zip(measured[:3], filled[1][:3])),
+                    f"Filling changes measured cell {index}")
+
+    # Withheld cells are ten pixels apart, so none can serve as a donor to another.
+    heights, counts = measured[2:]
+    withheld = 0
+    errors = []
+    for row in range(5, HEIGHT - 1, 10):
+        for column in range(5, WIDTH - 1, 10):
+            cell = row * WIDTH + column
+            if counts[cell] == 0:
+                continue
+            withheld += 1
+            donors = [heights[cell + dy * WIDTH + dx]
+                      for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                      if (dx or dy) and counts[cell + dy * WIDTH + dx] > 0]
+            if donors:
+                errors.append(math.fsum(donors) / len(donors) - heights[cell])
+    require(errors, "No withheld cells reconstructed")
+    mae = math.fsum(map(abs, errors)) / len(errors)
+    rmse = math.sqrt(math.fsum(error * error for error in errors) / len(errors))
+    print(f"Withheld mean elevations: {len(errors)}/{withheld} reconstructed ({len(errors) / withheld:.1%}), "
+          f"MAE {mae:.4f} m, RMSE {rmse:.4f} m.", flush=True)
+
+
+def benchmark(args, geo_tools):
+    require(platform.system() == "Darwin", "The benchmark uses macOS /usr/bin/time -lp")
+    timing_tools = runpy.run_path(str(Path(__file__).with_name("check-parallel-data.py")))
+    execute, timing = timing_tools["execute"], timing_tools["timing"]
+    stages = pipeline_stages(args, RECTANGLE)
+    variants = [(engine, workers, window) for window in (0, 1)
+                for workers in (1, 4) for engine in ("java", "pdal")]
+    env = dict(os.environ, JAVA_OPTS="-Xmx512m")
+    outputs = {}
+    rows = []
     with tempfile.TemporaryDirectory(prefix="pointcloud-raster-") as scratch:
         work = Path(scratch)
-        config = work / "pipeline.json"
-        outputs = []
-        for variant in ("serial", "parallel", "pdal"):
-            target, metadata = work / f"{variant}.tif", work / f"{variant}.json"
-            writer = {**stages[-1], "filename": str(target)}
-            if variant == "pdal":
-                writer["type"] = "writers.gdal"
-                command = [args.pdal, "pipeline", config, "--stream", "--readers.las.threads=4", "--metadata", metadata]
-            else:
-                workers = "1" if variant == "serial" else "4"
-                command = [args.cli, "pipeline", config, "--metadata", metadata, "--laz-workers", workers]
-            config.write_text(json.dumps({"pipeline": [*stages[:-1], writer]}))
+        for engine, workers, window in variants:
+            command, target, metadata = pipeline_command(
+                args, stages, Path(tempfile.mkdtemp(dir=work)), engine, workers, window)
             run(command)
-            inspect(gdalinfo, gdalsrsinfo, target)
-            outputs.append((metadata, read_bands(translate, target)))
+            outputs[engine, workers, window] = read_output(geo_tools, target, metadata)
+        for window in (0, 1):
+            for workers in (1, 4):
+                compare_outputs(RECTANGLE, window, outputs["java", 1, window],
+                                outputs["java", 4, window], outputs["pdal", workers, window])
 
-        (serial_json, serial), (parallel_json, parallel), (pdal_json, pdal) = outputs
-        require(serial == parallel, "Serial and parallel Java raster values differ")
-        require(serial_json.read_bytes() == parallel_json.read_bytes(), "Serial and parallel Java metadata differ")
-        stats = json.loads(serial_json.read_text())
-        native = json.loads(pdal_json.read_text())["stages"]
-        require(stats["pointsRead"] == native["readers.las"]["count"] == POINTS_READ, "Input read count differs")
-        require((stats["pointsSelected"], stats["pointsBinned"], stats["pointsWritten"])
-                == (POINTS_SELECTED, POINTS_BINNED, 0), f"Incorrect Java raster point counts: {stats}")
-        compare_stats(stats["statistics"], native["filters.stats"]["statistic"], POINTS_SELECTED)
-        compare_values(serial, pdal)
+        for index in range(ROUNDS):
+            order = variants[index:] + variants[:index]
+            for position, (engine, workers, window) in enumerate(order, start=1):
+                with tempfile.TemporaryDirectory(dir=work) as path:
+                    command, target, metadata = pipeline_command(args, stages, Path(path), engine, workers, window)
+                    started = time.perf_counter_ns()
+                    result = execute(["/usr/bin/time", "-lp", *command], env)
+                    elapsed = (time.perf_counter_ns() - started) / 1e9
+                    _, user, system, rss = timing(result.stderr)
+                    actual_json, bands = read_output(geo_tools, target, metadata)
+                    expected_json, expected_bands = outputs[engine, workers, window]
+                    require(bands == expected_bands, "Measured run raster differs from its verified warm-up")
+                    if engine == "pdal":
+                        require(pdal_stats(actual_json) == pdal_stats(expected_json), "Measured run PDAL stats differ")
+                    else:
+                        require(actual_json == expected_json, "Measured run Java metadata differs")
+                    rows.append((index + 1, position, engine, workers, window, f"{elapsed:.9f}",
+                                 user, system, rss, target.stat().st_size, metadata.stat().st_size))
+                    print(f"Round {index + 1}/{ROUNDS}: {engine} {workers} readers, "
+                          f"window {window}, {elapsed:.4f} s", flush=True)
+    with args.benchmark_csv.open("w", newline="") as file:
+        writer = csv.writer(file, lineterminator="\n")
+        writer.writerow(("round", "position", "engine", "reader_workers", "window_size",
+                         "wall_s", "user_s", "system_s", "peak_rss_bytes", "tiff_bytes", "metadata_bytes"))
+        writer.writerows(rows)
 
 
 def main():
@@ -119,6 +242,7 @@ def main():
     parser.add_argument("--cli", type=Path, default=Path("build/install/pointcloud/bin/pointcloud"))
     parser.add_argument("--data", type=Path, default=Path(".cache/test-data"), help="directory of cached inputs")
     parser.add_argument("--gdal-bin", type=Path, help="GDAL tools directory (default: next to PDAL or on PATH)")
+    parser.add_argument("--benchmark-csv", type=Path, help="run the verified macOS benchmark and write sample CSV")
     args = parser.parse_args()
     pdal = shutil.which(args.pdal)
     if pdal is None:
@@ -135,7 +259,13 @@ def main():
         if executable is None:
             parser.error(f"GDAL tool not found: {name}")
         tools.append(executable)
-    check_grid(args, *tools)
+    if args.benchmark_csv:
+        benchmark(args, tools)
+    else:
+        check_grid(args, tools, POLYGON)
+        baseline = check_grid(args, tools, RECTANGLE, 0)
+        filled = check_grid(args, tools, RECTANGLE, 1)
+        check_filling(baseline, filled)
 
 
 if __name__ == "__main__":

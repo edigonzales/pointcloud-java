@@ -1139,3 +1139,41 @@ Das Raster-Abnahmeskript setzt den Stage-Typ für PDAL auf `writers.gdal`.
 - `tools/check-real-data.py` bestätigte 496'586 LAS-Rohrecords,
   Statistik und CRS. SIGTERM ergab Exit 143 und entfernte die
   temporären Ausgaben.
+
+## Lückenfüllung im Bodenpunktraster
+
+`writers.raster` unterstützt `window_size: 1`. Nach vollständigem Lesen
+der Eingabe ergänzt der Writer die drei Höhenbänder in den vorhandenen
+Arrays. Die Punktzähler bestimmen die gemessenen Nachbarzellen. `count`
+und `pointsBinned` zählen weiterhin tatsächliche Punkte. Der Standard
+`window_size: 0` liefert die Höhenstatistik der Messzellen und NoData in
+leeren Zellen.
+
+- `./gradlew clean check installDist` bestand auf Basis von `6a508c0`
+  auf macOS 15.8.1 (arm64) mit Temurin 25.0.3 und Gradle 9.9.1.
+  Alle 96 JUnit-Fälle liefen ohne Fehler oder übersprungene Tests.
+  Das 5×5-Fixture prüft die Nachbarschaft, die gleiche Gewichtung
+  unterschiedlich dichter Messzellen, die unveränderten Punktzähler und
+  NoData ausserhalb der Reichweite. Die Tests prüfen auch leere Raster,
+  ungültige Optionen, Abbruch und explizites `window_size: 0`.
+- `tools/check-ground-grid.py` bestätigte das Polygonraster und das
+  rechteckige Raster mit und ohne Lückenfüllung gegen PDAL 2.10.2
+  und GDAL 3.13.3. Java mit einem und vier Workern lieferte identische
+  Rasterwerte und Metadaten. Der Rechteckausschnitt ergibt 195'738
+  selektierte und 195'715 eingerasterte Punkte. Von 4'739 leeren Zellen
+  wurden 4'491 gefüllt. 248 blieben NoData. Die 35'261 Messzellen und
+  das Count-Band waren exakt gleich. Der maximale Höhenunterschied
+  gegenüber PDAL betrug 3.41 × 10⁻¹³ m.
+- Die fachliche Stichprobe blendete im ungefüllten Raster 363 gemessene
+  Innenzellen im Abstand von je zehn Rasterzellen aus. Alle 363 liessen
+  sich aus gemessenen Nachbarn rekonstruieren. Für `mean` ergaben sich
+  MAE 0.0714 m und RMSE 0.1139 m gegenüber den ausgeblendeten Rasterwerten.
+- `tools/check-real-data.py` bestätigte 496'586 LAS-Rohrecords,
+  Statistik und CRS. SIGTERM ergab Exit 143 und entfernte die
+  temporären Ausgaben.
+- Der [Performancevergleich](experiments.md#bodenpunktraster-mit-lückenfüllung-gegen-pdal)
+  verifizierte alle 64 Messläufe. Mit Füllung und vier Workern lag
+  der Wandzeit-Median bei 2.045 s für Java und 2.942 s für PDAL.
+  Die gepaarte Zusatzzeit durch die Füllung lag bei allen vier
+  Kombinationen im Median bei höchstens 0.60 %. Die Einzelwerte
+  streuten in beide Richtungen.
