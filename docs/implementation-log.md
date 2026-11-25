@@ -868,3 +868,130 @@ Ausgabepfad und die vorhandenen Prüfprogramme. Der AOT-Messhelfer
 bleibt ausserhalb der Distribution. Die Origin-Abnahme des
 Parallelpfads auf der Solothurn-2014-Kachel und Autzen ist mit
 ihren M1-Messwerten beim Basisstand dokumentiert.
+
+## JFR der parallelen LAZ-Produktpipeline
+
+24. November 2026, Apple M1/macOS 15.8.1 arm64, Temurin 25.0.3+9,
+PDAL 2.10.2/LazPerf (`h151f718_4`), Produktcode `1c3a069`. Der
+Realdaten-Runner verwendet dieselben Pipelines und Referenzprüfungen für
+den CSV- und den JFR-Lauf. Die Profilauswertung verwendet das `jfr`-Werkzeug
+des eingestellten JDK und die Python-Standardbibliothek.
+
+- Der CSV-Lauf mit 18 Messungen und der JFR-Lauf mit zwölf Aufnahmen
+  bestanden mit Exit 0. Abnahme je 28'695 Solothurner und 106'534
+  Autzen-Records. Java-LAS und -JSON waren bytegleich mit der seriellen
+  Referenz. PDAL bestätigte Record-Reihenfolge, Statistik und CRS mit
+  denselben Toleranzen wie bei der Produktabnahme. Die Auswertung aller
+  Aufnahmen erkannte die erwarteten Decoder-Threads und keinen JFR-Datenverlust.
+  [Befehle und Messwerte](experiments.md#jfr-der-parallelen-produktpipeline)
+- `./gradlew --offline clean check installDist` bestand mit Exit 0.
+  Alle 30 JUnit-Tests bestanden. Das XML unter `build/test-results/test/`
+  enthält 15 `LasIoTest`, 8 `MainTest` und 7 `PipelineTest` ohne Fehler
+  oder übersprungene Tests.
+- `python3 experiments/check-e4-pipeline.py --product --pdal "$PDAL"`
+  bestand mit Exit 0. Die Fixture-Ausgaben waren seriell und parallel
+  gleich. Dekodierfehler und SIGTERM veröffentlichten keine Teilausgabe.
+
+## A/B-Versuch zur Symbolsuche
+
+24. November 2026, Apple M1/macOS 15.8.1 arm64, Temurin 25.0.3+9,
+PDAL 2.10.2/LazPerf (`h151f718_4`). `1c3a069` und die Maskenvariante
+wurden als zwei installierte Distributionen gesichert. Nur `codec.jar`
+unterschied sich. Die Patchdatei und SHA-256-Manifestdateien liegen
+mit den Protokollen im lokalen A/B-Verzeichnis unter `.cache/experiments/`.
+
+- Alle zehn direkten Decoder-Testfälle bestanden in A und B. Die erste
+  gleichmässige 17-Symbol-Folge scheiterte auf beiden Builds am selben
+  Index. Der Schritt der deterministischen Folge wurde von 53 auf 5
+  geändert. Folgenlänge, Alphabetabdeckung und Assertions zu Modellupdates
+  bleiben gleich. Die getrennten schiefen Folgen prüfen die Reskalierung.
+  `./gradlew --offline clean check installDist` bestand mit B in allen
+  40 JUnit-Fällen. Die Berichte liegen unter `build/test-results/test/`.
+- `tools/check-full-records.py` verglich jeweils mit 1 und 4 Workern für
+  A und B 14'347'366 Solothurner und 10'653'336 Autzen-Rohrecords über
+  Punktzahl und SHA-256 der geordneten Recorddaten. Alle Hashes je
+  Datensatz waren gleich. Die Prüfung hielt jeweils eine LAS-Ausgabe
+  auf Platte.
+- Die Produkt-Fixtures samt Korruption und SIGTERM sowie
+  `tools/check-real-data.py` bestanden mit B. Die serielle PDAL-Abnahme
+  für Solothurn 2019 und 2014 ergab null Abweichungen in den 353'342
+  verglichenen Rohrecords. Die Statistik- und CRS-Prüfungen bestanden.
+- Der A/B-Runner beendete alle 56 Messläufe mit Exit 0. Die Java-Ausgaben
+  bestanden den bytegenauen Vorvergleich sowie den Vergleich nach jedem
+  Lauf. PDAL bestätigte mit vier Reader-Workern die 28'695 und 106'534
+  ausgewählten Rohrecords, Statistik und CRS. B gewann die Autzen-Reihe
+  mit vier Workern um 5.11 % und überschritt die vereinbarte
+  Regressionsgrenze von 2 % in den drei übrigen Reihen. Der Produktbuild
+  wurde mit A wiederhergestellt. Alle 40 JUnit-Fälle bestanden erneut,
+  und das installierte `codec.jar` war bytegleich zur Baseline.
+  [Ergebnis und Messreihe](experiments.md#ab-versuch--symbolsuche-im-arithmetic-decoder)
+
+## A/B-Versuche zu Records, Queue und Layer-Puffern
+
+24. November 2026, Apple M1/macOS 15.8.1 arm64, Temurin 25.0.3+9,
+PDAL 2.10.2/LazPerf (`h151f718_4`). Drei isolierte Builds auf dem
+Produktcode `1c3a069`. Der Runner kann für die Reader-Kontrolle zwei
+installierte CLIs sowie zum Profilieren eine bestimmte CLI verwenden.
+
+- Die Offline-Gradle-Prüfungen bestanden für die drei Builds mit 40,
+  40 beziehungsweise 43 JUnit-Fällen. Die drei zusätzlichen Layer-Tests
+  prüfen begrenzte Sichten, Überspringen, Trunkierung und den Kopierpfad.
+- Je Build und Workerzahl stimmten die SHA-256-Digests der vollständigen
+  geordneten Rohrecord-Folgen mit A überein. Geprüft wurden je 14'347'366
+  Solothurner und 10'653'336 Autzen-Punkte. Die bestehenden Produkt-Fixtures
+  bestanden bei allen Kandidaten.
+- Die Queue-Fixture prüfte alle 500'003 Records aus elf Chunks. Der
+  absichtlich beschädigte Chunk am Index 8 führte bei 400'000 dekodierten
+  Punkten zu Exit 2. SIGTERM nach 197'982 temporär geschriebenen
+  LAS-Bytes führte zu Exit 143. Beide Prüfungen bestätigten die vollständige
+  Bereinigung von LAS und Metadaten.
+- Die Format-8-Layer-Fixture enthält 100'003 Punkte mit RGB-Layerlängen
+  5'230/226/11 und NIR-Layerlängen 3'201/0/6. Mit einem und zwei Workern
+  stimmten die gültigen LAS und JSON bytegenau überein. Ein auf drei Bytes
+  verkürzter XY-Pflichtlayer führte mit beiden Workerzahlen bei Punkt
+  50'000 zu Exit 2. Der LAZ-Chunkindex blieb gültig. Die Fehlerläufe
+  hinterliessen keine Ziel- oder Temporärdatei.
+- Die drei A/B-Serien und Reader-Kontrollen ergaben 186 unprofilierte
+  Prozessläufe mit Exit 0. Die LAS- und JSON-Ausgaben entsprachen
+  bytegenau der jeweiligen A-Referenz. In jedem PDAL-Vorvergleich
+  stimmten je 28'695 und 106'534 Records in Dateireihenfolge überein.
+  CRS und Statistik bestanden mit den bisherigen Toleranzen.
+- 48 getrennte JFR-Aufnahmen erfassten für jeden Build beide Dateien.
+  Alle Ausgaben bestanden den Vergleich. Die Auswertung erkannte alle
+  erwarteten Decoder-Threads und meldete keinen Datenverlust. Der
+  Layer-Matcher erfasst auch den Array-Puffer in `prepareLayerPayload`.
+- A bleibt Produktstandard gemäss den vereinbarten Zeit- und RSS-Grenzen.
+  `clean check installDist` für A bestand mit 40 JUnit-Fällen. Die
+  installierten Produkt- und Codec-JARs stimmen bytegenau mit den
+  eingefrorenen Ausgangsartefakten überein. Die drei Patches lassen sich
+  einzeln auf A anwenden. [Versuchsbericht](experiments.md#point14rgb-gemeinsame-queue-und-layer-puffer)
+
+## Oracle Native Image und PGO mit Serial und G1
+
+24. November 2026, Apple M1/macOS 15.8.1 arm64, Apple clang 17.0.0,
+Oracle GraalVM 25.6.5.1+4.1, Temurin 25.0.3+9 und PDAL 2.10.2/LazPerf.
+Produktcode `1c3a069`. Die vorbereiteten Eingaben belegen zusätzlich
+104'973'277 Bytes. Die vollständige Record-Prüfung verwendet jeweils
+eine LAS-Ausgabe gleichzeitig. Toolchain und Builds liegen im lokalen
+Cache. Beide GC-Probes liefen erfolgreich und meldeten tatsächliche Pausen.
+
+- `./gradlew --offline clean check installDist` bestand mit 40 JUnit-
+  Tests, ohne Fehler oder übersprungene Tests. Die SHA-256-Digests
+  aller Produkt-JARs stimmten vor und nach der Messung überein.
+- Vier Native Images bestanden den Mach-O-arm64-Nachweis. Acht
+  Trainingsprofile sind per SHA-256 dokumentiert. Die beiden gemessenen
+  PGO-Builds meldeten `PGO: user-provided`. Die instrumentierten Builds
+  verwenden laut Builder Stufe 2 und `sampling+instrument` für die
+  Profilerfassung. Die vier gemessenen nativen Builds melden Stufe 3.
+- `check-e4-pipeline.py --product-cli` und `check-real-data.py --cli`
+  bestanden für alle vier nativen Launcher. Beide SIGTERM-Prüfungen
+  lieferten Exit 143 und bereinigten temporäre Ausgaben. Die historischen
+  PDAL-Pipelines verglichen pro nativen Build 353'342 Rohrecords ohne
+  Abweichung. Alle 30 vollständigen Rohrecord-Läufe auf den drei neuen
+  Messfällen hatten je Datensatz denselben Hash.
+- Die Runtime-Matrix ergab 245 Prozessläufe und drei PDAL-Vorvergleiche
+  mit insgesamt 221'763 ausgewählten Records ohne Abweichung. Statistik
+  und CRS bestanden. 15 separate GC-Läufe erfassten Pause-Anzahl,
+  Summe und Maximum. Native Serial bleibt die GC-Empfehlung auf diesem
+  Mac. Temurin bleibt Produktstandard gemäss den vereinbarten Grenzen.
+  [Versuchsbericht](experiments.md#oracle-native-image-mit-pgo-und-g1-auf-dem-m1)

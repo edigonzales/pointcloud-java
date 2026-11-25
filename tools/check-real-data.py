@@ -1,12 +1,12 @@
 """Compare complete real-data pipelines against an installed PDAL 2.10.2."""
 
+import argparse
 import json
 import math
 import os
 from pathlib import Path
 import struct
 import subprocess
-import sys
 import tempfile
 import time
 
@@ -149,8 +149,12 @@ def check_cancel(cli, work):
 
 
 def main():
-    pdal = sys.argv[1] if len(sys.argv) > 1 else "pdal"
-    cli = "build/install/pointcloud/bin/pointcloud"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("pdal", nargs="?", default="pdal", help="PDAL 2.10.2 executable (default: %(default)s)")
+    parser.add_argument("--cli", type=Path, help="alternate installed pointcloud CLI launcher")
+    args = parser.parse_args()
+    pdal = args.pdal
+    cli = args.cli.resolve() if args.cli is not None else "build/install/pointcloud/bin/pointcloud"
     run([pdal, "--version"])
     result_dir = Path("build/results")
     result_dir.mkdir(parents=True, exist_ok=True)

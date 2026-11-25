@@ -461,6 +461,223 @@ Beim Chunkabschluss prüft eine zusätzliche Bedingung das Dateiende
 für den seriellen Fall ohne Tabelle.
 [Einzelmessungen](measurements/port-0a17961-runtime.csv)
 
+### JFR der parallelen Produktpipeline
+
+24. November 2026, Produktcode `1c3a069`, Apple M1 arm64, macOS 15.8.1,
+16 GiB RAM, Temurin 25.0.3+9, `-Xmx512m` und PDAL 2.10.2/LazPerf
+(`libpdal-core h151f718_4`). Dieselben beiden Pipelines und Eingaben wie
+in der Produktabnahme. Mit warmem Dateicache liefen drei rotierende
+Messrunden ohne JFR und separat je fünf Aufnahmen mit vier Java-Workern
+sowie je eine serielle Kontrolle. Jeder Lauf startete einen neuen Prozess.
+
+```sh
+./gradlew installDist
+python3 tools/check-parallel-data.py "$PDAL" .cache/experiments/parallel-jfr-unprofiled-2026-11-24.csv
+python3 tools/check-parallel-data.py "$PDAL" --profile-dir .cache/experiments/parallel-jfr-2026-11-24
+```
+
+Für jede Aufnahmeserie einen leeren Zielordner wählen. Er enthält nach
+erfolgreicher Ausführung die zwölf `.jfr`-Dateien und `summary.json` mit
+den Profilwerten pro Lauf. Die Java-LAS und -JSON waren in jedem Lauf
+bytegleich zum seriellen Referenzlauf. PDAL bestätigte mit den bisherigen
+Toleranzen Statistik und CRS sowie alle Punktrecords in Reihenfolge
+(28'695 für Solothurn, 106'534 für Autzen).
+
+| Datensatz | Variante | Wandzeit, Median (Min–Max) | CPU-Zeit, Median | Höchster RSS |
+| --- | --- | ---: | ---: | ---: |
+| Solothurn 2014 | Java seriell | 5.08 (5.07–5.11) s | 5.48 s | 144.55 MiB |
+| Solothurn 2014 | Java, vier Worker | 1.45 (1.43–1.47) s | 6.85 s | 163.45 MiB |
+| Solothurn 2014 | PDAL, vier Worker | 2.73 (2.73–2.77) s | 7.47 s | 84.73 MiB |
+| Autzen | Java seriell | 4.99 (4.99–5.00) s | 5.67 s | 334.89 MiB |
+| Autzen | Java, vier Worker | 1.72 (1.67–1.74) s | 7.03 s | 357.61 MiB |
+| Autzen | PDAL, vier Worker | 2.04 (2.03–2.09) s | 6.24 s | 166.98 MiB |
+
+JFR verwendet `settings=profile` mit 2 ms Abtastintervall für Java-Stacks,
+100 ms für Thread-CPU-Last und einer Schwelle von 100 µs für Parks. Alle
+vier Decoder-Threads wurden in jedem parallelen Profil erkannt. JFR
+meldete keinen Datenverlust. Für die serielle Kontrolle zählen die
+Dekodieraufrufe im Hauptthread, für den Parallelpfad die Worker-Stacks.
+
+| Vier Worker, Median (Min–Max) | Solothurn 2014 | Autzen |
+| --- | ---: | ---: |
+| Java-Worker-Stichproben | 1'990 (1'915–2'023) | 2'219 (2'199–2'252) |
+| `decodeSymbol` oberster Stackframe | 67.6 % (60.4–69.5 %) | 60.8 % (58.3–62.0 %) |
+| `decodeSymbol` irgendwo im Stack | 69.7 % (62.6–71.8 %) | 64.6 % (62.8–66.0 %) |
+| Hauptthread wartet auf nächsten Chunk | 641 (551–686) ms | 1'510 (1'491–1'582) ms |
+| Davon mindestens ein Worker wartet auf einen Auftrag | 6.9 (5.2–9.6) ms | 303 (297–316) ms |
+| Anteil dieser Überlappung | 1.3 % (0.8–1.4 %) | 20.0 % (19.3–20.7 %) |
+
+`decodeSymbol` war in allen fünf Läufen je Datensatz der häufigste
+oberste Frame. Danach folgten unter anderem `IntegerCompressor.readCorrector`
+und die jeweiligen `POINT10`- bzw. `POINT14`-Reader. Die Parkzeiten stammen
+aus den profilierten Läufen. Die Überlappung zählt Zeit mit mindestens einem
+wartenden Worker einmal und berücksichtigt geordnete Chunk-Abfragen des
+Hauptthreads während der Verarbeitung.
+
+Bei Autzen summierten sich die gewichteten JFR-Allokationsstichproben pro
+parallelem Lauf median auf 919 MiB (875–935 MiB). Die Kategorien lagen bei
+456 MiB für POINT14-Records, 350 MiB für RGB-Records, 109 MiB für
+Layer-Arrays und 21 MiB für `PointBatch`-Puffer (jeweils eigene Mediane).
+Die beiden Record-Klassen machten pro Lauf zusammen 80–88 % des Gewichts
+aus. Autzen hatte pro Lauf sieben GC-Pausen mit zusammen 12.4–14.0 ms.
+Solothurn lag bei rund 34 MiB gewichtetem Allokationsvolumen und hatte
+keine GC-Pause. Die Stichproben schätzen das Allokationsvolumen. Die
+separate RSS-Messung erfasst die maximale Speicherbelegung des Prozesses.
+
+Als Nächstes die Symbolsuche in `ArithmeticDecoder.decodeSymbol` in einem
+isolierten A/B-Versuch angehen. Die Entscheidung über eine Übernahme fällt
+anhand unprofilierter End-to-End-Läufe mit bytegleichen Java-Ausgaben.
+Für einen späteren Speicherversuch mit Autzen sind die beiden
+Record-Allokationen der grössere Ansatzpunkt als die Layer-Arrays.
+
+### A/B-Versuch · Symbolsuche im Arithmetic Decoder
+
+Ausgangspunkt ist `1c3a069`. In den zehn parallelen JFR-Aufnahmen lagen
+5'523 von 6'591 Solothurner und 6'167 von 6'697 Autzen-Stichproben mit
+`decodeSymbol` als oberstem Frame am Rücksprung der tabellengestützten
+Bisektion. B ersetzt deren Entscheidung bei jedem Mittelpunkt durch
+eine Vorzeichenmaske. Quotient und kumulative Häufigkeit sind
+nichtnegative `int`-Werte, sodass das Vorzeichen ihrer Differenz die
+Vergleichsrichtung angibt. Die Maske ist bei Gleichheit null, wodurch
+wie in A die untere Suchgrenze auf den Mittelpunkt rückt.
+
+```java
+int upper_mask = (u_dv - m.u_distribution[u_k]) >> 31;
+u_n ^= (u_n ^ u_k) & upper_mask;
+u_sym ^= (u_sym ^ u_k) & ~upper_mask;
+```
+
+Die beiden installierten Distributionen unterschieden sich im
+`codec.jar`. Der Vergleich lief auf Apple M1 arm64, macOS 15.8.1,
+Temurin 25.0.3+9, `-Xmx512m` und mit warmem Dateicache. Je Kombination
+aus Datensatz und Workerzahl starteten sieben Paare frischer Prozesse
+in abwechselnder A–B- und B–A-Reihenfolge. `/usr/bin/time -lp` erfasste
+Wandzeit, User- und System-CPU-Zeit sowie Spitzen-RSS ohne JFR. Die
+Pipelines entsprechen der Produktabnahme. Jeder Ergebnisvergleich
+folgte ausserhalb der Zeitmessung. PDAL 2.10.2/LazPerf mit vier Workern
+war die Referenz im Vorvergleich.
+
+```sh
+python3 tools/check-full-records.py "$baseline_cli" "$candidate_cli" \
+  .cache/test-data/so-2014.laz .cache/test-data/autzen-classified.copc.laz
+python3 tools/check-parallel-data.py "$PDAL" .cache/experiments/decode-symbol-ab.csv \
+  --ab "$baseline_cli" "$candidate_cli"
+```
+
+| Datensatz | Worker | A, Median (Min–Max) | B, Median (Min–Max) | Gepaarte Änderung B/A | Siege B |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Solothurn 2014 | 1 | 5.18 (5.10–5.34) s | 5.34 (5.28–5.47) s | +3.49 % | 1/7 |
+| Solothurn 2014 | 4 | 1.47 (1.45–1.47) s | 1.54 (1.50–1.59) s | +5.44 % | 0/7 |
+| Autzen | 1 | 5.03 (5.00–5.10) s | 5.22 (5.16–5.51) s | +3.98 % | 0/7 |
+| Autzen | 4 | 1.74 (1.70–1.76) s | 1.66 (1.63–1.69) s | −5.11 % | 7/7 |
+
+Die gepaarte Änderung ist der Median der Quotienten aus B- und A-Wandzeit
+minus eins. Bei Autzen mit vier Workern sank die mediane Prozess-CPU-Zeit
+von 7.17 auf 6.44 s und der höchste Spitzen-RSS von 356.56 auf 327.78 MiB.
+[56 Einzelmessungen mit CPU und RSS](measurements/decode-symbol-ab.csv)
+
+Alle vollständigen Ausgaben lieferten pro Datensatz denselben SHA-256
+über die Rohrecords in Dateireihenfolge. Geprüft wurden 14'347'366 Records
+für Solothurn und 10'653'336 für Autzen in beiden Varianten und mit beiden
+Workerzahlen. Die dezimierten Java-LAS und -JSON waren in den Vor- und
+Messläufen bytegleich. Die PDAL-Vorvergleiche bestanden für Rohrecords,
+Statistik und CRS mit den Toleranzen der Produktabnahme.
+
+**A bleibt Produktstandard.** B erreichte bei Autzen mit vier Workern
+die geforderten 5 % Beschleunigung und mindestens sechs Siege. Die
+Verlangsamung überstieg in den drei anderen Messreihen die vereinbarte
+Grenze von 2 %. Der lokale Versuchsordner enthält beide Distributionen
+und den exakten Patch für B.
+
+### POINT14/RGB, gemeinsame Queue und Layer-Puffer
+
+Apple M1 arm64, macOS 15.8.1, Temurin 25.0.3+9, `-Xmx512m`,
+PDAL 2.10.2/LazPerf (`libpdal-core h151f718_4`). Drei unabhängige
+Distributionen auf Basis des Produktcodes `1c3a069`.
+
+- **Records.** POINT14 und RGB14 halten je ein eigenes Ausgabeobjekt pro
+  Reader. Die Wiederverwendung betrifft die Ausgabe, die sofort in den
+  LAS-Batch kopiert wird. [Patch](../experiments/patches/laz-record-scratch.patch)
+- **Queue.** Eine gemeinsame FIFO versorgt die Worker. Das Fenster
+  bleibt auf zwei Puffer pro effektivem Worker beschränkt, und der
+  Hauptthread übernimmt die Ergebnisse in Chunk-Reihenfolge.
+  [Patch und Refill-Fixture](../experiments/patches/laz-shared-queue.patch)
+- **Layer.** Der Codec lädt den validierten Payload einmal in maximal
+  8 MiB wiederverwendbaren Speicher pro Decoder. POINT14, RGB14, RGBNIR14
+  und BYTE14 lesen aus Little-Endian-Sichten mit exakten Grenzen. Grössere
+  gültige Payloads verwenden den bisherigen Ladepfad.
+  [Patch und Slice-Tests](../experiments/patches/laz-layer-scratch.patch)
+
+Für eine Reproduktion separat `git worktree add --detach` von `1c3a069`
+ausführen, je einen Patch anwenden und mit `./gradlew --offline clean check
+installDist` bauen. Von diesem Arbeitsbaum aus die installierten Launcher
+als `baseline_cli` und `candidate_cli` übergeben. Der ausgewählte Launcher
+bestimmt die Variante.
+
+```sh
+python3 tools/check-full-records.py "$baseline_cli" "$candidate_cli" \
+  .cache/test-data/so-2014.laz .cache/test-data/autzen-classified.copc.laz
+python3 tools/check-parallel-data.py "$PDAL" "$output_dir/full.csv" \
+  --ab "$baseline_cli" "$candidate_cli"
+python3 tools/check-parallel-data.py "$PDAL" "$output_dir/reader.csv" \
+  --ab "$baseline_cli" "$candidate_cli" --reader-null
+python3 tools/check-parallel-data.py "$PDAL" --profile-dir "$output_dir/jfr" \
+  --profile-cli "$candidate_cli"
+```
+
+Die vollständige Pipeline lief für Solothurn 2014 und Autzen mit je einem
+und vier Workern in sieben abwechselnden A/B-Paaren. Der isolierte
+Reader-Kontrolllauf auf Autzen verwendete drei Paare mit vier Workern und
+`writers.null`. Alle Prozesse starteten frisch bei warmem Dateicache.
+Wandzeit, Prozess-CPU-Zeit und Spitzen-RSS stammen aus Läufen ohne JFR.
+Die JFR-Aufnahmen profilieren separat pro Build und Datensatz fünf
+Vier-Worker-Prozesse und einen seriellen Kontrollprozess.
+
+Die vorab vereinbarte Grenze für eine Verlangsamung beträgt 2 % pro
+Messreihe. Auf Autzen mit vier Workern sind mindestens 5 % Wandzeitgewinn
+und sechs Siege aus sieben Paaren erforderlich. Für Records und Layer
+gilt alternativ ein um mindestens 10 % niedrigerer Spitzen-RSS mit
+sechs Siegen und nachweislich niedrigeren Zielallokationen.
+
+| Kandidat | Wandzeit SO 1 | Wandzeit SO 4 | Wandzeit Autzen 1 | Wandzeit Autzen 4 | Spitzen-RSS Autzen 4 | Reader-Null Autzen 4 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Records | +0.77 % | +2.07 % | −0.60 % | −1.73 % | −30.25 % | −5.08 % |
+| Queue | −0.19 % | −1.95 % | −0.59 % | −2.82 % | +0.20 % | 0.00 % |
+| Layer | +0.19 % | +1.92 % | +0.40 % | +3.17 % | +1.58 % | −1.09 % |
+
+Die Tabelle zeigt den Median der gepaarten Verhältnisse B/A minus eins.
+Auf Autzen mit vier Workern lagen die Wandzeit-Mediane bei 1.73/1.70 s
+für A/Records, 1.77/1.72 s für A/Queue und 1.83/1.86 s für A/Layer.
+Die Kandidaten gewannen dort bei der Wandzeit fünf, sechs beziehungsweise
+zwei von sieben Paaren. Die Prozess-CPU-Zeit änderte sich gepaart um
+−3.01 %, +2.92 % beziehungsweise +1.52 %. Der Record-Kandidat gewann
+alle sieben RSS-Paare. Der Median der gemessenen Spitzen-RSS-Werte sank
+von 353.62 auf 246.20 MiB. [186 Einzelmessungen](measurements/laz-reuse-ab.csv)
+
+Die separat aufgenommenen Profile zeigten auf Autzen mit vier Workern
+folgende Änderungen. Jede Zahl ist der Median aus fünf Aufnahmen.
+
+| Zielgrösse | A | Zuständiger Kandidat |
+| --- | ---: | ---: |
+| Gewichtete POINT14-Allokationsstichproben | 418.4 MiB | 0.0 MiB (Records) |
+| Gewichtete RGB-Allokationsstichproben | 336.3 MiB | 0.0 MiB (Records) |
+| GC-Pausen insgesamt | 13.57 ms | 2.60 ms (Records) |
+| Chunk-Wartezeit mit mindestens einem untätigen Worker | 292.7 ms | 18.9 ms (Queue) |
+| Gewichtete Layer-Array-Allokationsstichproben | 84.26 MiB | 2.89 MiB (Layer) |
+
+Die Stichproben schätzen das Allokationsvolumen. Die Queue-Überlappung
+beschreibt den gleichzeitigen Wartezustand von Hauptthread und Workern
+im Profil. Die separat gemessene Wandzeit entscheidet über den Nutzen
+für die Pipeline. Alle 48 Aufnahmen enthielten die erwarteten
+Decoder-Threads und meldeten keinen Datenverlust.
+
+**A bleibt Produktstandard.** Die Records erreichen das RSS-Ziel.
+Auf Solothurn mit vier Workern überschreiten sie die zulässige
+Wandzeitabweichung von 2 % um 0.07 Prozentpunkte. Die Queue
+erreicht sechs Siege, ihr gepaarter Wandzeitgewinn bleibt unter 5 %.
+Der Layer-Kandidat überschreitet auf Autzen mit vier Workern die
+Wandzeitgrenze. Die drei Varianten bleiben als getrennte Patches verfügbar.
+
 ## E6 und E7 · JVM-Versionen, AOT-Cache und Native Image
 
 Basis ist der Standardbuild nach P8 (`978f38d`). Zweite VM ist Temurin
@@ -630,6 +847,130 @@ die Unterschiede zwischen den drei JVM-Medianen innerhalb der Streuung.
 Die Messreihe bestätigt den Java-25-Standard und die Entscheidung,
 AOT und Native Image als Experimente zu behalten.
 [Einzelmessungen der JVM-Scans](measurements/e6-audit-warmup.csv)
+
+### Oracle Native Image mit PGO und G1 auf dem M1
+
+24. November 2026. Apple M1 arm64, macOS 15.8.1, Apple clang 17.0.0,
+Produktcode `1c3a069`, PDAL 2.10.2/LazPerf, Oracle GraalVM 25.6.5.1
+auf JDK 25.0.5.1 und Temurin 25.0.3+9 mit HotSpot-G1. Der Oracle-Download
+für macOS arm64 hat SHA-256
+`5c0182f80bff02da9266a9928606e65ea2ac53a8cdb195fb3680972378e4e192`.
+[Oracle-Release](https://www.graalvm.org/release-notes/25.6/)
+
+Beide nativen GC-Vorabtests bauten und starteten auf diesem Mac. Der
+Build meldete den jeweils angeforderten Collector. Die Testprozesse
+lösten beobachtbare GC-Pausen aus. Die Innovationslinie führte G1 für
+Native Image auf macOS arm64 in 25.1 ein. Das GC-Handbuch der LTS-Linie
+beschreibt den früheren Linux-Support. Epsilon hält Allokationen bis zum
+Prozessende und ist für die speicherintensive Ganzkachel-Matrix ungeeignet.
+[G1 auf macOS arm64](https://www.graalvm.org/release-notes/25.1/#native-image) ·
+[Native-Image-Speichermanagement](https://docs.oracle.com/en/graalvm/jdk/25/docs/reference-manual/native-image/optimizations-and-performance/MemoryManagement/)
+
+Vier Oracle-Binaries verwenden den identischen Produkt-Klassenpfad, die
+vorhandenen Reachability-Metadaten, `-O3` und `-march=native`. Serial und G1
+werden jeweils mit und ohne gemessene Trainingsprofile gebaut. Ein instrumentiertes Binary pro
+Collector liefert je ein Profil für jede Kombination aus Alt-LAZ bzw. COPC
+und einem bzw. vier Workern. Der optimierte Build liest seine vier Profile
+mit `--pgo` ein. Die Standard-Builds verwenden die vom Compiler inferierten
+Profile (`ML-inferred`). Alle gemessenen Prozesse nutzen `-Xmx512m`.
+[GraalVM-PGO](https://www.graalvm.org/jdk25/reference-manual/native-image/optimizations-and-performance/PGO/basic-usage/)
+
+| Eingabe | Aufgabe | Punkte | Format | Chunks |
+| --- | --- | ---: | ---: | ---: |
+| Erste Punkte von Solothurn 2019 | Training | 2'000'000 | 3 | 40 |
+| Erste Punkte von Autzen | Training | 2'000'000 | 7 | 99 |
+| Solothurn 2014 | Unabhängiger Test | 14'347'366 | 1 | 287 |
+| Autzen ab Punktindex 2'000'000 | Test auf disjunkter Punktmenge | 8'653'336 | 7 | 273 |
+| Autzen, Originaldatei | Vergleich mit früheren Messungen | 10'653'336 | 7 | 278 |
+
+PDAL trennt Autzen über physische Punktbereiche und schreibt die beiden
+Teile als COPC mit festem Seed. Dadurch ändert sich die Chunk-Aufteilung.
+Die Originaldatei enthält einige Trainingspunkte. Für die Empfehlung zum
+Durchsatz zählt primär der disjunkte Autzen-Ausschnitt.
+
+Die acht Trainingsläufe schrieben je 4'000 Solothurner beziehungsweise
+20'000 Autzen-Records. Pro Datei lieferten beide Collector- und Worker-
+Varianten bytegleiche LAS- und JSON-Ausgaben. Die optimierten Builds
+meldeten `PGO: user-provided` und Stufe 3. [Profil-Hashes](measurements/native-pgo-profiles.csv)
+
+| Binary | Buildzeit | Grösse |
+| --- | ---: | ---: |
+| Native Serial O3 | 81.83 s | 24.16 MB |
+| Native Serial O3 mit PGO | 44.56 s | 14.05 MB |
+| Native G1 O3 | 80.90 s | 28.22 MB |
+| Native G1 O3 mit PGO | 41.24 s | 15.27 MB |
+
+Die instrumentierten Builds für die Profilerfassung dauerten separat
+80.76 s (Serial) und 79.62 s (G1).
+
+```sh
+./gradlew --offline clean check installDist
+python3 experiments/prepare-native-pgo-data.py "$PDAL" "$work"
+python3 experiments/build-native-pgo.py "$work" --graal-home "$graal_home"
+python3 tools/check-parallel-data.py "$PDAL" "$work/runtimes.csv" \
+  --runtimes "temurin=$temurin_cli" "native-serial=$serial_cli" \
+  "native-serial-pgo=$serial_pgo_cli" "native-g1=$g1_cli" \
+  "native-g1-pgo=$g1_pgo_cli" --modern-holdout "$work/holdout-autzen.copc.laz"
+python3 experiments/native-pgo-gc.py "$work"
+```
+
+Jeder Launcher startet seinen Prozess per `exec` mit `-Xmx512m`.
+Die Temurin-Variante setzt `-XX:+UseG1GC`. Die Messung umfasst sieben
+rotierende Runden für die Fünf-Punkte-Statistik und je sieben Runden
+pro Datensatz und Workerzahl. Der Dateicache ist warm. Der bestehende
+Referenzvergleich prüft LAS und JSON ausserhalb des Zeitfensters.
+`perf_counter_ns()` misst den Prozessaufruf, `/usr/bin/time -lp` liefert
+CPU-Zeit und Spitzen-RSS. GC-Logs stammen aus separaten Läufen.
+
+| Laufzeit | Mini | SO 2014, 1/4 Worker | Autzen, 1/4 Worker | Autzen-Holdout, 1/4 Worker | Höchster RSS Holdout, 4 Worker |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Temurin G1 | 106.59 ms | 5.143 / 1.589 s | 5.034 / 1.883 s | 4.281 / 1.668 s | 373.94 MiB |
+| Native Serial O3 | 11.53 ms | 5.913 / 1.696 s | 5.788 / 1.824 s | 4.955 / 1.632 s | 169.81 MiB |
+| Native Serial O3 mit PGO | 11.29 ms | 5.809 / 1.650 s | 5.674 / 1.784 s | 4.848 / 1.619 s | 163.17 MiB |
+| Native G1 O3 | 12.30 ms | 6.006 / 1.693 s | 5.798 / 1.854 s | 4.945 / 1.634 s | 169.03 MiB |
+| Native G1 O3 mit PGO | 11.97 ms | 5.826 / 1.708 s | 5.694 / 1.824 s | 4.846 / 1.603 s | 162.94 MiB |
+
+Die Zeiten sind Wandzeit-Mediane. Die Entscheidungswerte verwenden den
+Median der Verhältnisse innerhalb derselben Runde. Auf dem Holdout mit
+vier Workern senkte PGO die Wandzeit um 0.71 % (Serial, fünf von sieben
+Siegen) und 1.37 % (G1, vier Siege). Der Spitzen-RSS sank gepaart um
+3.81 % und 3.90 %, jeweils in allen sieben Runden. Beide Varianten liegen
+unter der vereinbarten Schwelle von 5 % Zeitgewinn oder 10 % RSS-Gewinn
+bei sechs Siegen und höchstens 2 % Regression pro Realdatenreihe. Die
+Binary-Grösse sank durch das Training um rund 42 % beziehungsweise 46 %.
+[245 Einzelmessungen](measurements/native-pgo-runtimes.csv)
+
+| GC-Diagnose auf Autzen-Holdout, 4 Worker | Beobachtete GC-IDs | Pausen | Summe | Längste Pause |
+| --- | ---: | ---: | ---: | ---: |
+| Temurin G1 | 6 | 6 | 7.20 ms | 1.61 ms |
+| Native Serial O3 | 14 | 14 | 11.20 ms | 2.15 ms |
+| Native Serial O3 mit PGO | 13 | 13 | 9.16 ms | 1.03 ms |
+| Native G1 O3 | 46 | 59 | 15.55 ms | 0.82 ms |
+| Native G1 O3 mit PGO | 44 | 56 | 14.26 ms | 0.58 ms |
+
+Mediane aus drei separaten Diagnoseläufen. Bei G1 kann eine GC-ID mehrere
+Pausen umfassen, und parallele Phasen erscheinen ebenfalls in den Logs.
+Die Pausensumme zählt ausschliesslich abgeschlossene `Pause`-Zeilen.
+G1 hatte kürzere maximale Pausen und höhere Summen. Bei identischem
+Trainingsstatus lag der gepaarte Wandzeit-Median auf dem Holdout mit G1
+0.51 % bzw. 0.27 % über Serial. Der RSS-Vorteil lag unter 3 %. Serial
+bleibt die Empfehlung für den nativen CLI-Pfad auf dem M1.
+[15 GC-Diagnoseläufe](measurements/native-pgo-gc.csv)
+
+Für kurze Aufrufe ist Native Serial wegen der rund neunfach kürzeren
+Mini-Wandzeit geeignet. Bei vier Workern auf dem Autzen-Holdout gewann
+Native Serial mit PGO gegenüber Temurin gepaart 5.75 % Wandzeit in
+sechs von sieben Läufen und 55.98 % Spitzen-RSS in allen sieben Läufen.
+Seriell lagen sämtliche nativen Ganzkachel-Mediane über Temurin. Die
+Realdaten-Matrix rechtfertigt Temurin weiterhin als Standard.
+
+Die vollständige geordnete Rohrecord-Folge stimmte für insgesamt
+33'654'038 Eingabepunkte zwischen Temurin und allen vier nativen Builds
+mit einem oder vier Workern überein. Alle gemessenen LAS- und JSON-
+Ausgaben waren bytegleich. PDAL bestätigte 28'695, 106'534 und 86'534
+Ausgaberecords, CRS und Statistik mit den bestehenden Toleranzen. Alle
+Native-Builds bestanden die Fixture-, Korruptions- und SIGTERM-Tests
+sowie die separate PDAL-Produktsuite auf Solothurn 2019 und 2014.
 
 ## E8 · TornadoVM auf Apple M5
 

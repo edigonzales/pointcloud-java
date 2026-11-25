@@ -134,6 +134,7 @@ def check_wide_chunk(command, modes, scratch, pdal, stats):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--product", action="store_true", help="check the installed pointcloud CLI and --laz-workers 4")
+    parser.add_argument("--product-cli", type=Path, help="alternate installed CLI launcher (implies --product)")
     parser.add_argument("--pdal", type=Path, help="PDAL 2.10.2 binary to generate additional LAZ fixtures")
     parser.add_argument("--cancel-source", type=Path, default=Path(".cache/test-data/so-2019.laz"),
                         help="LAZ tile long enough to interrupt (default: %(default)s)")
@@ -141,12 +142,13 @@ def main():
     launcher = Path(os.environ["JAVA_HOME"]) / "bin/java" if "JAVA_HOME" in os.environ else "java"
     java = [launcher, "-Xmx512m", "-cp", "experiments/build/install/experiments/lib/*",
             "pointcloud.ChunkParallel", "pipeline"]
-    modes = ("default", "workers-4") if args.product else MODES
+    product = args.product or args.product_cli is not None
+    product_cli = args.product_cli.resolve() if args.product_cli is not None else "build/install/pointcloud/bin/pointcloud"
+    modes = ("default", "workers-4") if product else MODES
 
     def command(mode, config, metadata):
-        if args.product:
-            cmd = ["env", "JAVA_OPTS=-Xmx512m", "build/install/pointcloud/bin/pointcloud", "pipeline", str(config),
-                   "--metadata", str(metadata)]
+        if product:
+            cmd = ["env", "JAVA_OPTS=-Xmx512m", str(product_cli), "pipeline", str(config), "--metadata", str(metadata)]
             return [*cmd, "--laz-workers", "4"] if mode == "workers-4" else cmd
         return [*java, mode, config, metadata]
 
@@ -176,7 +178,7 @@ def main():
         modern = check_modes(command, modes, scratch, FIXTURES / "format-8.laz", [stats], 5, 5, {2: 5})
         require(point_records(modern) == point_records((FIXTURES / "format-8.las").read_bytes()),
                 "Layered fixture fields, including NIR or Extra Bytes, changed")
-        if args.product:
+        if product:
             uncompressed = check_modes(command, modes, scratch, FIXTURES / "format-8.las", [stats], 5, 5, {2: 5})
             require(point_records(uncompressed) == point_records(modern), "Uncompressed LAS fallback changed records")
         if args.pdal:
@@ -195,7 +197,7 @@ def main():
             print(f"{adaptive.name}: {chunks} chunks for four workers", flush=True)
             check_modes(command, modes, scratch, adaptive, [stats], adaptive_points, adaptive_points,
                         {2: adaptive_points})
-            if args.product:
+            if product:
                 check_wide_chunk(command, modes, scratch, args.pdal, stats)
         check_corruption(command, modes, scratch)
         check_cancel(command, modes[1:], scratch, args.cancel_source)
