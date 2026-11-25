@@ -1,0 +1,39 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+dependencies {
+    implementation project(':')
+    implementation project(':codec')
+    implementation 'org.openjdk.jmh:jmh-core:1.37'
+    annotationProcessor 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
+}
+
+application {
+    mainClass = 'org.openjdk.jmh.Main'
+}
+
+if (providers.gradleProperty('vector').isPresent()) {
+    sourceSets.main.java.srcDir('src/vector/java')
+    tasks.named('compileJava') {
+        options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+    }
+}
+
+if (providers.gradleProperty('tornado').isPresent()) {
+    sourceSets.main.java.srcDir('src/tornado/java')
+    dependencies {
+        implementation 'io.github.beehive-lab:tornado-runtime:8.1.0-jdk22plus'
+        runtimeOnly 'io.github.beehive-lab:tornado-drivers-metal:8.1.0-jdk22plus'
+    }
+}

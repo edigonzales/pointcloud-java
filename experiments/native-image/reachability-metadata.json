@@ -1,0 +1,71 @@
+{
+  "reflection": [
+    {
+      "type": "pointcloud.Pipeline$Result",
+      "methods": [
+        {
+          "name": "pointsRead",
+          "parameterTypes": []
+        },
+        {
+          "name": "pointsSelected",
+          "parameterTypes": []
+        },
+        {
+          "name": "pointsWritten",
+          "parameterTypes": []
+        },
+        {
+          "name": "statistics",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "pointcloud.Pipeline$StageStatistics",
+      "methods": [
+        {
+          "name": "dimensions",
+          "parameterTypes": []
+        },
+        {
+          "name": "stage",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "pointcloud.Pipeline$Statistics",
+      "methods": [
+        {
+          "name": "average",
+          "parameterTypes": []
+        },
+        {
+          "name": "count",
+          "parameterTypes": []
+        },
+        {
+          "name": "maximum",
+          "parameterTypes": []
+        },
+        {
+          "name": "minimum",
+          "parameterTypes": []
+        },
+        {
+          "name": "name",
+          "parameterTypes": []
+        },
+        {
+          "name": "stddev",
+          "parameterTypes": []
+        },
+        {
+          "name": "variance",
+          "parameterTypes": []
+        }
+      ]
+    }
+  ]
+}

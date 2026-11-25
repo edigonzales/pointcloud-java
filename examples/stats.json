@@ -1,0 +1,10 @@
+[
+  ".cache/test-data/so-2019.laz",
+  {
+    "type": "filters.stats",
+    "dimensions": "X,Y,Z,Intensity,Classification"
+  },
+  {
+    "type": "writers.null"
+  }
+]

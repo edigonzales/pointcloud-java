@@ -1,0 +1,356 @@
+diff --git a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ByteStreamInArray.java b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ByteStreamInArray.java
+index eded005..2113593 100644
+--- a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ByteStreamInArray.java
++++ b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ByteStreamInArray.java
+@@ -18,6 +18,7 @@ import static java.nio.ByteOrder.LITTLE_ENDIAN;
+ public class ByteStreamInArray extends ByteStreamIn {
+ 
+     private ByteBuffer data;
++    private boolean layerPayload;
+ 
+     public ByteStreamInArray()
+     {
+@@ -36,6 +37,8 @@ public class ByteStreamInArray extends ByteStreamIn {
+             throw new IllegalArgumentException();
+         }
+ 
++        layerPayload = false;
++
+         if ( null != bytes )
+         {
+             this.data = ByteBuffer.wrap(bytes, 0, (int) size);
+@@ -48,6 +51,27 @@ public class ByteStreamInArray extends ByteStreamIn {
+ 
+         return true;
+     }
++
++    void initLayerPayload(byte[] bytes, int size) {
++        data = ByteBuffer.wrap(bytes, 0, size).slice().order(LITTLE_ENDIAN);
++        layerPayload = true;
++    }
++
++    void readLayerFrom(ByteStreamIn source, int size) {
++        if (source instanceof ByteStreamInArray payload && payload.layerPayload) {
++            ByteBuffer parent = payload.data;
++            if (size > parent.remaining()) {
++                throw new UncheckedEOFException();
++            }
++            data = parent.slice(parent.position(), size).order(LITTLE_ENDIAN);
++            parent.position(parent.position() + size);
++            layerPayload = false;
++        } else {
++            byte[] bytes = new byte[size];
++            source.getBytes(bytes, size);
++            init(bytes, size);
++        }
++    }
+     
+     @Override
+     public byte getByte() {
+diff --git a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_BYTE14_v3.java b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_BYTE14_v3.java
+index 08f9f43..7c0f098 100644
+--- a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_BYTE14_v3.java
++++ b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_BYTE14_v3.java
+@@ -121,22 +121,20 @@ public class LASreadItemCompressed_BYTE14_v3 extends LASreadItemCompressed{
+       
+         /* load the requested bytes and init the corresponding instreams and decoders */
+ 
+-        byte[] bytes;
+         for (i = 0; i < number; i++)
+         {
+           if (requested_Bytes[i])
+           {
+             if (num_bytes_Bytes[i] != 0)
+             {
+-              bytes = new byte[num_bytes_Bytes[i]];
+-              instream.getBytes(bytes, num_bytes_Bytes[i]);
+-              instream_Bytes[i].init(bytes, num_bytes_Bytes[i]);
++              instream_Bytes[i].readLayerFrom(instream, num_bytes_Bytes[i]);
+               dec_Bytes[i].init(instream_Bytes[i]);
+               changed_Bytes[i] = true;
+             }
+             else
+             {
+-              dec_Bytes[i].init(null);
++              instream_Bytes[i].init(null, 0);
++              dec_Bytes[i].done();
+               changed_Bytes[i] = false;
+             }
+           }
+diff --git a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_POINT14_v3.java b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_POINT14_v3.java
+index a2bdef7..3071fcc 100644
+--- a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_POINT14_v3.java
++++ b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_POINT14_v3.java
+@@ -190,18 +190,14 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
+ 
+         /* load the requested bytes and init the corresponding instreams and decoders */
+ 
+-        byte[] bytes = new byte[num_bytes_channel_returns_XY];
+-        instream.getBytes(bytes, num_bytes_channel_returns_XY);
+-        instream_channel_returns_XY.init(bytes, num_bytes_channel_returns_XY);
++        instream_channel_returns_XY.readLayerFrom(instream, num_bytes_channel_returns_XY);
+         dec_channel_returns_XY.init(instream_channel_returns_XY);
+ 
+         if (requested_Z)
+         {
+             if (num_bytes_Z > 0 )
+             {
+-                bytes = new byte[num_bytes_Z];
+-                instream.getBytes(bytes, num_bytes_Z);
+-                instream_Z.init(bytes, num_bytes_Z);
++                instream_Z.readLayerFrom(instream, num_bytes_Z);
+                 dec_Z.init(instream_Z);
+                 changed_Z = true;
+             }
+@@ -224,9 +220,7 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
+         {
+             if (num_bytes_classification > 0)
+             {
+-                bytes = new byte[num_bytes_classification];
+-                instream.getBytes(bytes, num_bytes_classification);
+-                instream_classification.init(bytes, num_bytes_classification);
++                instream_classification.readLayerFrom(instream, num_bytes_classification);
+                 dec_classification.init(instream_classification);
+                 changed_classification = true;
+             }
+@@ -249,9 +243,7 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
+         {
+             if (num_bytes_flags > 0)
+             {
+-                bytes = new byte[num_bytes_flags];
+-                instream.getBytes(bytes, num_bytes_flags);
+-                instream_flags.init(bytes, num_bytes_flags);
++                instream_flags.readLayerFrom(instream, num_bytes_flags);
+                 dec_flags.init(instream_flags);
+                 changed_flags = true;
+             }
+@@ -274,9 +266,7 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
+         {
+             if (num_bytes_intensity > 0)
+             {
+-                bytes = new byte[num_bytes_intensity];
+-                instream.getBytes(bytes, num_bytes_intensity);
+-                instream_intensity.init(bytes, num_bytes_intensity);
++                instream_intensity.readLayerFrom(instream, num_bytes_intensity);
+                 dec_intensity.init(instream_intensity);
+                 changed_intensity = true;
+             }
+@@ -299,9 +289,7 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
+         {
+             if (num_bytes_scan_angle > 0)
+             {
+-                bytes = new byte[num_bytes_scan_angle];
+-                instream.getBytes(bytes, num_bytes_scan_angle);
+-                instream_scan_angle.init(bytes, num_bytes_scan_angle);
++                instream_scan_angle.readLayerFrom(instream, num_bytes_scan_angle);
+                 dec_scan_angle.init(instream_scan_angle);
+                 changed_scan_angle = true;
+             }
+@@ -324,9 +312,7 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
+         {
+             if (num_bytes_user_data > 0)
+             {
+-                bytes = new byte[num_bytes_user_data];
+-                instream.getBytes(bytes, num_bytes_user_data);
+-                instream_user_data.init(bytes, num_bytes_user_data);
++                instream_user_data.readLayerFrom(instream, num_bytes_user_data);
+                 dec_user_data.init(instream_user_data);
+                 changed_user_data = true;
+             }
+@@ -349,9 +335,7 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
+         {
+             if (num_bytes_point_source > 0)
+             {
+-                bytes = new byte[num_bytes_point_source];
+-                instream.getBytes(bytes, num_bytes_point_source);
+-                instream_point_source.init(bytes, num_bytes_point_source);
++                instream_point_source.readLayerFrom(instream, num_bytes_point_source);
+                 dec_point_source.init(instream_point_source);
+                 changed_point_source = true;
+             }
+@@ -374,9 +358,7 @@ public class LASreadItemCompressed_POINT14_v3 extends LASreadItemCompressed {
+         {
+             if (num_bytes_gps_time > 0)
+             {
+-                bytes = new byte[num_bytes_gps_time];
+-                instream.getBytes(bytes, num_bytes_gps_time);
+-                instream_gps_time.init(bytes, num_bytes_gps_time);
++                instream_gps_time.readLayerFrom(instream, num_bytes_gps_time);
+                 dec_gps_time.init(instream_gps_time);
+                 changed_gps_time = true;
+             }
+diff --git a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_RGB14_v3.java b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_RGB14_v3.java
+index d634222..2e3aad9 100644
+--- a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_RGB14_v3.java
++++ b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_RGB14_v3.java
+@@ -75,9 +75,7 @@ public class LASreadItemCompressed_RGB14_v3 extends LASreadItemCompressed{
+     {
+         if (num_bytes_RGB != 0)
+         {
+-            byte[] bytes = new byte[num_bytes_RGB];
+-            instream.getBytes(bytes, num_bytes_RGB);
+-            instream_RGB.init(bytes, num_bytes_RGB);
++            instream_RGB.readLayerFrom(instream, num_bytes_RGB);
+             dec_RGB.init(instream_RGB);
+             changed_RGB = true;
+         }
+diff --git a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_RGBNIR14_v3.java b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_RGBNIR14_v3.java
+index 28f07ef..6dd52b2 100644
+--- a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_RGBNIR14_v3.java
++++ b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadItemCompressed_RGBNIR14_v3.java
+@@ -102,9 +102,7 @@ public class LASreadItemCompressed_RGBNIR14_v3 extends LASreadItemCompressed{
+         {
+             if (num_bytes_RGB != 0)
+             {
+-                byte[] bytes = new byte[num_bytes_RGB];
+-                instream.getBytes(bytes, num_bytes_RGB);
+-                instream_RGB.init(bytes, num_bytes_RGB);
++                instream_RGB.readLayerFrom(instream, num_bytes_RGB);
+                 dec_RGB.init(instream_RGB);
+                 changed_RGB = true;
+             }
+@@ -127,9 +125,7 @@ public class LASreadItemCompressed_RGBNIR14_v3 extends LASreadItemCompressed{
+         {
+             if (num_bytes_NIR != 0)
+             {
+-                byte[] bytes = new byte[num_bytes_NIR];
+-                instream.getBytes(bytes, num_bytes_NIR);
+-                instream_NIR.init(bytes, num_bytes_NIR);
++                instream_NIR.readLayerFrom(instream, num_bytes_NIR);
+                 dec_NIR.init(instream_NIR);
+                 changed_NIR = true;
+             }
+diff --git a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadPoint.java b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadPoint.java
+index 2cd04fd..7b56628 100644
+--- a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadPoint.java
++++ b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/LASreadPoint.java
+@@ -22,6 +22,8 @@ import static java.lang.Boolean.TRUE;
+ 
+ public class LASreadPoint {
+ 
++    private static final int MAX_SHARED_LAYER_PAYLOAD = 8 << 20;
++
+     private ByteStreamIn instream;
+     private int num_readers; // unsigned
+     private LASreadItem[] readers;
+@@ -30,6 +32,8 @@ public class LASreadPoint {
+     private ArithmeticDecoder dec;
+     private final MutableInteger context = new MutableInteger(0);
+     private boolean layered_las14_compression;
++    private byte[] layerBuffer;
++    private ByteStreamInArray layerPayload;
+     // used for chunking
+     private int chunk_size; // unsigned
+     private int chunk_count; // unsigned
+@@ -336,10 +340,15 @@ public class LASreadPoint {
+                                 || chunk_starts != null && layerBytes != available) {
+                             throw new IllegalArgumentException("invalid or oversized LAZ layer payload");
+                         }
++                        ByteStreamIn payload = prepareLayerPayload((int) layerBytes);
++                        dec.setByteStreamIn(payload);
+                         for (i = 0; i < num_readers; i++)
+                         {
+                             ((LASreadItemCompressed)(readers_compressed[i])).init(pointRecords[i], context);
+                         }
++                        if (payload != instream && payload.tell() != layerBytes) {
++                            throw new IllegalArgumentException("LAZ layer payload was not fully consumed");
++                        }
+                     }
+                     else
+                     {
+@@ -394,6 +403,25 @@ public class LASreadPoint {
+         return TRUE;
+     }
+ 
++    private ByteStreamIn prepareLayerPayload(int size) {
++        if (size > MAX_SHARED_LAYER_PAYLOAD) {
++            layerBuffer = null;
++            if (layerPayload != null) {
++                layerPayload.init(null, 0);
++            }
++            return instream;
++        }
++        if (layerBuffer == null || layerBuffer.length < size) {
++            layerBuffer = new byte[size];
++        }
++        if (layerPayload == null) {
++            layerPayload = new ByteStreamInArray();
++        }
++        instream.getBytes(layerBuffer, size);
++        layerPayload.initLayerPayload(layerBuffer, size);
++        return layerPayload;
++    }
++
+     public boolean check_end()
+     {
+         if (readers == readers_compressed)
+diff --git a/src/test/java/com/github/mreutegg/laszip4j/laszip/LayerPayloadTest.java b/src/test/java/com/github/mreutegg/laszip4j/laszip/LayerPayloadTest.java
+new file mode 100644
+index 0000000..4a38c83
+--- /dev/null
++++ b/src/test/java/com/github/mreutegg/laszip4j/laszip/LayerPayloadTest.java
+@@ -0,0 +1,64 @@
++package com.github.mreutegg.laszip4j.laszip;
++
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class LayerPayloadTest {
++    @Test
++    void readsAdjacentLittleEndianViewsWithoutCopying() {
++        byte[] bytes = {1, 2, 3, 4};
++        var payload = new ByteStreamInArray();
++        payload.initLayerPayload(bytes, bytes.length);
++        var first = new ByteStreamInArray();
++        var second = new ByteStreamInArray();
++        first.readLayerFrom(payload, 2);
++        second.readLayerFrom(payload, 2);
++
++        bytes[0] = 5;
++        assertEquals((char) 0x0205, first.get16bitsLE());
++        assertThrows(UncheckedEOFException.class, first::getByte);
++        assertEquals((char) 0x0403, second.get16bitsLE());
++        assertEquals(4, payload.tell());
++    }
++
++    @Test
++    void respectsShorterPayloadsAndEmptyOrSkippedLayers() {
++        byte[] bytes = {1, 2, 3, 4, 5};
++        var payload = new ByteStreamInArray();
++        var layer = new ByteStreamInArray();
++        payload.initLayerPayload(bytes, bytes.length);
++        layer.readLayerFrom(payload, bytes.length);
++        assertEquals(1, layer.getByte());
++
++        payload.initLayerPayload(bytes, 3);
++        assertTrue(payload.skipBytes(1));
++        layer.readLayerFrom(payload, 0);
++        assertEquals(1, payload.tell());
++        assertThrows(UncheckedEOFException.class, layer::getByte);
++        assertThrows(UncheckedEOFException.class, () -> layer.readLayerFrom(payload, 3));
++        assertEquals(1, payload.tell());
++        layer.readLayerFrom(payload, 2);
++        assertTrue(layer.seekEnd(1));
++        assertEquals(3, layer.getByte());
++        assertThrows(UncheckedEOFException.class, layer::getByte);
++        assertEquals(3, payload.tell());
++    }
++
++    @Test
++    void keepsOwnedCopiesForTheOrdinaryInputPath() {
++        byte[] bytes = {1, 2, 3};
++        var source = new ByteStreamInArray();
++        source.initLayerPayload(bytes, bytes.length);
++        source.init(bytes, bytes.length);
++        var layer = new ByteStreamInArray();
++        layer.readLayerFrom(source, 2);
++
++        bytes[0] = 9;
++        assertEquals((char) 0x0201, layer.get16bitsLE());
++        assertEquals(2, source.tell());
++        assertThrows(UncheckedEOFException.class, () -> layer.readLayerFrom(source, 2));
++    }
++}

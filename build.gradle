@@ -1,0 +1,83 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+application {
+    mainClass = 'pointcloud.Main'
+}
+
+distributions.main.contents.from('LICENSE')
+
+dependencies {
+    implementation project(':codec')
+    implementation 'com.google.code.gson:gson:2.13.2'
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.0.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:6.0.3'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+tasks.register('downloadTestData') {
+    group = 'verification'
+    description = 'Download Solothurn 2019, Solothurn 2014 (-Ptile=2014), or Autzen (-Ptile=autzen).'
+    doLast {
+        def tile = providers.gradleProperty('tile').getOrElse('2019')
+        def datasets = [
+            '2019': [grid: '2594000_1227500', size: 83_247_722L],
+            '2014': [grid: '2592000_1228000', size: 74_261_841L],
+            'autzen': [filename: 'autzen-classified.copc.laz', size: 81_123_042L,
+                       url: 'https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz']
+        ]
+        def dataset = datasets[tile]
+        if (dataset == null) {
+            throw new GradleException('Expected -Ptile=2019, -Ptile=2014, or -Ptile=autzen')
+        }
+        def directory = file('.cache/test-data')
+        long bytes = dataset.size
+        def target = new File(directory, dataset.filename ?: "so-${tile}.laz")
+        if (target.isFile() && target.length() == bytes) {
+            logger.lifecycle("Using ${target} (${bytes} bytes)")
+            return
+        }
+        directory.mkdirs()
+        if (directory.usableSpace < bytes + (1L << 30)) {
+            throw new GradleException("Insufficient space for ${target} and a 1 GiB reserve")
+        }
+        def layer = "ch.so.agi.lidar_${tile}.pointcloud"
+        def url = new URI(dataset.url ?: "https://files.geo.so.ch/${layer}/aktuell/${dataset.grid}.${layer}.laz").toURL()
+        def download = url.openConnection()
+        download.connectTimeout = 15_000
+        download.readTimeout = 60_000
+        def temporary = java.nio.file.Files.createTempFile(directory.toPath(), "${target.name}-", '.part')
+        try {
+            if (download.responseCode != 200 || download.contentLengthLong != bytes) {
+                throw new GradleException("Unexpected test data response: HTTP ${download.responseCode}, ${download.contentLengthLong} bytes")
+            }
+            download.inputStream.withCloseable { input ->
+                java.nio.file.Files.copy(input, temporary, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+            temporary.toFile().withInputStream { input ->
+                if (temporary.toFile().length() != bytes || new String(input.readNBytes(4), 'US-ASCII') != 'LASF') {
+                    throw new GradleException("Incomplete or invalid test data: ${temporary}")
+                }
+            }
+            java.nio.file.Files.move(temporary, target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            logger.lifecycle("Downloaded ${target} (${bytes} bytes)")
+        } finally {
+            download.disconnect()
+            java.nio.file.Files.deleteIfExists(temporary)
+        }
+    }
+}
