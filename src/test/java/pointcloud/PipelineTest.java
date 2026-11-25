@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -229,22 +230,87 @@ class PipelineTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {3, 8})
+    void selectsEachClassificationFlagAndPreservesRecords(int format) throws IOException {
+        var source = classificationFixture(format);
+        var original = LasIoTest.bytes(source);
+        int originalStart = original.getInt(96);
+        int stride = original.getChar(105);
+        var flags = List.of("Synthetic", "KeyPoint", "Withheld", "Overlap");
+        for (int i = 0; i < flags.size(); i++) {
+            var flag = flags.get(i);
+            Path output = temp.resolve(flag + ".las");
+            var result = pipeline(source, """
+                    {"type":"filters.expression","expression":"%s == 1"},
+                    {"type":"writers.las","filename":"%s","forward":"all","extra_dims":"all"}
+                    """.formatted(flag, output)).run(2, false);
+            var expected = i == 3 ? List.of(4) : format == 3 ? List.of(i + 1, 4) : List.of(i + 1);
+            assertEquals(expected.size(), result.pointsWritten(), flag);
+            var selected = LasIoTest.bytes(output);
+            assertEquals(stride, selected.getChar(105));
+            for (int j = 0; j < expected.size(); j++) {
+                int from = originalStart + expected.get(j) * stride;
+                int to = selected.getInt(96) + j * stride;
+                assertArrayEquals(Arrays.copyOfRange(original.array(), from, from + stride),
+                        Arrays.copyOfRange(selected.array(), to, to + stride), flag);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {3, 8})
+    void countsClassesAsExposedAtEachStatisticsStage(int format) throws IOException {
+        var pipeline = pipeline(classificationFixture(format), """
+                {"type":"filters.stats","dimensions":"Classification,X","count":"Classification"},
+                {"type":"filters.expression","expression":"Overlap == 1"},
+                {"type":"filters.stats","dimensions":"Classification","count":"Classification"},
+                {"type":"filters.stats","dimensions":"X","count":"Classification"},
+                {"type":"filters.expression","expression":"Classification < 0"},
+                {"type":"filters.stats","dimensions":"Classification","count":"Classification"},
+                {"type":"writers.null"}
+                """);
+        var result = pipeline.run(2, false);
+        assertEquals(result, pipeline.run(5, false));
+        var before = result.statistics().getFirst().dimensions();
+        var expected = format == 3 ? Map.of(0, 1L, 2, 4L) : Map.of(2, 2L, 12, 2L, 255, 1L);
+        assertEquals(expected, before.getFirst().bins());
+        assertEquals(5, before.getFirst().count());
+        assertNull(before.getLast().bins());
+        var overlap = result.statistics().get(1).dimensions().getFirst();
+        assertEquals(Map.of(format == 3 ? 0 : 12, 1L), overlap.bins());
+        assertEquals(1, overlap.count());
+        assertNull(result.statistics().get(2).dimensions().getFirst().bins());
+        var empty = result.statistics().getLast().dimensions().getFirst();
+        assertEquals(Map.of(), empty.bins());
+        assertEquals(0, empty.count());
+        assertNull(empty.average());
+    }
+
     @Test
-    void interpretsLegacyOverlapAsPdalDoesAndWritesTheOriginalFlags() throws IOException {
-        var mini = LasIoTest.bytes(LasIoTest.fixture(3, "las"));
-        byte classification = (byte) (12 | 0xe0);
-        mini.put(mini.getInt(96) + 15, classification);
-        Path source = Files.write(temp.resolve("overlap.las"), mini.array());
-        Path output = temp.resolve("selected.las");
-        var run = pipeline(source, """
-                {"type":"filters.expression","expression":"Classification == 0"},
-                {"type":"filters.stats","dimensions":"Classification"},
-                {"type":"writers.las","filename":"%s","forward":"all","extra_dims":"all"}
-                """.formatted(output)).run(2, false);
-        assertEquals(1, run.pointsWritten());
-        assertEquals(0, run.statistics().getFirst().dimensions().getFirst().average());
-        var written = LasIoTest.bytes(output);
-        assertEquals(classification, written.get(written.getInt(96) + 15));
+    void rejectsOtherCountDimensions() {
+        var error = assertThrows(IllegalArgumentException.class, () -> pipeline(LasIoTest.fixture(3, "las"), """
+                {"type":"filters.stats","dimensions":"X","count":"X"},
+                {"type":"writers.null"}
+                """).run(2, false));
+        assertTrue(error.getMessage().contains("Stage 2 (filters.stats): count must be 'Classification'"));
+    }
+
+    private Path classificationFixture(int format) throws IOException {
+        var mini = LasIoTest.bytes(LasIoTest.fixture(format, "las"));
+        int start = mini.getInt(96);
+        int stride = mini.getChar(105);
+        int[] flags = format == 3 ? new int[]{0x02, 0x22, 0x42, 0x82, 0xec}
+                : new int[]{0xf0, 0x01, 0x02, 0x04, 0x08};
+        int[] modernClasses = {12, 2, 2, 255, 12};
+        for (int i = 0; i < flags.length; i++) {
+            int record = start + i * stride;
+            mini.put(record + 15, (byte) flags[i]);
+            if (format == 8) {
+                mini.put(record + 16, (byte) modernClasses[i]);
+            }
+        }
+        return Files.write(temp.resolve("classification-" + format + ".las"), mini.array());
     }
 
     @Test

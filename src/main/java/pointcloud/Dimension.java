@@ -1,7 +1,8 @@
 package pointcloud;
 
 enum Dimension {
-    X, Y, Z, Intensity, Classification, ReturnNumber, NumberOfReturns, GpsTime, Red, Green, Blue, Infrared;
+    X, Y, Z, Intensity, Classification, Synthetic, KeyPoint, Withheld, Overlap,
+    ReturnNumber, NumberOfReturns, GpsTime, Red, Green, Blue, Infrared;
 
     boolean available(int format) {
         return switch (this) {
@@ -24,6 +25,15 @@ enum Dimension {
                 int code = batch.classification(point);
                 // PDAL exposes the old overlap class as class 0 with a separate overlap flag.
                 yield format < 6 && code == 12 ? 0 : code;
+            }
+            case Synthetic -> (batch.records.get(start + 15) >>> (format < 6 ? 5 : 0)) & 1;
+            case KeyPoint -> (batch.records.get(start + 15) >>> (format < 6 ? 6 : 1)) & 1;
+            case Withheld -> (batch.records.get(start + 15) >>> (format < 6 ? 7 : 2)) & 1;
+            case Overlap -> {
+                if (format < 6) {
+                    yield batch.classification(point) == 12 ? 1 : 0;
+                }
+                yield (batch.records.get(start + 15) >>> 3) & 1;
             }
             case ReturnNumber -> batch.returnNumber(point);
             case NumberOfReturns -> (batch.records.get(start + 14) >>> (format < 6 ? 3 : 4))

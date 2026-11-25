@@ -1066,3 +1066,28 @@ gehören zur Auswahl. `outside: true` invertiert genau diese Auswahl.
 - Ground-Crop, Statistik, Dezimierung, Solothurn 2014 und SIGTERM
   bestanden ebenfalls. Der Abbruch lieferte Exit 143 und räumte die
   temporären Ausgaben auf.
+
+## LAS-Flags und Klassenzählungen
+
+Die Pipeline stellt `Synthetic`, `KeyPoint`, `Withheld` und `Overlap`
+aus den LAS-Rohrecords bereit. Die Flag-Auswertung und
+`count: "Classification"` wurden am Polygonstand `a235c82` auf
+macOS 15.8.1 (arm64) mit Temurin 25.0.3 und Gradle 9.9.1 geprüft.
+
+- `./gradlew clean check installDist distZip` bestand mit 79 JUnit-Tests
+  ohne Fehler oder übersprungene Tests. Die direkten Fälle prüfen
+  Format 3 und 8, Klasse 255, Legacy-Overlap, Stagereihenfolge,
+  leere Zählungen und das bestehende JSON ohne Klassenhäufigkeiten.
+- `python3 tools/check-las-flags.py /pfad/zu/pdal` verglich
+  Solothurn 2019 (14'566'627 gelesene, 195'738 ausgewählte Punkte)
+  und Autzen (10'653'336 gelesene, 23'573 ausgewählte Punkte) mit
+  PDAL 2.10.2 im Streaming-Modus mit vier Reader-Workern.
+  Java-Läufe mit einem und vier Workern lieferten jeweils bytegleiche
+  LAS- und JSON-Dateien. Alle Klassenhäufigkeiten vor und nach der
+  Selektion und die ausgewählten Zeilen in Dateireihenfolge stimmten
+  überein. Autzen selektierte 1'497 Punkte der Klasse 65 über
+  `KeyPoint == 1`. Die numerische Statistik bestand innerhalb der
+  bestehenden Toleranz.
+- Die unabhängige Abnahme mit `tools/check-real-data.py` bestätigte
+  496'586 vollständige Rohrecords, Statistik und CRS. SIGTERM ergab
+  Exit 143 und entfernte die temporären Ausgaben.

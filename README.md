@@ -75,6 +75,16 @@ vor dem Start frei sein.
 python3 tools/check-real-data.py /pfad/zu/pdal
 ```
 
+Für Qualitätskontrollen lassen sich LAS-Flags wie `Withheld == 0`
+in `filters.expression` und Klassenhäufigkeiten mit
+`count: "Classification"` in `filters.stats` verwenden. Der separate
+PDAL-Vergleich prüft Solothurn 2019 und Autzen.
+
+```sh
+./gradlew downloadTestData -Ptile=autzen
+python3 tools/check-las-flags.py /pfad/zu/pdal
+```
+
 Der Parallelvergleich auf macOS prüft Solothurn 2014 und Autzen mit
 seriellem Java, `--laz-workers 4` und PDAL mit vier Reader-Workern.
 
