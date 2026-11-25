@@ -48,6 +48,15 @@ schreibt 195'738 Bodenpunkte im gewählten Ausschnitt.
 `"$cli" info .cache/test-data/so-2019.laz` zeigt unter anderem
 `Projected CRS: EPSG:2056` und den GeoTIFF-Text für CH1903+ / LV95.
 
+[Polygon-Ground-Crop](examples/polygon-ground-crop.json) verwendet einen
+L-förmigen Perimeter und schreibt 143'244 Bodenpunkte als
+`build/results/polygon-ground-crop.las`. Die JSON-Metadaten enthalten
+die Punktzahlen und die Statistik der ausgewählten Punkte.
+
+```sh
+"$cli" pipeline examples/polygon-ground-crop.json --metadata build/results/polygon-ground-crop.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 
@@ -58,7 +67,7 @@ Die Kachelquelle steht im [Herkunftsnachweis](docs/provenance.md).
 
 Die Referenzabnahme auf macOS oder Linux verwendet PDAL 2.10.2 mit LazPerf.
 Die Vergleichsziele
-`build/results/ground-crop.las`, `decimate.las` und `so-2014.las` müssen
+`build/results/ground-crop.las`, `polygon-ground-crop.las`, `decimate.las` und `so-2014.las` müssen
 vor dem Start frei sein.
 
 ```sh

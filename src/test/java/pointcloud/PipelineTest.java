@@ -2,6 +2,8 @@ package pointcloud;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.StringReader;
@@ -80,6 +82,65 @@ class PipelineTest {
         assertEquals(2594006, one.average());
         assertNull(one.variance());
         assertNull(one.stddev());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 5})
+    void polygonCropKeepsBoundariesAndPreservesOriginalRecords(int boundaryY) throws IOException {
+        var mini = LasIoTest.bytes(LasIoTest.fixture(8, "las"));
+        mini.putDouble(131, 1).putDouble(139, 1).putDouble(155, 0).putDouble(163, 0);
+        int start = mini.getInt(96);
+        int stride = mini.getChar(105);
+        int[][] xy = {{1, 1}, {5, 5}, {0, boundaryY}, {-1, 1}, {3, 5}};
+        for (int i = 0; i < xy.length; i++) {
+            int record = start + i * stride;
+            mini.putInt(record, xy[i][0]).putInt(record + 4, xy[i][1]);
+        }
+        Path source = Files.write(temp.resolve("polygon-input.las"), mini.array());
+        String polygon = "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (3 3, 3 7, 7 7, 7 3, 3 3))";
+        for (boolean outside : new boolean[]{false, true}) {
+            Path output = temp.resolve("polygon-" + outside + ".las");
+            var expected = outside ? List.of(1, 3) : List.of(0, 2, 4);
+            var result = pipeline(source, """
+                    {"type":"filters.crop","polygon":"%s","outside":%s},
+                    {"type":"filters.stats","dimensions":"X"},
+                    {"type":"writers.las","filename":"%s","forward":"all","extra_dims":"all"}
+                    """.formatted(polygon, outside, output)).run(2, false);
+
+            assertEquals(xy.length, result.pointsRead());
+            assertEquals(expected.size(), result.pointsSelected());
+            assertEquals(expected.size(), result.pointsWritten());
+            assertEquals(expected.size(), result.statistics().getFirst().dimensions().getFirst().count());
+            var selected = LasIoTest.bytes(output);
+            assertEquals(stride, selected.getChar(105));
+            int selectedStart = selected.getInt(96);
+            for (int i = 0; i < expected.size(); i++) {
+                int inputRecord = start + expected.get(i) * stride;
+                int outputRecord = selectedStart + i * stride;
+                assertArrayEquals(Arrays.copyOfRange(mini.array(), inputRecord, inputRecord + stride),
+                        Arrays.copyOfRange(selected.array(), outputRecord, outputRecord + stride));
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "\"polygon\":\"POLYGON ((0 0,\"",
+            "\"polygon\":\"POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))\"",
+            "\"polygon\":\"POLYGON EMPTY\"",
+            "\"polygon\":\"POINT (0 0)\"",
+            "\"polygon\":\"POLYGON Z ((0 0 0, 1 0 0, 0 1 0, 0 0 0))\"",
+            "\"polygon\":\"POLYGON ((0 0, 1 0, 0 1, 0 0)) POINT (1 1)\"",
+            "\"polygon\":\"POLYGON ((0 0, 1 0, 0 1, 0 0))\",\"bounds\":\"([0,1],[0,1])\"",
+            "\"outside\":false"
+    })
+    void rejectsInvalidPolygonCropOptionsBeforeOpeningInput(String options) {
+        var invalid = pipeline(Path.of("absent.las"), """
+                {"type":"filters.crop",%s},
+                {"type":"writers.null"}
+                """.formatted(options));
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> invalid.run(2, false))
+                .getMessage().startsWith("Stage 2 (filters.crop):"));
     }
 
     @Test

@@ -1,6 +1,7 @@
 """Compare complete real-data pipelines against an installed PDAL 2.10.2."""
 
 import argparse
+import filecmp
 import json
 import math
 import os
@@ -158,7 +159,7 @@ def main():
     run([pdal, "--version"])
     result_dir = Path("build/results")
     result_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("ground-crop", "decimate", "so-2014"):
+    for name in ("ground-crop", "polygon-ground-crop", "decimate", "so-2014"):
         target = result_dir / f"{name}.las"
         require(not os.path.lexists(target), f"Comparison target already exists: {target}")
     with tempfile.TemporaryDirectory(prefix="pdal-check-", dir=".cache") as scratch:
@@ -171,7 +172,7 @@ def main():
             {"type": "writers.las", "filename": str(result_dir / "so-2014.las"),
              "forward": "all", "extra_dims": "all", "compression": False}
         ]))
-        for name in ("ground-crop", "stats", "decimate", "so-2014"):
+        for name in ("ground-crop", "polygon-ground-crop", "stats", "decimate", "so-2014"):
             year = 2014 if name == "so-2014" else 2019
             input_count = 14_347_366 if year == 2014 else 14_566_627
             pipeline = secondary if year == 2014 else Path("examples") / f"{name}.json"
@@ -182,13 +183,22 @@ def main():
             run([cli, "pipeline", pipeline, "--metadata", java_json])
             if name != "stats":
                 target.rename(java_las)
+            if name == "polygon-ground-crop":
+                parallel_json = work / "parallel.json"
+                run([cli, "pipeline", pipeline, "--metadata", parallel_json, "--laz-workers", "4"])
+                require(filecmp.cmp(java_las, target, shallow=False), "Serial and four-worker Polygon LAS differ")
+                require(java_json.read_bytes() == parallel_json.read_bytes(),
+                        "Serial and four-worker Polygon metadata differ")
+                target.unlink()
+                print("Polygon crop LAS and metadata are byte-identical with one and four Java workers")
             pdal_json.unlink(missing_ok=True)
             run([pdal, "pipeline", pipeline, "--stream", "--metadata", pdal_json])
             java = json.loads(java_json.read_text())
             stages = json.loads(pdal_json.read_text())["stages"]
             require(java["pointsRead"] == stages["readers.las"]["count"] == input_count, "Input point count differs")
             count = java["pointsSelected"]
-            expected = {"ground-crop": 195_738, "stats": input_count, "decimate": 128_909, "so-2014": 28_695}[name]
+            expected = {"ground-crop": 195_738, "polygon-ground-crop": 143_244, "stats": input_count,
+                        "decimate": 128_909, "so-2014": 28_695}[name]
             require(count == expected, f"{name}: unexpected selection count {count}")
             compare_stats(java["statistics"], stages.get("filters.stats", {}).get("statistic", []),
                           input_count if year == 2014 else count)

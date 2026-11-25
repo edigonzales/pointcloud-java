@@ -6,10 +6,18 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.Strictness;
+import org.locationtech.jts.algorithm.locate.IndexedPointInAreaLocator;
+import org.locationtech.jts.geom.CoordinateXY;
+import org.locationtech.jts.geom.Location;
+import org.locationtech.jts.geom.Polygon;
+import org.locationtech.jts.io.ParseException;
+import org.locationtech.jts.io.WKTFileReader;
+import org.locationtech.jts.io.WKTReader;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.Reader;
+import java.io.StringReader;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -204,7 +212,7 @@ public final class Pipeline {
         try {
             switch (type) {
                 case "filters.crop" -> {
-                    options(stage, "bounds", "outside");
+                    options(stage, "bounds", "polygon", "outside");
                     return new Filter(position, type, dimensions, crop(stage), null);
                 }
                 case "filters.expression" -> {
@@ -256,6 +264,13 @@ public final class Pipeline {
     }
 
     private static Expression.Selection crop(JsonObject stage) {
+        boolean hasPolygon = stage.has("polygon");
+        if (stage.has("bounds") == hasPolygon) {
+            throw new IllegalArgumentException("specify exactly one of bounds or polygon");
+        }
+        if (hasPolygon) {
+            return polygonCrop(string(stage, "polygon"), bool(stage, "outside", false));
+        }
         var box = BOX.matcher(string(stage, "bounds"));
         if (!box.matches()) {
             throw new IllegalArgumentException("bounds must be one PDAL 2D or 3D box");
@@ -280,6 +295,33 @@ public final class Pipeline {
                 inside = minZ <= z && z <= maxZ;
             }
             return inside != outside;
+        };
+    }
+
+    private static Expression.Selection polygonCrop(String wkt, boolean outside) {
+        var reader = new WKTReader();
+        reader.setIsOldJtsCoordinateSyntaxAllowed(false);
+        // Reading a second item also detects trailing input after the first geometry.
+        var input = new WKTFileReader(new StringReader(wkt), reader);
+        input.setLimit(2);
+        List<?> geometries;
+        try {
+            geometries = input.read();
+        } catch (IOException | ParseException e) {
+            throw new IllegalArgumentException("invalid polygon WKT: " + e.getMessage(), e);
+        }
+        if (geometries.size() != 1 || !(geometries.getFirst() instanceof Polygon polygon)
+                || polygon.isEmpty() || polygon.getExteriorRing().getCoordinateSequence().getDimension() != 2
+                || !polygon.isValid()) {
+            throw new IllegalArgumentException("polygon must be one valid nonempty 2D WKT POLYGON");
+        }
+
+        var locator = new IndexedPointInAreaLocator(polygon);
+        var coordinate = new CoordinateXY();
+        return (batch, point) -> {
+            coordinate.x = batch.x(point);
+            coordinate.y = batch.y(point);
+            return (locator.locate(coordinate) != Location.EXTERIOR) != outside;
         };
     }
 

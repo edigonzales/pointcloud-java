@@ -99,12 +99,19 @@ Punktformat geprüft.
 | Stage | Optionen |
 | --- | --- |
 | `readers.las` | `filename` für eine lokale LAS-/LAZ-Datei. Als erste Stage ist der Dateiname auch direkt zulässig. |
-| `filters.crop` | `bounds` als `([xmin,xmax],[ymin,ymax])` mit optionalem dritten Z-Intervall. Grenzen sind inklusiv. `outside: true` invertiert die Auswahl. |
+| `filters.crop` | Genau eine Geometrieoption. `bounds` als `([xmin,xmax],[ymin,ymax])` mit optionalem dritten Z-Intervall oder `polygon` als einzelnes 2D-WKT-Polygon. Grenzen sind inklusiv. `outside: true` invertiert die Auswahl. |
 | `filters.expression` | `expression` enthält Dimensionsvergleiche mit endlichen Dezimalliteralen. Unterstützt sind `== != < <= > >=`, `!`, `&&`, `\|\|` und Klammern. Negation bindet vor UND, UND vor ODER. |
 | `filters.decimation` | Ganzzahlige `step` (Standard 1), `offset` (Standard 0) und exklusives `limit` (optional). Zählung ab 0 über die Eingabe dieser Stage. |
 | `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. |
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
+
+`polygon` verwendet die XY-Koordinaten im CRS der Eingabedatei.
+JTS liest und validiert das Polygon beim Aufbau der Filterstage. Punkte
+auf der Aussenkante und auf Lochrändern gelten als ausgewählt.
+Punkte im Inneren eines Lochs gelten als ausserhalb. Das Polygon muss
+gültig und nicht leer sein. Alle ausgewählten Rohrecords und übertragbaren
+Metadaten bleiben in der LAS-Ausgabe erhalten.
 
 Ausdrücke und Statistik akzeptieren `X`, `Y`, `Z`, `Intensity`,
 `Classification`, `ReturnNumber`, `NumberOfReturns` sowie formatabhängig
@@ -153,9 +160,11 @@ typisierte Ergebnis. Ein erneuter Aufruf erstellt frischen Stage-Zustand.
   pro Punkt unverändert. PDAL 2.10.2 schreibt mit `extra_dims: "all"` 42 Bytes
   pro Punkt, weil es `Infrared` zusätzlich zum NIR-Standardfeld als Extra
   Bytes ablegt. [Fixture-Erzeugung](provenance.md#kleine-fixtures)
-- Die Realdatenabnahme vergleicht die drei mitgelieferten Pipelines und eine
+- Die Realdatenabnahme vergleicht die vier mitgelieferten Pipelines und eine
   zusätzliche Pipeline für die 2014-Kachel mit PDAL im Streaming-Modus
-  (`--stream`). [Referenzprüfung](../tools/check-real-data.py)
+  (`--stream`). Für Polygon-Ground-Crop prüft sie zusätzlich bytegleiche
+  LAS- und JSON-Ausgaben mit einem und vier Java-Workern.
+  [Referenzprüfung](../tools/check-real-data.py)
 - Die Abnahme des Parallelpfads vergleicht Solothurn 2014 und Autzen
   in Dateireihenfolge mit seriellem Java und PDAL `readers.las`.
   Für berechnete LAS-1.4-Ausgabegrenzen toleriert dieser Vergleich
