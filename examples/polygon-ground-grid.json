@@ -1,0 +1,34 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": ".cache/test-data/so-2019.laz"
+    },
+    {
+      "type": "filters.crop",
+      "polygon": "POLYGON ((2594100 1227600, 2594300 1227600, 2594300 1227700, 2594200 1227700, 2594200 1227800, 2594100 1227800, 2594100 1227600))"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "Classification == 2 && Withheld == 0"
+    },
+    {
+      "type": "filters.stats",
+      "dimensions": "Z"
+    },
+    {
+      "type": "writers.gdal",
+      "filename": "build/results/polygon-ground-grid.tif",
+      "resolution": 1,
+      "origin_x": 2594100,
+      "origin_y": 1227600,
+      "width": 200,
+      "height": 200,
+      "binmode": true,
+      "dimension": "Z",
+      "data_type": "double",
+      "nodata": -9999,
+      "output_type": "min,max,mean,count"
+    }
+  ]
+}

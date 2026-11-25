@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -48,7 +49,12 @@ public final class Pipeline {
             .setPrettyPrinting().serializeNulls().create();
 
     public record Result(long pointsRead, long pointsSelected, long pointsWritten,
-                         List<StageStatistics> statistics) {}
+                         List<StageStatistics> statistics,
+                         @JsonAdapter(value = OmitNull.class, nullSafe = false) Long pointsBinned) {
+        public Result(long pointsRead, long pointsSelected, long pointsWritten, List<StageStatistics> statistics) {
+            this(pointsRead, pointsSelected, pointsWritten, statistics, null);
+        }
+    }
 
     public record StageStatistics(int stage, List<Statistics> dimensions) {}
 
@@ -92,6 +98,7 @@ public final class Pipeline {
 
     private final Path input;
     private final Path output;
+    private final GroundGridWriter.Grid rasterGrid;
     private final JsonArray stages;
 
     private Pipeline(JsonArray stages) {
@@ -119,6 +126,7 @@ public final class Pipeline {
         JsonObject writer = stageObject(stages.get(position - 1), position);
         String type = type(writer, position);
         try {
+            rasterGrid = type.equals("writers.gdal") ? parseRasterGrid(writer) : null;
             output = switch (type) {
                 case "writers.las" -> {
                     options(writer, "filename", "forward", "compression", "extra_dims");
@@ -129,11 +137,19 @@ public final class Pipeline {
                     }
                     yield filename(string(writer, "filename"), false);
                 }
+                case "writers.gdal" -> {
+                    String name = string(writer, "filename");
+                    String lower = name.toLowerCase(Locale.ROOT);
+                    if (!lower.endsWith(".tif") && !lower.endsWith(".tiff")) {
+                        throw new IllegalArgumentException("filename must end in .tif or .tiff");
+                    }
+                    yield Path.of(name);
+                }
                 case "writers.null" -> {
                     options(writer);
                     yield null;
                 }
-                default -> throw new IllegalArgumentException("expected writers.las or writers.null");
+                default -> throw new IllegalArgumentException("expected writers.las, writers.gdal or writers.null");
             };
         } catch (IllegalArgumentException e) {
             throw atStage(position, type, e.getMessage());
@@ -166,12 +182,17 @@ public final class Pipeline {
     }
 
     public Result run(int batchSize, boolean overwrite) throws IOException {
-        return run(batchSize, overwrite, Pipeline::openSequential, Pipeline::publishLas);
+        return run(batchSize, overwrite, Pipeline::openSequential, Pipeline::publishOutput);
     }
 
     @FunctionalInterface
     interface ResultOutput {
-        void publish(Result result, LasWriter writer) throws IOException;
+        void publish(Result result, OutputFinish output) throws IOException;
+    }
+
+    @FunctionalInterface
+    interface OutputFinish {
+        void finish() throws IOException;
     }
 
     @FunctionalInterface
@@ -197,9 +218,20 @@ public final class Pipeline {
         return new BatchInput(reader.header(), reader.source, reader::readBatch, reader::finished, reader::close);
     }
 
-    static void publishLas(Result result, LasWriter writer) throws IOException {
-        if (writer != null) {
-            writer.finish();
+    static void publishOutput(Result result, OutputFinish output) throws IOException {
+        if (output != null) {
+            output.finish();
+        }
+    }
+
+    private GroundGridWriter openRaster(BatchInput reader, boolean overwrite) throws IOException {
+        if (rasterGrid == null) {
+            return null;
+        }
+        try {
+            return new GroundGridWriter(input, output, overwrite, rasterGrid, reader.header(), reader.channel());
+        } catch (IOException e) {
+            throw new IOException("Stage " + stages.size() + " (writers.gdal): " + e.getMessage(), e);
         }
     }
 
@@ -217,8 +249,9 @@ public final class Pipeline {
                     }
                 }
             }
-            try (var writer = output == null ? null
-                    : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output, overwrite)) {
+            try (var writer = output == null || rasterGrid != null ? null
+                    : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output, overwrite);
+                 var raster = openRaster(reader, overwrite)) {
                 long selected = 0;
                 for (var batch = reader.reader().readBatch(); batch != null; batch = reader.reader().readBatch()) {
                     points:
@@ -231,6 +264,8 @@ public final class Pipeline {
                         selected++;
                         if (writer != null) {
                             writer.write(batch, point);
+                        } else if (raster != null) {
+                            raster.add(batch, point);
                         }
                     }
                 }
@@ -241,9 +276,16 @@ public final class Pipeline {
                                 filter.stats.stream().map(Accumulator::result).toList()));
                     }
                 }
+                OutputFinish finish = writer == null ? null : writer::finish;
+                Long pointsBinned = null;
+                if (raster != null) {
+                    raster.prepare(reader.finished().getAsBoolean());
+                    pointsBinned = raster.pointsBinned();
+                    finish = raster::finish;
+                }
                 var result = new Result(reader.header().pointCount(), selected, writer == null ? 0 : writer.pointCount(),
-                        List.copyOf(results));
-                resultOutput.publish(result, writer);
+                        List.copyOf(results), pointsBinned);
+                resultOutput.publish(result, finish);
                 return result;
             }
         }
@@ -431,6 +473,47 @@ public final class Pipeline {
 
     private static Double finiteOrNull(double value) {
         return Double.isFinite(value) ? value : null;
+    }
+
+    private static GroundGridWriter.Grid parseRasterGrid(JsonObject stage) {
+        options(stage, "filename", "binmode", "resolution", "origin_x", "origin_y", "width", "height",
+                "output_type", "dimension", "data_type", "nodata");
+        if (!bool(stage, "binmode", false)) {
+            throw new IllegalArgumentException("binmode must be true");
+        }
+        var types = string(stage, "output_type").split(",", -1);
+        var bands = new HashSet<String>();
+        for (String type : types) {
+            bands.add(type.strip());
+        }
+        if (types.length != 4 || !bands.equals(Set.of("min", "max", "mean", "count"))) {
+            throw new IllegalArgumentException("output_type must list min, max, mean and count once each");
+        }
+        if (stage.has("dimension")) {
+            exact(stage, "dimension", "Z");
+        }
+        if (stage.has("data_type")) {
+            exact(stage, "data_type", "double");
+        }
+        if (stage.has("nodata") && number(stage, "nodata") != GeoTiffOutput.NODATA) {
+            throw new IllegalArgumentException("nodata must be -9999");
+        }
+        long width = integer(stage, "width", 0);
+        long height = integer(stage, "height", 0);
+        if (width > GroundGridWriter.Grid.MAX_CELLS || height > GroundGridWriter.Grid.MAX_CELLS) {
+            throw new IllegalArgumentException("grid may have at most " + GroundGridWriter.Grid.MAX_CELLS + " cells");
+        }
+        return new GroundGridWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
+                number(stage, "resolution"), (int) width, (int) height);
+    }
+
+    private static double number(JsonObject stage, String key) {
+        JsonElement value = stage.get(key);
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()
+                || !Double.isFinite(value.getAsDouble())) {
+            throw new IllegalArgumentException(key + " must be a finite number");
+        }
+        return value.getAsDouble();
     }
 
     private static JsonObject stageObject(JsonElement value, int position) {

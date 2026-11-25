@@ -100,7 +100,7 @@ Implementiere einen überschaubaren produktiven Kern. Der Umfang dieses Auftrags
 
 - vollständiger PDAL-Kompatibilität, Pipelinegraphen mit mehreren Ein-/Ausgängen und Plugins;
 - COPC-/EPT-Raumsuche, einem HTTP-Range-Reader für die Engine und einem Cloudkatalog;
-- CRS-Reprojektion, PROJ, GDAL, GeoTIFF und Rasterisierung;
+- CRS-Reprojektion, PROJ, eine GDAL-Laufzeitabhängigkeit und Rasterverfahren ausserhalb des in Abschnitt 6.2 definierten Gitters;
 - Bodenklassifikation, Normalen, k-NN, Octrees, Triangulation und räumlichen Datenbanken;
 - GUI, Webserver, Spring Boot, REST-API und verteiltem Rechnen;
 - vollständiger Neuentwicklung eines LAZ-Encoders;
@@ -294,6 +294,14 @@ Relative Dateipfade werden wie beim Referenzlauf relativ zum Arbeitsverzeichnis 
 | `filters.stats` | Explizite `dimensions` als kommaseparierte Liste; Anzahl, Minimum, Maximum, Mittelwert und Stichprobenvarianz/-standardabweichung nach überprüfter Referenzsemantik. Keine globalen Mediane oder vollständigen Wertelisten |
 | `writers.las` | `filename`, ausdrücklich `forward: "all"`, `compression: false` und `extra_dims: "all"`. Für diese erste Teilmenge sind diese Einstellungen verbindlich; andere Header-/Quantisierungseinstellungen klar zurückweisen |
 | `writers.null` | Terminierung ohne Punktdatei; für Statistik- und Dekodiermessungen |
+| `writers.gdal` | Lokales Float64-GeoTIFF mit Zellstatistik für `Z`. `binmode: true`, explizites Gitter und die vier Bänder `min,max,mean,count`. |
+
+Die Rastererweiterung verarbeitet höchstens eine Million Zellen. Das Gitter
+verwendet die skalierten XY-Koordinaten und das horizontale CRS der LAS-Eingabe.
+GeoTools liest die CRS-Definition und schreibt das GeoTIFF in der normalen
+JVM-Distribution. GDAL und PDAL sind Referenzwerkzeuge für die Abnahme.
+Die [Pipeline-Dokumentation](docs/architecture.md#pipelines) führt die
+Rasteroptionen, Zellgrenzen und NoData-Werte auf.
 
 Bei `writers.las` darf `compression` entfallen, wenn der dokumentierte Standard `false` ist. `forward: "all"` und `extra_dims: "all"` sind in dieser Teilmenge ausdrücklich anzugeben. So werden die Quantisierung und vorhandenen Attribute bewusst behandelt; PDAL bewahrt Scale/Offset ohne entsprechende Einstellung nicht automatisch. [Q6]
 

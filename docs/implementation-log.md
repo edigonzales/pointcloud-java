@@ -1091,3 +1091,32 @@ macOS 15.8.1 (arm64) mit Temurin 25.0.3 und Gradle 9.9.1 geprüft.
 - Die unabhängige Abnahme mit `tools/check-real-data.py` bestätigte
   496'586 vollständige Rohrecords, Statistik und CRS. SIGTERM ergab
   Exit 143 und entfernte die temporären Ausgaben.
+
+## Bodenpunktraster als GeoTIFF
+
+`writers.gdal` aggregiert die Z-Werte in einem expliziten XY-Gitter.
+GeoTools 35.1 löst das horizontale CRS auf und erzeugt das GeoTIFF.
+Die Rasterdaten werden nach verifiziertem Eingabeende in eine temporäre
+Datei geschrieben. Ein gemeinsamer Abschluss-Callback für LAS und
+GeoTIFF erhält die bestehende Metadatenpublikation und deren Rollback.
+
+- `./gradlew clean check installDist distZip` bestand auf macOS 15.8.1
+  (arm64) mit Temurin 25.0.3 und Gradle 9.9.1. Alle 86 JUnit-Fälle liefen
+  ohne Fehler oder übersprungene Tests. Direkte Rastertests prüften
+  GeoKeys und WKT, Zellgrenzen, leere Zellen und leere Selektionen,
+  fehlendes CRS, die Gittergrenze, Abbruch und Metadaten-Rollback.
+- `python3 tools/check-ground-grid.py /pfad/zu/pdal` bestand mit
+  PDAL 2.10.2 und GDAL 3.13.3 aus der installierten und der entpackten
+  JVM-Distribution mit `-Xmx512m`. Solothurn 2019 lieferte
+  14'566'627 gelesene, 143'244 ausgewählte und 143'238 eingerasterte
+  Punkte in 26'114 belegten Zellen. Sechs ausgewählte Punkte lagen
+  auf der oberen oder rechten Gittergrenze. Java seriell und mit vier
+  Workern lieferte identische Metadaten und Zellwerte.
+- Alle 160'000 Float64-Werte (vier Bänder auf 200 × 200 Zellen)
+  stimmten exakt mit PDAL überein. Der maximale absolute Fehler des
+  mittleren Z-Werts je Zelle war 0 m. GDAL bestätigte EPSG:2056, die
+  Nordausrichtung, die Bandreihenfolge und NoData.
+- Der erneute Lauf von `tools/check-real-data.py` bestätigte 496'586
+  vollständige LAS-Rohrecords, Statistik und CRS. SIGTERM ergab Exit
+  143 und hinterliess keine Zieldateien oder temporären Dateien.
+  Das JVM-ZIP mit GeoTools ist rund 24 MiB gross.
