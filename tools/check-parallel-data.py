@@ -1,4 +1,4 @@
-"""Verify and measure the serial and parallel CLI paths on Solothurn 2014 and Autzen."""
+"""Verify and measure the serial and parallel CLI paths on Solothurn and Autzen."""
 
 import argparse
 import contextlib
@@ -57,14 +57,15 @@ def timing(report):
     return float(times["real"]), float(times["user"]), float(times["sys"]), int(rss.group(1))
 
 
-def inspect_input(source, modern, expected_bytes, points):
+def inspect_input(source, expected_bytes, points, point_format, record_length):
     if expected_bytes is not None:
         require(source.stat().st_size == expected_bytes, f"Unexpected size for {source}")
     with source.open("rb") as stream:
         header = read_las_header(stream)
-        version, format_byte, length = (b"\x01\x04", 0x87, 36) if modern else (b"\x01\x02", 0x81, 28)
-        require(header[24:26] == version and header[104] == format_byte
-                and struct.unpack_from("<H", header, 105)[0] == length, f"Unexpected point format in {source}")
+        modern = point_format >= 6
+        version = b"\x01\x04" if modern else b"\x01\x02"
+        require(header[24:26] == version and header[104] == (0x80 | point_format)
+                and struct.unpack_from("<H", header, 105)[0] == record_length, f"Unexpected point format in {source}")
         count = struct.unpack_from("<Q" if modern else "<I", header, 247 if modern else 107)[0]
         require(count == points, f"Unexpected point count in {source}: {count}")
         stream.seek(0)
@@ -84,12 +85,12 @@ def verify(variant, target, metadata, reference_las, reference_metadata, points,
         require(filecmp.cmp(target, reference_las, shallow=False), f"{variant}: complete Java LAS differs")
 
 
-def check_spatial_reference(pdal, env, source, serial, native, selected, modern):
+def check_spatial_reference(pdal, env, source, serial, native, selected, expected_crs):
     def summary(path):
         return json.loads(execute([pdal, "info", "--summary", "--driver=readers.las", str(path)], env).stdout)["summary"]
 
     source_srs, java_srs, pdal_srs = (summary(path).get("srs") for path in (source, serial, native))
-    require(source_srs == java_srs == pdal_srs and (source_srs is not None) == modern,
+    require(source_srs == java_srs == pdal_srs and (source_srs is not None) == expected_crs,
             "CRS differs between source and outputs")
     stats = json.loads(execute([pdal, "info", "--stats", str(serial)], env).stdout)["stats"]["statistic"]
     require(stats and all(field["count"] == selected for field in stats), "PDAL did not read all Java output records")
@@ -136,16 +137,20 @@ def measure_ab(env, dataset, commands, verify_output, points, selected, rounds=A
         variant_order = ("baseline", "candidate") if iteration % 2 else ("candidate", "baseline")
         for workers in worker_order:
             for variant in variant_order:
-                result = execute(["/usr/bin/time", "-lp", *commands[workers][variant]], env)
-                sample = timing(result.stderr)
+                command = ["/usr/bin/time", "-lp", *commands[workers][variant]]
+                started = time.perf_counter_ns()
+                result = execute(command, env)
+                seconds = (time.perf_counter_ns() - started) / 1_000_000_000
+                _, user, system, rss = timing(result.stderr)
                 verify_output(variant)
-                rows.append((dataset, variant, workers, iteration, points, selected, *sample))
-                samples[workers][variant].append(sample)
-                print(f"{dataset} {workers} workers {iteration}/{rounds} {variant}: {sample[0]:.2f} s", flush=True)
+                samples[workers][variant].append((seconds, user, system, rss))
+                rows.append((dataset, variant, workers, iteration, points, selected,
+                             f"{seconds:.9f}", user, system, rss))
+                print(f"{dataset} {workers} workers {iteration}/{rounds} {variant}: {seconds:.6f} s", flush=True)
 
     for workers, variants in samples.items():
         for variant, measures in variants.items():
-            report_samples(dataset, f"{workers} workers {variant}", measures)
+            report_samples(dataset, f"{workers} workers {variant}", measures, wall_precision=6)
         pairs = list(zip(variants["baseline"], variants["candidate"]))
         wall = statistics.median(candidate[0] / baseline[0] for baseline, candidate in pairs)
         cpu = statistics.median((candidate[1] + candidate[2]) / (baseline[1] + baseline[2])
@@ -236,7 +241,7 @@ def check_runtime_mini(pdal, env, work, runtimes):
 
 
 def check_reader_ab(env, work, dataset, source, expected_bytes, points, ab):
-    inspect_input(source, True, expected_bytes, points)
+    inspect_input(source, expected_bytes, points, 7, 36)
     config, metadata = work / "pipeline.json", work / "metadata.json"
     config.write_text(json.dumps([
         {"type": "readers.las", "filename": str(source)},
@@ -261,19 +266,38 @@ def check_reader_ab(env, work, dataset, source, expected_bytes, points, ab):
 
 def check_dataset(pdal, env, work, dataset, source, expected_bytes, points, step, dimensions, modern, profile_dir,
                   ab=None, cli=DEFAULT_CLI, runtimes=None):
-    source_header = inspect_input(source, modern, expected_bytes, points)
+    point_format, record_length = (7, 36) if modern else (1, 28)
+    source_header = inspect_input(source, expected_bytes, points, point_format, record_length)
     selected = (points + step - 1) // step
     stats_count = selected if modern else points
-    target, metadata = work / "out.las", work / "metadata.json"
-    config = work / "pipeline.json"
     stats = {"type": "filters.stats", "dimensions": dimensions}
     decimate = {"type": "filters.decimation", "step": step}
     stages = (decimate, stats) if modern else (stats, decimate)
-    config.write_text(json.dumps([
+    pipeline = [
         {"type": "readers.las", "filename": str(source)},
         *stages,
-        {"type": "writers.las", "filename": str(target), "forward": "all", "extra_dims": "all", "compression": False},
-    ]))
+        {"type": "writers.las", "forward": "all", "extra_dims": "all", "compression": False},
+    ]
+    return check_pipeline(pdal, env, work, dataset, source, source_header, pipeline, points, selected, stats_count,
+                          expected_crs=modern, profile_dir=profile_dir, ab=ab, cli=cli, runtimes=runtimes)
+
+
+def check_ground_crop_ab(pdal, env, work, ab):
+    pipeline = json.loads(Path("examples/ground-crop.json").read_text())["pipeline"]
+    source = Path(pipeline[0]["filename"])
+    points, selected = 14_566_627, 195_738
+    source_header = inspect_input(source, 83_247_722, points, 3, 34)
+    return check_pipeline(pdal, env, work, "so-2019-ground-crop", source, source_header, pipeline, points, selected,
+                          selected, expected_crs=True, ab=ab)
+
+
+def check_pipeline(pdal, env, work, dataset, source, source_header, pipeline, points, selected, stats_count, *,
+                   expected_crs, profile_dir=None, ab=None, cli=DEFAULT_CLI, runtimes=None):
+    modern = source_header[24:26] == b"\x01\x04"
+    target, metadata = work / "out.las", work / "metadata.json"
+    config = work / "pipeline.json"
+    pipeline[-1]["filename"] = str(target)
+    config.write_text(json.dumps(pipeline))
 
     def java_command(cli):
         return [str(cli), "pipeline", str(config), "--metadata", str(metadata)]
@@ -323,7 +347,7 @@ def check_dataset(pdal, env, work, dataset, source, expected_bytes, points, step
         execute(command, env)
         verify(variant, target, metadata, reference_las, reference_metadata, points, selected, stats_count, modern)
         if variant == "pdal-4":
-            check_spatial_reference(pdal, env, source, reference_las, target, selected, modern)
+            check_spatial_reference(pdal, env, source, reference_las, target, selected, expected_crs)
         else:
             print(f"{selected:,} Java point records and all output metadata are byte-identical.", flush=True)
         target.unlink()
@@ -373,12 +397,17 @@ def main():
                             help="compare temurin, native-serial, native-serial-pgo, and optionally "
                                  "native-g1 and native-g1-pgo")
     parser.add_argument("--modern-holdout", type=Path, help="with --runtimes, also measure the Autzen holdout COPC")
-    parser.add_argument("--reader-null", action="store_true",
-                        help="with --ab, use three pairs on Autzen with four workers and writers.null")
+    workload = parser.add_mutually_exclusive_group()
+    workload.add_argument("--reader-null", action="store_true",
+                          help="with --ab, use three pairs on Autzen with four workers and writers.null")
+    workload.add_argument("--ground-crop", action="store_true",
+                          help="with --ab, use seven pairs on Solothurn 2019 ground-crop with one and four workers")
     parser.add_argument("--profile-cli", type=Path, help="with --profile-dir, profile this installed CLI")
     args = parser.parse_args()
     if args.reader_null and args.ab is None:
         parser.error("--reader-null requires --ab")
+    if args.ground_crop and args.ab is None:
+        parser.error("--ground-crop requires --ab")
     if args.profile_cli is not None and args.profile_dir is None:
         parser.error("--profile-cli requires --profile-dir")
     if args.modern_holdout is not None and args.runtimes is None:
@@ -444,6 +473,9 @@ def main():
         dataset, source, size, points, *_ = datasets[-1]
         with tempfile.TemporaryDirectory(prefix="parallel-check-", dir=DATA.parent) as directory:
             rows = check_reader_ab(env, Path(directory), dataset, source, size, points, args.ab)
+    elif args.ground_crop:
+        with tempfile.TemporaryDirectory(prefix="parallel-check-", dir=DATA.parent) as directory:
+            rows = check_ground_crop_ab(args.pdal, env, Path(directory), args.ab)
     else:
         if runtimes is not None:
             with tempfile.TemporaryDirectory(prefix="parallel-check-", dir=DATA.parent) as directory:

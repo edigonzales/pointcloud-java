@@ -589,6 +589,141 @@ Verlangsamung überstieg in den drei anderen Messreihen die vereinbarte
 Grenze von 2 %. Der lokale Versuchsordner enthält beide Distributionen
 und den exakten Patch für B.
 
+### A/B-Versuch · Feinere Suchtabelle im Arithmetic Decoder
+
+25. November 2026, Apple M1 arm64, macOS 15.8.1, 16 GiB RAM,
+Temurin 25.0.3+9 mit `-Xmx512m`, PDAL 2.10.2/LazPerf. A ist
+`2b10708`. Geprüft wird, ob feinere Tabellenintervalle weniger
+Bisektionsschritte und eine kürzere vollständige Pipeline ergeben.
+
+Ein separater Build mit dem [Diagnosepatch](../experiments/patches/laz-table-diagnostics.patch)
+hat beide Dateien komplett mit `writers.null` und je einem bzw. vier
+Workern dekodiert. Die Thread-Ausgabe aus stderr enthält je Alphabetgrösse
+die Aufrufe mit 0, 1 und mindestens 2 Suchschritten, deren Gesamtsumme
+sowie die Zahl der Tabellenaktualisierungen. Die aufsummierten
+Suchschritte stimmten zwischen den Workerzahlen exakt überein.
+[Diagnose-Rohdaten](measurements/laz-table-width-diagnostics.csv)
+
+| Alphabetgrösse | Suchschritte Solothurn 2014 | Suchschritte Autzen |
+| ---: | ---: | ---: |
+| 33 | 37'099'784 | 24'720'025 |
+| 64 | 30'302'420 | 9'504'208 |
+| 128 | 10'586'526 | 19'039'527 |
+| 256 | 46'646'122 | 91'751'715 |
+| Alle Tabellenmodelle | 159'897'122 | 164'478'780 |
+
+Die Vereinigung der je drei stärksten Alphabetgrössen im Bereich 17–512
+ergibt 33, 64, 128 und 256. Auf diese vier entfallen 78.0 % der
+Suchschritte in Solothurn und 88.2 % in Autzen. Die Kandidaten ergänzen
+für diese Grössen ein bzw. zwei Indexbits in `ArithmeticModel.init`.
+Für eine Reproduktion der Messung A bei `2b10708` auschecken. Den
+[Kandidatenpatch](../experiments/patches/laz-table-width.patch) für +1
+in einem separaten Worktree von A anwenden. Für +2 in einer weiteren
+Kopie von A den Fallwert im Patch von 1 auf 2 ändern. Die drei
+Varianten mit `./gradlew --offline clean check installDist` bauen.
+Sogar am maximalen gültigen Quotienten 32'831 liegen beide Zugriffe
+innerhalb der Tabelle, da die feinste Variante 128 Quotienten pro
+Tabellenintervall verwendet. Die Verteilung, adaptive Aktualisierung
+und Symbolsuche entsprechen A. In den gemessenen Distributionen
+unterschied sich nur `codec.jar`.
+
+Zeitmessung in frischen Prozessen mit warmem Dateicache, je sieben
+wechselnde A/B-Paare pro Pipeline und Workerzahl. `perf_counter_ns()`
+erfasst die Wandzeit. `/usr/bin/time -lp` liefert User- und System-CPU
+sowie Spitzen-RSS. Jede Java-LAS- und JSON-Ausgabe wird nach der
+Messung bytegenau verglichen. PDAL 2.10.2 mit vier Reader-Workern
+prüft die ausgewählten Punktrecords, Statistik und CRS im Vorvergleich.
+Die Autzen-Läufe mit `writers.null` verwenden je drei Paare bei vier
+Workern.
+
+```sh
+python3 tools/check-full-records.py "$baseline_cli" "$plus1_cli" \
+  .cache/test-data/so-2014.laz .cache/test-data/autzen-classified.copc.laz \
+  --additional-candidate "$plus2_cli"
+python3 tools/check-parallel-data.py "$PDAL" "$out/ab.csv" --ab "$baseline_cli" "$candidate_cli"
+python3 tools/check-parallel-data.py "$PDAL" "$out/reader.csv" \
+  --ab "$baseline_cli" "$candidate_cli" --reader-null
+```
+
+Die ursprüngliche Vorgabe für die Hauptmatrix verlangte mindestens
+5 % gepaarten medianen Wandzeitgewinn und mindestens sechs Siege in
+einer Vier-Worker-Reihe. Jede Reihe durfte höchstens 2 % Wandzeit und
+10 % Spitzen-RSS zulegen. Bei zwei geeigneten Kandidaten hatte die
+kleinere Tabelle Vorrang.
+
+| Datensatz | Worker | Extra-Bits | A, Median (Min–Max) | Kandidat, Median (Min–Max) | Wandzeit | CPU | Spitzen-RSS | Siege |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Solothurn 2014 | 1 | +1 | 5.158 (5.088–5.193) s | 4.984 (4.907–5.022) s | −3.52 % | −2.17 % | +1.60 % | 7/7 |
+| Solothurn 2014 | 4 | +1 | 1.481 (1.430–1.663) s | 1.416 (1.380–1.433) s | −3.85 % | −3.86 % | +0.96 % | 7/7 |
+| Autzen | 1 | +1 | 5.016 (4.961–5.378) s | 4.790 (4.730–4.855) s | −4.60 % | −3.68 % | +1.38 % | 7/7 |
+| Autzen | 4 | +1 | 1.717 (1.692–1.760) s | 1.686 (1.663–1.703) s | −3.07 % | −1.66 % | +1.67 % | 6/7 |
+| Solothurn 2014 | 1 | +2 | 5.182 (5.092–5.346) s | 4.844 (4.805–4.960) s | −4.88 % | −4.55 % | +0.60 % | 7/7 |
+| Solothurn 2014 | 4 | +2 | 1.458 (1.439–1.516) s | 1.416 (1.395–1.596) s | −4.31 % | −3.59 % | +0.57 % | 5/7 |
+| Autzen | 1 | +2 | 5.041 (4.980–5.369) s | 4.620 (4.595–4.706) s | −7.72 % | −6.83 % | −0.31 % | 7/7 |
+| Autzen | 4 | +2 | 1.713 (1.682–1.762) s | 1.650 (1.620–1.708) s | −3.32 % | −1.01 % | +1.96 % | 7/7 |
+
+Prozentwerte sind Mediane der Verhältnisse innerhalb desselben Paars
+minus eins. In den +2-Reihen mit vier Workern stieg der mediane
+Eingabedurchsatz von 9.84 auf 10.13 Mio. Punkte/s (Solothurn) und von
+6.22 auf 6.46 Mio. Punkte/s (Autzen). Autzen mit `writers.null` war
+mit +1 gepaart 1.52 % schneller (2/3 Siege) und mit +2 6.41 % schneller
+(3/3 Siege). [124 Einzelmessungen](measurements/laz-table-width-ab.csv)
+
+In nachgelagerten Diagnosebuilds mit vier Workern sank die Zahl der
+Suchschritte mit +1 um 28.05 % auf Solothurn und 32.44 % auf Autzen.
+Mit +2 sank sie um 48.32 % bzw. 55.35 %. Die Zahl der
+tabellengestützten Symbolaufrufe war für jeden Datensatz gleich.
+
+Nach der Hauptmatrix blieb A Produktstandard. Beide Kandidaten
+erfüllten die Korrektheits- und RSS-Vorgaben. Der grösste vollständige
+Vier-Worker-Gewinn betrug 4.31 % bei fünf Siegen. Für +2 begründeten
+der kleine Codec-Diff und die durchgehenden Gewinne im seriellen
+Standardpfad eine zusätzliche Prüfung auf Solothurn 2019.
+
+#### Ground-Crop-Bestätigung für +2
+
+25. November 2026, gleiche M1-Umgebung und dieselben A- und +2-Builds
+wie in der Hauptmatrix. Die Beispielpipeline `examples/ground-crop.json`
+liest 14'566'627 Punkte und schreibt nach räumlichem Zuschnitt,
+Bodenfilter und Statistik 195'738 unkomprimierte LAS-Records.
+Die Ausgaben liegen je Lauf in einem temporären Verzeichnis.
+
+```sh
+python3 tools/check-parallel-data.py "$PDAL" "$out/ground-crop-plus-2.csv" \
+  --ab "$baseline_cli" "$plus2_cli" --ground-crop
+```
+
+Je Workerzahl liefen sieben alternierende A/B-Paare in frischen
+Prozessen bei warmem Dateicache. Alle 28 gemessenen Läufe und die
+drei Java-Vorläufe lieferten bytegleiche LAS- und JSON-Dateien wie A
+seriell. PDAL 2.10.2 mit vier Reader-Workern bestätigte alle
+195'738 Rohrecords in Dateireihenfolge, Statistik und CRS. PDAL
+öffnete auch die Java-Ausgabe und bestätigte die Recordzahl.
+
+| Worker | Variante | Wandzeit, Median (Min–Max) | Prozess-CPU, Median | Höchster Spitzen-RSS | Mio. Eingabepunkte/s |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | A | 5.143 (5.122–5.184) s | 5.54 s | 155.16 MiB | 2.832 |
+| 1 | +2 | 4.810 (4.791–5.105) s | 5.24 s | 154.23 MiB | 3.028 |
+| 4 | A | 1.569 (1.539–1.642) s | 6.72 s | 184.56 MiB | 9.282 |
+| 4 | +2 | 1.465 (1.433–1.517) s | 6.47 s | 180.30 MiB | 9.941 |
+
+| Worker | Gepaarte Wandzeit | Gepaarte Prozess-CPU | Gepaarter Spitzen-RSS | Schnellere Paare |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | −6.09 % | −5.52 % | +0.35 % | 7/7 |
+| 4 | −5.44 % | −4.51 % | +1.12 % | 7/7 |
+
+Die gepaarten Änderungen sind Mediane der Quotienten +2/A je Paar
+minus eins. Der Durchsatz verwendet die jeweilige mediane Wandzeit.
+[28 Einzelmessungen](measurements/laz-table-width-ground-crop.csv)
+
+**Der Produktcodec übernimmt die gemessene +2-Variante.** Beim
+ersten Aufbau der Dekodiertabelle in `ArithmeticModel.init` kommen
+für die Alphabetgrössen 33, 64, 128 und 256 jeweils zwei Indexbits
+hinzu. Beide Ground-Crop-Reihen bestanden die Bestätigungsgrenzen
+von höchstens 2 % Wandzeit- und 10 % RSS-Anstieg. +2 war in allen
+14 Paaren schneller und bestätigte die Gewinne aus der Hauptmatrix
+auf einer weiteren vollständigen Pipeline.
+
 ### POINT14/RGB, gemeinsame Queue und Layer-Puffer
 
 Apple M1 arm64, macOS 15.8.1, Temurin 25.0.3+9, `-Xmx512m`,
