@@ -53,6 +53,11 @@ Im E4-Nachversuch teilen die wiederverwendeten Decoder die einmal
 validierte Chunktabelle derselben geöffneten Datei. Mapping, Cursor
 und Decodiermodelle gehören jeweils einem Worker.
 
+`ArithmeticModel` verwendet für die Dekodiermodelle mit 33, 64, 128
+oder 256 Symbolen zwei zusätzliche Indexbits in der Suchtabelle. Die
+kumulativen Häufigkeiten und das LAZ-Format bleiben gleich.
+[Versuchsbericht](experiments.md#ground-crop-bestätigung-für-2)
+
 Das Native Binary ist ein lokales Versuchsartefakt. Eine spätere
 Verteilung muss die jeweiligen Codec-Hinweise und Lizenztexte,
 passende Quelltexte und die für den eingebetteten LGPL-Code

@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -22,7 +23,7 @@ class ArithmeticDecoderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {16, 17, 2048})
+    @ValueSource(ints = {16, 17, 32, 33, 64, 128, 256, 512, 2048})
     void roundTripsSkewedSymbolsAcrossModelRescaling(int alphabet) {
         int[] expected = new int[70_000];
         for (int i = 0; i < expected.length; i += 4096) {
@@ -32,7 +33,7 @@ class ArithmeticDecoderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {16, 17, 2048})
+    @ValueSource(ints = {16, 17, 32, 33, 64, 128, 256, 512, 2048})
     void decodesExactBoundariesAndUnsignedValues(int alphabet) {
         var model = new ArithmeticModel(alphabet, false);
         model.init(null);
@@ -61,6 +62,23 @@ class ArithmeticDecoderTest {
 
         assertEquals(2047, decoder.decodeSymbol(model(decoder, 2048)));
         assertEquals(6, input.tell());
+        assertEquals(1, decoder.readBit());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"17, 5", "32, 5", "33, 5", "64, 5", "128, 5", "256, 5", "512, 6", "2048, 6"})
+    void decodesLargestValidLookupQuotient(int alphabet, int cursorAfterSymbol) {
+        var input = input(0x7fff_fffeL);
+        var decoder = new ArithmeticDecoder();
+        decoder.init(input);
+        assertEquals(0, decoder.readBit());
+        assertEquals(127, decoder.decodeSymbol(model(decoder, 128)));
+        assertEquals(4, input.tell());
+
+        // The length is 0x0100_7eff and the value is length - 1.
+        // Dividing the value by (length >>> 15) gives 32,831.
+        assertEquals(alphabet - 1, decoder.decodeSymbol(model(decoder, alphabet)));
+        assertEquals(cursorAfterSymbol, input.tell());
         assertEquals(1, decoder.readBit());
     }
 

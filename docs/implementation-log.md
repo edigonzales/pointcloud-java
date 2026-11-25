@@ -995,3 +995,53 @@ Cache. Beide GC-Probes liefen erfolgreich und meldeten tatsächliche Pausen.
   Summe und Maximum. Native Serial bleibt die GC-Empfehlung auf diesem
   Mac. Temurin bleibt Produktstandard gemäss den vereinbarten Grenzen.
   [Versuchsbericht](experiments.md#oracle-native-image-mit-pgo-und-g1-auf-dem-m1)
+
+## Feinere Suchtabelle im Arithmetic Decoder
+
+25. November 2026, Baseline `2b10708`. Diagnose, zwei Tabellenbreiten
+und Entscheidung sind im [Versuchsbericht](experiments.md#ab-versuch--feinere-suchtabelle-im-arithmetic-decoder)
+dokumentiert. Die vier betroffenen Alphabetgrössen sind 33, 64, 128 und 256.
+
+- `./gradlew --offline clean check installDist` bestand für beide Kandidaten
+  und die damalige Produktdistribution A. Je 64 JUnit-Fälle, keine
+  Fehler, keine übersprungenen Tests. Direkte Decoder-Fälle prüfen
+  Symbolgrenzen, Reskalierung und den maximalen Tabellenquotienten
+  inklusive Byteposition und folgendem Rohbit.
+- Beim Erweitern gleichverteilter Encoder-Roundtrips traten bei drei
+  zusätzlichen Alphabetgrössen dieselben Fehler auf A und beim Kandidaten
+  auf. Die Ursache war der Vergleich eines signierten Bytes mit 255
+  in `ArithmeticEncoder.propagate_carry`. Ein temporärer Vergleich mit
+  `(byte) 0xFF` bestätigte die Ursache. Die zusätzlichen Decoder-Fälle
+  verwenden die direkte Grenzwertprüfung und die Schiefverteilungssequenz.
+- Der vollständige Rohrecord-Vergleich bestätigte je 14'347'366 Records
+  für Solothurn 2014 und 10'653'336 für Autzen. Beide Kandidaten und beide
+  Workerzahlen hatten je Datei dieselbe SHA-256-Prüfsumme wie A seriell.
+  In den PDAL-Vorvergleichen stimmten je Kandidat alle 28'695 bzw.
+  106'534 ausgewählten Rohrecords in Reihenfolge überein. Statistik
+  und CRS bestanden die bestehenden Prüfungen.
+- Feste und adaptive Chunks, fehlende Chunktabelle, moderne Attribute
+  inklusive Extra Bytes und NIR, breite Chunks sowie der LAS-Fallback
+  bestanden für beide Kandidaten. Defekte Layer ergaben Exit 2, SIGTERM
+  ergab Exit 143. Die Fehlerläufe hinterliessen keine LAS-, JSON- oder
+  Teilausgaben.
+- Nach der Hauptmatrix blieb die bisherige Tabellenbreite Standard.
+  Beide Kandidaten blieben dort im vollständigen Vier-Worker-Lauf unter
+  der ursprünglich vereinbarten 5-%-Grenze.
+- Die zusätzliche [Ground-Crop-Bestätigung](experiments.md#ground-crop-bestätigung-für-2)
+  für +2 bestand auf Solothurn 2019. Alle drei Java-Vorläufe und 28
+  Messläufe lieferten bytegleiche LAS- und JSON-Ausgaben. PDAL 2.10.2
+  bestätigte alle 195'738 ausgewählten Records, Statistik und CRS.
+  Die vorgegebenen Grenzen für Wandzeit und Spitzen-RSS wurden bei
+  beiden Workerzahlen eingehalten.
+- Die gemessene +2-Variante ist im Produktcodec übernommen.
+  `ArithmeticModel.init` ergänzt beim ersten Aufbau der Dekodiertabelle
+  zwei Indexbits für 33, 64, 128 und 256 Symbole. Referenz für die
+  dokumentierten Messwerte bleibt `2b10708`.
+- Die Produktabnahme mit `./gradlew --offline clean check installDist`
+  bestand mit 64 JUnit-Tests ohne Fehler oder übersprungene Tests. Die
+  installierte Distribution stimmt bytegenau mit dem gemessenen +2-Build
+  überein. Die E4-Fixtures bestätigten feste und adaptive Chunks, den
+  seriellen Fallback, moderne Attribute, beschädigte Layer und SIGTERM.
+  Die unabhängige Abnahme mit PDAL 2.10.2 verglich 353'342 Rohrecords in
+  Dateireihenfolge ohne Abweichung. Statistik und CRS bestanden.
+  SIGTERM ergab Exit 143 und entfernte die temporären Ausgaben.

@@ -82,6 +82,11 @@ public class ArithmeticModel {
             {
                 int table_bits = 3;
                 while (u_symbols > (1 << (table_bits + 2))) ++table_bits;
+                // Frequent alphabets benefit from smaller lookup intervals.
+                table_bits += switch (u_symbols) {
+                    case 33, 64, 128, 256 -> 2;
+                    default -> 0;
+                };
                 u_table_size = 1 << table_bits;
                 u_table_shift = DM__LengthShift - table_bits;
                 u_decoder_table = new int[u_table_size+2];

@@ -1,0 +1,106 @@
+diff --git a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ArithmeticDecoder.java b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ArithmeticDecoder.java
+--- a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ArithmeticDecoder.java
++++ b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ArithmeticDecoder.java
+@@ -10,6 +10,8 @@
+  */
+ package com.github.mreutegg.laszip4j.laszip;
+
++import java.util.concurrent.ConcurrentLinkedQueue;
++
+ import static com.github.mreutegg.laszip4j.laszip.ArithmeticModel.AC__MaxLength;
+ import static com.github.mreutegg.laszip4j.laszip.ArithmeticModel.AC__MinLength;
+ import static com.github.mreutegg.laszip4j.laszip.ArithmeticModel.BM__LengthShift;
+@@ -131,10 +133,13 @@
+             u_sym = m.u_decoder_table[t];      // initial decision based on table look-up
+             u_n = m.u_decoder_table[t+1] + 1;
+
++            int steps = 0;
+             while (compareUnsigned(u_n, u_sym + 1) > 0) {                      // finish with bisection search
++                ++steps;
+                 int u_k = (u_sym + u_n) >>> 1;
+                 if (compareUnsigned(m.u_distribution[u_k], u_dv) > 0) u_n = u_k; else u_sym = u_k;
+             }
++            TableDiagnostics.recordSearch(m.u_symbols, steps);
+             // compute products
+             u_x = m.u_distribution[u_sym] * u_length;
+             if (u_sym != m.u_last_symbol) u_y = m.u_distribution[u_sym+1] * u_length;
+@@ -278,4 +283,68 @@
+             u_value = (u_value << 8) | (instream.getByte() & 0xff);
+         } while (Integer.compareUnsigned((u_length <<= 8), AC__MinLength) < 0);        // length multiplied by 256
+     }
++
++    // Only applied to the diagnostic build. Per-symbol counting stays on the decoder thread.
++    static final class TableDiagnostics {
++        private static final ConcurrentLinkedQueue<TableDiagnostics> THREADS = new ConcurrentLinkedQueue<>();
++        private static final ThreadLocal<TableDiagnostics> CURRENT = ThreadLocal.withInitial(() -> {
++            var counters = new TableDiagnostics();
++            THREADS.add(counters);
++            return counters;
++        });
++
++        static {
++            Runtime.getRuntime().addShutdownHook(new Thread(TableDiagnostics::report));
++        }
++
++        private final long threadId = Thread.currentThread().threadId();
++        private final Totals[] alphabet = new Totals[2049];
++
++        static void recordSearch(int symbols, int steps) {
++            var totals = CURRENT.get().totals(symbols);
++            totals.steps += steps;
++            if (steps == 0) {
++                totals.zero++;
++            } else if (steps == 1) {
++                totals.one++;
++            } else {
++                totals.twoOrMore++;
++            }
++        }
++
++        static void recordUpdate(int symbols) {
++            CURRENT.get().totals(symbols).updates++;
++        }
++
++        private Totals totals(int symbols) {
++            var totals = alphabet[symbols];
++            if (totals == null) {
++                totals = new Totals();
++                alphabet[symbols] = totals;
++            }
++            return totals;
++        }
++
++        private static void report() {
++            System.err.println("laz-table,thread_id,symbols,zero_steps,one_step,two_plus_steps,total_steps,updates");
++            for (var thread : THREADS) {
++                for (int symbols = 0; symbols < thread.alphabet.length; symbols++) {
++                    var totals = thread.alphabet[symbols];
++                    if (totals != null) {
++                        System.err.println("laz-table," + thread.threadId + "," + symbols + "," +
++                                totals.zero + "," + totals.one + "," + totals.twoOrMore + "," +
++                                totals.steps + "," + totals.updates);
++                    }
++                }
++            }
++        }
++
++        private static final class Totals {
++            long zero;
++            long one;
++            long twoOrMore;
++            long steps;
++            long updates;
++        }
++    }
+ }
+diff --git a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ArithmeticModel.java b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ArithmeticModel.java
+--- a/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ArithmeticModel.java
++++ b/codec/src/main/java/com/github/mreutegg/laszip4j/laszip/ArithmeticModel.java
+@@ -142,6 +142,7 @@
+             }
+             u_decoder_table[0] = 0;
+             while (s <= u_table_size) u_decoder_table[++s] = u_symbols - 1;
++            ArithmeticDecoder.TableDiagnostics.recordUpdate(u_symbols);
+         }
+
+         // set frequency of model updates
