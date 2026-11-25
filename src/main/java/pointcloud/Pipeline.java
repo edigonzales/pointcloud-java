@@ -6,6 +6,12 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.Strictness;
+import com.google.gson.TypeAdapter;
+import com.google.gson.TypeAdapterFactory;
+import com.google.gson.annotations.JsonAdapter;
+import com.google.gson.reflect.TypeToken;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonWriter;
 import org.locationtech.jts.algorithm.locate.IndexedPointInAreaLocator;
 import org.locationtech.jts.geom.CoordinateXY;
 import org.locationtech.jts.geom.Location;
@@ -22,9 +28,12 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.regex.Pattern;
@@ -44,7 +53,42 @@ public final class Pipeline {
     public record StageStatistics(int stage, List<Statistics> dimensions) {}
 
     public record Statistics(String name, long count, Double minimum, Double maximum,
-                             Double average, Double variance, Double stddev) {}
+                             Double average, Double variance, Double stddev,
+                             @JsonAdapter(value = OmitNull.class, nullSafe = false) Map<Integer, Long> bins) {
+        public Statistics(String name, long count, Double minimum, Double maximum,
+                          Double average, Double variance, Double stddev) {
+            this(name, count, minimum, maximum, average, variance, stddev, null);
+        }
+    }
+
+    /** Omit unrequested metadata without hiding null values of requested statistics. */
+    static final class OmitNull implements TypeAdapterFactory {
+        @Override
+        public <T> TypeAdapter<T> create(Gson gson, TypeToken<T> type) {
+            TypeAdapter<T> delegate = gson.getAdapter(type);
+            return new TypeAdapter<>() {
+                @Override
+                public T read(JsonReader in) throws IOException {
+                    return delegate.read(in);
+                }
+
+                @Override
+                public void write(JsonWriter out, T value) throws IOException {
+                    if (value != null) {
+                        delegate.write(out, value);
+                        return;
+                    }
+                    boolean serializeNulls = out.getSerializeNulls();
+                    out.setSerializeNulls(false);
+                    try {
+                        out.nullValue();
+                    } finally {
+                        out.setSerializeNulls(serializeNulls);
+                    }
+                }
+            };
+        }
+    }
 
     private final Path input;
     private final Path output;
@@ -239,14 +283,18 @@ public final class Pipeline {
                     }, null);
                 }
                 case "filters.stats" -> {
-                    options(stage, "dimensions");
+                    options(stage, "dimensions", "count");
+                    boolean countClassification = stage.has("count");
+                    if (countClassification) {
+                        exact(stage, "count", "Classification");
+                    }
                     var list = new ArrayList<Accumulator>();
                     for (String name : string(stage, "dimensions").split(",", -1)) {
                         var dimension = Dimension.parse(name.strip());
                         if (!dimensions.add(dimension)) {
                             throw new IllegalArgumentException("duplicate statistics dimension " + dimension);
                         }
-                        list.add(new Accumulator(dimension));
+                        list.add(new Accumulator(dimension, countClassification && dimension == Dimension.Classification));
                     }
                     var accumulators = list.toArray(Accumulator[]::new);
                     return new Filter(position, type, dimensions, (batch, point) -> {
@@ -330,17 +378,22 @@ public final class Pipeline {
 
     private static final class Accumulator {
         private final Dimension dimension;
+        private final long[] bins;
         private long count;
         private double min = Double.MAX_VALUE;
         private double max = -Double.MAX_VALUE;
         private double mean;
         private double m2;
 
-        Accumulator(Dimension dimension) {
+        Accumulator(Dimension dimension, boolean countClassification) {
             this.dimension = dimension;
+            this.bins = countClassification ? new long[256] : null;
         }
 
         void add(double value) {
+            if (bins != null) {
+                bins[(int) value]++;
+            }
             if (value < min) {
                 min = value;
             }
@@ -359,7 +412,20 @@ public final class Pipeline {
             return new Statistics(dimension.name(), count,
                     count == 0 ? null : finiteOrNull(min), count == 0 ? null : finiteOrNull(max),
                     count == 0 ? null : finiteOrNull(mean), variance,
-                    variance == null ? null : Math.sqrt(variance));
+                    variance == null ? null : Math.sqrt(variance), binCounts());
+        }
+
+        private Map<Integer, Long> binCounts() {
+            if (bins == null) {
+                return null;
+            }
+            var counts = new LinkedHashMap<Integer, Long>();
+            for (int code = 0; code < bins.length; code++) {
+                if (bins[code] != 0) {
+                    counts.put(code, bins[code]);
+                }
+            }
+            return Collections.unmodifiableMap(counts);
         }
     }
 

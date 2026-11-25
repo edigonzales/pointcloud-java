@@ -1,5 +1,7 @@
 package pointcloud;
 
+import com.google.gson.JsonParser;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -98,6 +100,36 @@ class MainTest {
             assertEquals(-1, Files.mismatch(serial, temp.resolve(workers + ".las")));
             assertEquals(stats, Files.readString(temp.resolve(workers + ".json")));
         }
+    }
+
+    @Test
+    void writesRequestedBinsWithoutChangingOtherMetadataFields(@TempDir Path temp) throws IOException {
+        var input = LasIoTest.fixture(8, "las");
+        Path config = Files.writeString(temp.resolve("pipeline.json"), """
+                [%s,
+                 {"type":"filters.stats","dimensions":"X,Classification","count":"Classification"},
+                 {"type":"filters.expression","expression":"Classification < 0"},
+                 {"type":"filters.stats","dimensions":"Classification","count":"Classification"},
+                 {"type":"writers.null"}]
+                """.formatted(Pipeline.JSON.toJson(input.toString())));
+        var output = new ByteArrayOutputStream();
+        var errors = new ByteArrayOutputStream();
+        assertEquals(0, Main.run(new String[]{"pipeline", config.toString()},
+                new PrintStream(output), new PrintStream(errors)), errors::toString);
+        var dimensions = JsonParser.parseString(output.toString()).getAsJsonObject().getAsJsonArray("statistics");
+        var stats = dimensions.get(0).getAsJsonObject().getAsJsonArray("dimensions");
+        assertFalse(stats.get(0).getAsJsonObject().has("bins"));
+        var bins = stats.get(1).getAsJsonObject().getAsJsonObject("bins");
+        assertEquals(List.of("1", "2", "5", "6"), List.copyOf(bins.keySet()));
+        assertEquals(2, bins.get("2").getAsLong());
+        var empty = dimensions.get(1).getAsJsonObject().getAsJsonArray("dimensions").get(0).getAsJsonObject();
+        assertTrue(empty.get("average").isJsonNull());
+        assertTrue(empty.getAsJsonObject("bins").isEmpty());
+
+        Path metadata = temp.resolve("statistics.json");
+        assertEquals(0, Main.run(pipelineArguments(config, metadata, List.of()),
+                new PrintStream(new ByteArrayOutputStream()), new PrintStream(errors)), errors::toString);
+        assertEquals(output.toString(), Files.readString(metadata));
     }
 
     @Test

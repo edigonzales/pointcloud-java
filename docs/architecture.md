@@ -102,7 +102,7 @@ Punktformat geprüft.
 | `filters.crop` | Genau eine Geometrieoption. `bounds` als `([xmin,xmax],[ymin,ymax])` mit optionalem dritten Z-Intervall oder `polygon` als einzelnes 2D-WKT-Polygon. Grenzen sind inklusiv. `outside: true` invertiert die Auswahl. |
 | `filters.expression` | `expression` enthält Dimensionsvergleiche mit endlichen Dezimalliteralen. Unterstützt sind `== != < <= > >=`, `!`, `&&`, `\|\|` und Klammern. Negation bindet vor UND, UND vor ODER. |
 | `filters.decimation` | Ganzzahlige `step` (Standard 1), `offset` (Standard 0) und exklusives `limit` (optional). Zählung ab 0 über die Eingabe dieser Stage. |
-| `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. |
+| `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. Optional `count: "Classification"`. |
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
 
@@ -114,7 +114,8 @@ gültig und nicht leer sein. Alle ausgewählten Rohrecords und übertragbaren
 Metadaten bleiben in der LAS-Ausgabe erhalten.
 
 Ausdrücke und Statistik akzeptieren `X`, `Y`, `Z`, `Intensity`,
-`Classification`, `ReturnNumber`, `NumberOfReturns` sowie formatabhängig
+`Classification`, `ReturnNumber`, `NumberOfReturns`, `Synthetic`,
+`KeyPoint`, `Withheld`, `Overlap` sowie formatabhängig
 `GpsTime`, `Red`, `Green`, `Blue`, `Infrared`. Statistik wird dort
 erhoben, wo die Stage steht. Der laufende Mittelwert und das zweite
 zentrale Moment folgen derselben stabilen Online-Formel wie PDAL.
@@ -124,17 +125,22 @@ Punkt hat undefinierte Stichprobenstreuung. Die JSON-Ausgabe verwendet
 kann die Extrema nicht ändern und macht die laufenden Momente undefiniert.
 Bei leerer Auswahl sind alle fünf statistischen Werte `null`.
 
-Im PDAL-Pipeline-Schema steht bei LAS 1.2 die alte Überlappungsklasse 12
-als `Classification == 0` zur Verfügung. Der Batch-Zugriff
-`classification()` liefert weiterhin den kodierten Klassenwert.
-Die Ausgabedatei erhält das zugehörige Rohbyte einschliesslich der Flags.
+Die vier Flags haben die Werte 0 und 1. In den Formaten 0–3
+wird die alte Überlappungsklasse 12 als `Classification == 0` und
+`Overlap == 1` ausgewertet. In den Formaten 6–8 wird Overlap aus
+dem separaten Flag gelesen. `PointBatch.classification()` liefert den
+kodierten Klassenwert. Die LAS-Ausgabe erhält die Originalrecords.
 [PDAL 2.10.2 LasReader](https://github.com/PDAL/PDAL/blob/2.10.2/io/LasReader.cpp)
 
 `pointcloud pipeline` schreibt `pointsRead`, `pointsSelected`,
 `pointsWritten` und `statistics` als JSON auf stdout beziehungsweise in
 den mit `--metadata` angegebenen Pfad. Jede Statistikstage enthält
 `stage` und `dimensions` mit `name`, `count`, `minimum`, `maximum`,
-`average`, `variance` und `stddev`. Bei `writers.null` ist
+`average`, `variance` und `stddev`. Mit `count: "Classification"`
+enthält die Statistik für `Classification` zusätzlich `bins`, etwa
+`{"0": 3, "2": 27}`. Die Klassenschlüssel stehen in numerischer
+Reihenfolge. Die Häufigkeiten sind 64-Bit-Zähler. Eine leere Selektion
+ergibt `{}`. Bei `writers.null` ist
 `pointsWritten` gleich 0 und `pointsSelected` die Anzahl konsumierter
 Punkte. `--laz-workers` wählt die maximale Zahl der LAZ-Decoder-Worker
 (Standard 1). Im Parallelbetrieb bestimmt die Datei die Chunkgrösse.
@@ -160,6 +166,11 @@ typisierte Ergebnis. Ein erneuter Aufruf erstellt frischen Stage-Zustand.
   pro Punkt unverändert. PDAL 2.10.2 schreibt mit `extra_dims: "all"` 42 Bytes
   pro Punkt, weil es `Infrared` zusätzlich zum NIR-Standardfeld als Extra
   Bytes ablegt. [Fixture-Erzeugung](provenance.md#kleine-fixtures)
+- `count: "Classification"` greift wie bei PDAL nur, wenn
+  `Classification` in `dimensions` steht. Java gibt Klassenschlüssel als
+  ganze Zahlen im JSON-Objekt `bins` aus. PDAL 2.10.2 verwendet
+  Dezimaldarstellung wie `"2.000000"` und bietet zusätzlich `counts`.
+  [PDAL-Statistikausgabe](https://github.com/PDAL/PDAL/blob/2.10.2/filters/StatsFilter.cpp#L1080-L1133)
 - Die Realdatenabnahme vergleicht die vier mitgelieferten Pipelines und eine
   zusätzliche Pipeline für die 2014-Kachel mit PDAL im Streaming-Modus
   (`--stream`). Für Polygon-Ground-Crop prüft sie zusätzlich bytegleiche
