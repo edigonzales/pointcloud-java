@@ -1367,3 +1367,32 @@ geschrieben. WKT behält Vorrang. Der sonstige CRS-Pfad läuft
 | Wald | laz | 4 | 2.837 / 2.325 | 17.19% | 447 / 344 |
 
 [Einzelmessungen mit Wandzeit, CPU und RSS](measurements/tin-product-exact.csv)
+
+## Vollständige DTM-Raster mit dem nächsten Bodenpunkt
+
+`writers.dtm` unterstützt `fill_nodata: "nearest"`. Der JTS-Index
+entsteht erst für Restzellen nach Freigabe des TIN. Er verwendet die
+ersten Roh-XY-Vorkommen und die ursprünglichen Double-Höhen. Bestehende
+TIN-Werte bleiben erhalten. Im vollständigen Modus wird kein NoData-Tag
+geschrieben. Die JSON-Metadaten zählen die Ergänzungen separat.
+
+- `./gradlew --offline clean check installDist` endete in 4 s mit
+  Exit 0. Alle 142 JUnit-Fälle bestanden ohne Fehler, Fehlschlag oder
+  übersprungenen Fall. Die native XML-Summe beträgt 1.747 s.
+- `tools/check-dtm.py --complete` verglich Stadt und Wald auf dem M1
+  mit PDAL 2.10.2 für das reine TIN. Die vollständigen Java-Ausgaben
+  mit einem und vier LAZ-Workern waren bitgleich. Beide offenen Raster
+  benötigten 0 Ergänzungen. Die Kantenlimits 20 m und 5 m ergaben
+  7'227 Ergänzungen in der Stadt und 249 im Wald. Sämtliche Raster
+  enthielten 40'000 endliche Höhen ohne NoData-Tag. Je 13 ergänzte
+  Stadt- und Waldzellen stimmten mit der unabhängigen Distanzsuche
+  überein. Alle vom TIN abgedeckten Werte blieben bitgleich.
+- JFR mass die Restzellensuche einschliesslich Indexaufbau auf der
+  vorbereiteten Boden-LAS mit Kantenlimit. Drei frische Durchläufe
+  je Gebiet ergaben Mediane von 471 ms in der Stadt und 250 ms im
+  Wald. Messung mit `experiments/tin-runtime.py --phase-cli ... --fill-nearest`.
+- Die zusätzliche Speicherprobe mit einer Million Stützpunkten und
+  einem Kantenlimit von 0.1 m ergänzte alle 40'000 Zellen. Der
+  Einzellauf unter `-Xmx512m` benötigte 4.216 s und 393 MiB
+  Spitzen-RSS. `tools/check-real-data.py` bestätigte erneut die
+  496'586 vollständigen LAS-Records und den Abbruch ohne Teilausgabe.

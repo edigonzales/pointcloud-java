@@ -129,8 +129,14 @@ def phases(args):
     methods = [*TIFF_METHODS, "pointcloud.TerrainWriter::prepare", "pointcloud.TerrainWriter::rasterize",
                "org.tinfour.semivirtual.SemiVirtualIncrementalTin::add",
                "org.tinfour.standard.IncrementalTin::add"]
+    if args.fill_nearest:
+        methods.append("pointcloud.TerrainWriter::fillNearest")
     for area in ("urban", "forest"):
         config, _, meta = configure(root, area, args.ground_dir.resolve() / area / "ground.las")
+        if args.fill_nearest:
+            stages = json.loads(config.read_text())
+            stages[-1].update(fill_nodata="nearest", max_triangle_edge_length=20 if area == "urban" else 5)
+            config.write_text(json.dumps(stages))
         rounds = []
         for index in range(3):
             events = trace_methods(args, cp, config, meta, root, f"{area}-{index}", methods)
@@ -142,6 +148,8 @@ def phases(args):
             rounds.append({"crs": seconds(writer), "scan": scan, "insert": build,
                            "mesh_and_raster": seconds(events["TerrainWriter::rasterize"]),
                            "tiff": seconds(events["GeoTiffOutput::prepare"])})
+            if args.fill_nearest:
+                rounds[-1]["nearest"] = seconds(events["TerrainWriter::fillNearest"])
         print(area, {key: statistics.median(row[key] for row in rounds) for key in rounds[0]}, flush=True)
 
 
@@ -219,6 +227,7 @@ def main():
     parser.add_argument("--geokey-cli", type=Path)
     parser.add_argument("--standard-cli", type=Path)
     parser.add_argument("--phase-cli", type=Path)
+    parser.add_argument("--fill-nearest", action="store_true", help="trace capped, complete DTM runs")
     parser.add_argument("--ground-dir", type=Path)
     parser.add_argument("--gdal", type=Path, default=Path("."))
     parser.add_argument("--work", type=Path, required=True)

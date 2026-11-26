@@ -1,0 +1,31 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": ".cache/test-data/so-2019.laz"
+    },
+    {
+      "type": "filters.crop",
+      "bounds": "([2594050,2594350],[1227550,1227850])"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "Classification == 2 && Withheld == 0"
+    },
+    {
+      "type": "filters.stats",
+      "dimensions": "Z"
+    },
+    {
+      "type": "writers.dtm",
+      "filename": "build/results/dtm-solothurn-forest-complete.tif",
+      "resolution": 1,
+      "origin_x": 2594100,
+      "origin_y": 1227600,
+      "width": 200,
+      "height": 200,
+      "max_triangle_edge_length": 5,
+      "fill_nodata": "nearest"
+    }
+  ]
+}

@@ -299,7 +299,7 @@ Relative Dateipfade werden wie beim Referenzlauf relativ zum Arbeitsverzeichnis 
 | `writers.las` | `filename`, ausdrücklich `forward: "all"`, `compression: false` und `extra_dims: "all"`. Für diese erste Teilmenge sind diese Einstellungen verbindlich; andere Header-/Quantisierungseinstellungen klar zurückweisen |
 | `writers.null` | Terminierung ohne Punktdatei; für Statistik- und Dekodiermessungen |
 | `writers.raster` | Lokales Float64-GeoTIFF für `Z` oder `Intensity` mit `binmode: true` und explizitem Gitter. Wählbare Bänder `min,max,mean,count,stdev`, nichtnegatives `window_size`, endliches `nodata` und optionale Deflate-Kompression. |
-| `writers.dtm` | Lokales Float64-GeoTIFF aus einem XY-Delaunay-Netz über den ausgewählten LAS-Punkten. Explizites Gitter im projizierten Eingabe-CRS, höchstens eine Million ausgewählte Stützpunkte vor Deduplizierung, lineare Z-Interpolation und optionales XY-Kantenlimit. |
+| `writers.dtm` | Lokales Float64-GeoTIFF aus einem XY-Delaunay-Netz über den ausgewählten LAS-Punkten. Explizites Gitter im projizierten Eingabe-CRS, höchstens eine Million ausgewählte Stützpunkte vor Deduplizierung, lineare Z-Interpolation und optionales XY-Kantenlimit. Mit `fill_nodata: "nearest"` ergänzt der nächste ausgewählte Punkt alle unbelegten Zellen. Die vollständige Ausgabe setzt mindestens einen ausgewählten Punkt voraus. |
 
 Die Rastererweiterung verarbeitet höchstens eine Million Zellen. Das Gitter
 verwendet die skalierten XY-Koordinaten und das horizontale CRS der LAS-Eingabe.

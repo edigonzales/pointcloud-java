@@ -222,8 +222,8 @@ zusätzliche Stützpunkte beisteuern.
 Die erste ausgewählte Höhe je rohem LAS-XY gewinnt. Tinfour 2.1.9 baut
 das Delaunay-Netz in XY auf. Die Höhen werden separat als Double geführt.
 Bis zu 1'000'000 ausgewählte Punkte vor der Deduplizierung und 1'000'000
-Rasterzellen sind zulässig. Mindestens drei unterschiedliche, nicht
-kollineare Stützpunkte sind erforderlich.
+Rasterzellen sind zulässig. Das Dreiecksnetz benötigt mindestens drei
+unterschiedliche, nicht kollineare Stützpunkte.
 
 `max_triangle_edge_length` begrenzt optional alle drei XY-Kanten eines
 Dreiecks in den horizontalen CRS-Einheiten. Das Limit ist positiv und
@@ -234,9 +234,24 @@ gültiger interpolierter Wert, der mit der NoData-Kennung kollidiert,
 führt vor Veröffentlichung zu einem Fehler. `compression` akzeptiert
 `none` (Standard) und `deflate`.
 
+Mit `fill_nodata: "nearest"` erhält jede unbelegte Zelle den Z-Wert
+des nächstgelegenen ausgewählten Stützpunkts. Die Distanz wird in XY
+ab der Zellmitte gemessen. Bei Gleichstand gewinnt der erste Punkt
+in Dateireihenfolge. Das gilt ausserhalb der konvexen Hülle und
+bei durch das Kantenlimit verworfenen Dreiecken. Bereits interpolierte
+Höhen bleiben erhalten. Mit einem, zwei oder nur kollinearen
+Stützpunkten füllt die Suche das gesamte Raster. Bei leerer Selektion
+meldet der Writer einen Fehler.
+
+Im vollständigen Modus enthält jede veröffentlichte Zelle eine
+endliche Höhe. Das GeoTIFF hat keinen NoData-Tag. Ein konfigurierter
+`nodata`-Wert bleibt in diesem Modus ohne Auswirkung auf die Ausgabe.
+
 Die JSON-Metadaten zählen unter `dtm` die eindeutigen Stützpunkte
 (`supportPoints`) und die gültigen beziehungsweise unbelegten Zellen
-(`cellsCovered` und `cellsNoData`). `pointsSelected` zählt alle
+(`cellsCovered` und `cellsNoData`). Im vollständigen Modus zählt
+`cellsFilledNearest` die ergänzten Zellen und `cellsNoData` ist 0.
+`pointsSelected` zählt alle
 selektierten Punkte vor der Deduplizierung, `pointsWritten` ist 0.
 
 ## Kompatibilität mit PDAL 2.10.2

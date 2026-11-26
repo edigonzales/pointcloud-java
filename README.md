@@ -98,6 +98,15 @@ einen Wald in Solothurn.
 "$cli" pipeline examples/dtm-solothurn-forest.json --laz-workers 4 --metadata build/results/dtm-solothurn-forest.json
 ```
 
+Die vollständigen Beispiele setzen `fill_nodata: "nearest"`.
+Zellmitten ohne zulässiges Stützdreieck übernehmen die Höhe des
+nächstgelegenen Bodenpunkts.
+
+```sh
+"$cli" pipeline examples/dtm-solothurn-urban-complete.json --laz-workers 4 --metadata build/results/dtm-solothurn-urban-complete.json
+"$cli" pipeline examples/dtm-solothurn-forest-complete.json --laz-workers 4 --metadata build/results/dtm-solothurn-forest-complete.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 

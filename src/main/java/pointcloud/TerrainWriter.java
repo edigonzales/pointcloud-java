@@ -1,5 +1,10 @@
 package pointcloud;
 
+import org.locationtech.jts.geom.Envelope;
+import org.locationtech.jts.index.strtree.AbstractNode;
+import org.locationtech.jts.index.strtree.Boundable;
+import org.locationtech.jts.index.strtree.ItemBoundable;
+import org.locationtech.jts.index.strtree.STRtree;
 import org.tinfour.common.GeometricOperations;
 import org.tinfour.common.IMonitorWithCancellation;
 import org.tinfour.common.Thresholds;
@@ -21,7 +26,12 @@ final class TerrainWriter {
     private static final int MAX_POINTS = 1_000_000;
 
     record Grid(double originX, double originY, double resolution, int width, int height,
-                double maxEdge, double nodata, boolean deflate) {
+                double maxEdge, double nodata, boolean deflate, boolean fillNearest) {
+        Grid(double originX, double originY, double resolution, int width, int height,
+             double maxEdge, double nodata, boolean deflate) {
+            this(originX, originY, resolution, width, height, maxEdge, nodata, deflate, false);
+        }
+
         Grid {
             GeoTiffOutput.validateGrid(originX, originY, resolution, width, height);
             if (maxEdge <= 0) {
@@ -91,22 +101,35 @@ final class TerrainWriter {
             throw new IOException("GeoTIFF output requires a complete source scan");
         }
         checkInterrupted();
+        if (grid.fillNearest && vertices.isEmpty()) {
+            throw new IOException("fill_nodata requires at least one selected support point");
+        }
+        double nodata = grid.fillNearest ? Double.NaN : grid.nodata;
         var samples = new double[grid.width * grid.height];
-        Arrays.fill(samples, grid.nodata);
+        Arrays.fill(samples, nodata);
         rasterize(samples);
+        Integer filledNearest = null;
         int covered = 0;
-        for (double value : samples) {
-            if (value != grid.nodata) {
-                covered++;
+        if (grid.fillNearest) {
+            filledNearest = fillNearest(samples);
+            covered = samples.length;
+        } else {
+            for (double value : samples) {
+                if (value != nodata) {
+                    covered++;
+                }
             }
         }
         output.prepare(grid.originX, grid.originY, grid.resolution, grid.width, grid.height,
-                new double[][]{samples}, List.of("elevation"), grid.nodata, grid.deflate);
-        return new Pipeline.TerrainStatistics(vertices.size(), covered, samples.length - covered);
+                new double[][]{samples}, List.of("elevation"), nodata, grid.deflate);
+        return new Pipeline.TerrainStatistics(vertices.size(), covered, samples.length - covered, filledNearest);
     }
 
     private void rasterize(double[] samples) throws IOException {
         var tin = triangulate(false);
+        if (tin == null) {
+            return;
+        }
         try {
             double centerX = localX(grid.originX) + grid.resolution / 2;
             double centerY = localY(grid.originY) + grid.resolution / 2;
@@ -136,6 +159,98 @@ final class TerrainWriter {
         }
     }
 
+    private int fillNearest(double[] samples) throws IOException {
+        NearestGround nearest = null;
+        double centerX = localX(grid.originX) + grid.resolution / 2;
+        double centerY = localY(grid.originY) + grid.resolution / 2;
+        int filled = 0;
+        for (int cell = 0; cell < samples.length; cell++) {
+            if ((cell & 4095) == 0) {
+                checkInterrupted();
+            }
+            if (Double.isNaN(samples[cell])) {
+                double x = Math.fma(cell % grid.width, grid.resolution, centerX);
+                double y = Math.fma(grid.height - 1 - cell / grid.width, grid.resolution, centerY);
+                if (!Double.isFinite(x) || !Double.isFinite(y)) {
+                    throw new IOException("Nonfinite local DTM raster cell " + cell);
+                }
+                if (nearest == null) {
+                    nearest = new NearestGround(vertices);
+                }
+                samples[cell] = height(nearest.find(x, y));
+                filled++;
+            }
+            if (!Double.isFinite(samples[cell])) {
+                throw new IOException("Nonfinite DTM height at raster cell " + cell);
+            }
+        }
+        return filled;
+    }
+
+    /** Searches the packed tree, preserving file order when two support points are equally near. */
+    private static final class NearestGround {
+        private static final double SAFE_COORDINATE = Double.MAX_VALUE / 4;
+        private final AbstractNode root;
+        private final boolean wideIndex;
+        private Vertex best;
+        private double bestDistance;
+        private double x;
+        private double y;
+        private double scale;
+        private int visited;
+
+        NearestGround(List<Vertex> vertices) throws IOException {
+            var index = new STRtree();
+            int count = 0;
+            for (var vertex : vertices) {
+                if ((count++ & 4095) == 0) {
+                    checkInterrupted();
+                }
+                index.insert(new Envelope(vertex.x, vertex.x, vertex.y, vertex.y), vertex);
+            }
+            root = index.getRoot();
+            checkInterrupted();
+            var bounds = (Envelope) root.getBounds();
+            wideIndex = Math.max(Math.abs(bounds.getMinX()), Math.abs(bounds.getMaxX())) > SAFE_COORDINATE
+                    || Math.max(Math.abs(bounds.getMinY()), Math.abs(bounds.getMaxY())) > SAFE_COORDINATE;
+        }
+
+        Vertex find(double centerX, double centerY) throws IOException {
+            // A common power-of-two scale keeps subtraction and hypot finite for extreme inputs.
+            scale = wideIndex || Math.abs(centerX) > SAFE_COORDINATE || Math.abs(centerY) > SAFE_COORDINATE ? 0.25 : 1;
+            x = centerX * scale;
+            y = centerY * scale;
+            // Nearby cells often share a donor. Use the previous one as an initial upper bound.
+            bestDistance = best == null ? Double.POSITIVE_INFINITY : Math.hypot(best.x * scale - x, best.y * scale - y);
+            search(root);
+            return best;
+        }
+
+        private void search(Boundable boundable) throws IOException {
+            if ((++visited & 4095) == 0) {
+                checkInterrupted();
+            }
+            var bounds = (Envelope) boundable.getBounds();
+            double dx = Math.max(0, Math.max(bounds.getMinX() * scale - x, x - bounds.getMaxX() * scale));
+            double dy = Math.max(0, Math.max(bounds.getMinY() * scale - y, y - bounds.getMaxY() * scale));
+            double distance = Math.hypot(dx, dy);
+            if (distance > bestDistance) {
+                return;
+            }
+            if (boundable instanceof ItemBoundable item) {
+                var vertex = (Vertex) item.getItem();
+                if (best == null || distance < bestDistance || vertex.getIndex() < best.getIndex()) {
+                    best = vertex;
+                    bestDistance = distance;
+                }
+            } else {
+                for (Object child : ((AbstractNode) boundable).getChildBoundables()) {
+                    search((Boundable) child);
+                }
+            }
+        }
+    }
+
     private void markSupport(BitSet visited, Vertex vertex) throws IOException {
         int index = vertex.getIndex();
         if (index < 0 || index >= vertices.size() || vertices.get(index) != vertex) {
@@ -156,6 +271,11 @@ final class TerrainWriter {
         var tin = new SemiVirtualIncrementalTin(spacing);
         try {
             if (vertices.size() < 3 || !tin.add(vertices, TIN_MONITOR)) {
+                checkInterrupted();
+                if (grid.fillNearest && !validateVertices) {
+                    tin.dispose();
+                    return null;
+                }
                 throw new IOException("DTM requires at least three non-collinear support points");
             }
             checkInterrupted();
@@ -242,7 +362,7 @@ final class TerrainWriter {
                 if ((col & 4095) == 0) {
                     checkInterrupted();
                 }
-                if (samples[cell] != grid.nodata) {
+                if (grid.fillNearest ? !Double.isNaN(samples[cell]) : samples[cell] != grid.nodata) {
                     continue;
                 }
                 double x = Math.fma(col, resolution, centerX);
@@ -254,7 +374,7 @@ final class TerrainWriter {
                     double height = Double.isFinite(db) && Double.isFinite(dc)
                             ? Math.fma(wc / sum, dc, Math.fma(wb / sum, db, za))
                             : (wa / sum) * za + (wb / sum) * zb + (wc / sum) * zc;
-                    if (!Double.isFinite(height) || height == grid.nodata) {
+                    if (!Double.isFinite(height) || (!grid.fillNearest && height == grid.nodata)) {
                         throw new IOException("Nonfinite DTM height or nodata collision at raster cell " + cell);
                     }
                     samples[cell] = height;

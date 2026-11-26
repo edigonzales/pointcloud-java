@@ -287,7 +287,9 @@ final class GeoTiffOutput implements AutoCloseable {
         encoder.addGeoShortParam(GeoTiffConstants.GTRasterTypeGeoKey, GeoTiffConstants.RasterPixelIsArea);
         encoder.setModelPixelScale(resolution, resolution);
         encoder.setModelTiePoint(0, 0, originX, originY + height * resolution);
-        encoder.setNoData(nodata);
+        if (!Double.isNaN(nodata)) {
+            encoder.setNoData(nodata);
+        }
 
         // The GeoTools metadata plus explicit numeric extra-sample tags follow Hop's GeoTiffOutput.
         var writer = new TIFFImageWriterSpi().createWriterInstance();

@@ -16,12 +16,14 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class TerrainWriterTest {
     private static final int[][] TRIANGLE = {{0, 0, 10}, {8, 0, 20}, {0, 8, 30}, {0, 0, 90}, {8, 0, 99}};
     private static final double Z_SCALE = 0.000000001;
+    private static final String FILL_NEAREST = ",\"fill_nodata\":\"nearest\"";
     @TempDir Path temp;
 
     @Test
@@ -187,9 +189,92 @@ class TerrainWriterTest {
                 samples(rejected));
     }
 
+    @Test
+    void fillsOnlyCellsExcludedByTheTriangleEdgeLimit() throws Exception {
+        // Three metres tall. The two left faces have shorter diagonals than the two right faces.
+        var source = fixture(new int[][]{{0, 0, 0}, {0, 12, 12}, {4, 0, 4}, {4, 12, 16},
+                {12, 0, 12}, {12, 12, 24}});
+        var pure = temp.resolve("capped.tif");
+        var complete = temp.resolve("capped-complete.tif");
+        String cap = ",\"max_triangle_edge_length\":3.3";
+        assertEquals(new Pipeline.TerrainStatistics(6, 3, 6), pipeline(source, pure, cap).run(2, false).dtm());
+        assertEquals(new Pipeline.TerrainStatistics(6, 9, 0, 6),
+                pipeline(source, complete, cap + FILL_NEAREST).run(2, false).dtm());
+        double[] original = samples(pure);
+        double[] filled = samples(complete);
+        for (int row = 0; row < 3; row++) {
+            assertEquals(Double.doubleToRawLongBits(original[row * 3]), Double.doubleToRawLongBits(filled[row * 3]));
+        }
+        assertArrayEquals(new double[]{z(12), z(16), z(24), z(8), z(4), z(12), z(4), z(4), z(12)}, filled, 1e-12);
+    }
+
+    @Test
+    void fillsAnEntireGridOutsideTheSupportHull() throws Exception {
+        var source = fixture(new int[][]{{20, 20, 10}, {28, 20, 20}, {20, 28, 30}});
+        var target = temp.resolve("complete-outside.tif");
+        assertEquals(new Pipeline.TerrainStatistics(3, 9, 0, 9),
+                pipeline(source, target, FILL_NEAREST).run(2, false).dtm());
+        var expected = new double[9];
+        Arrays.fill(expected, z(10));
+        assertArrayEquals(expected, samples(target));
+    }
+
+    @Test
+    void leavesAnAlreadyCompleteTinUnchanged() throws Exception {
+        var source = fixture(new int[][]{{0, 0, 0}, {0, 12, 12}, {12, 0, 12}, {12, 12, 24}});
+        var pure = temp.resolve("full-tin.tif");
+        var complete = temp.resolve("full-tin-complete.tif");
+        assertEquals(new Pipeline.TerrainStatistics(4, 9, 0), pipeline(source, pure, "").run(2, false).dtm());
+        assertEquals(new Pipeline.TerrainStatistics(4, 9, 0, 0),
+                pipeline(source, complete, FILL_NEAREST).run(2, false).dtm());
+        assertArrayEquals(samples(pure), samples(complete));
+    }
+
+    @Test
+    void picksFirstEquidistantSupportEvenWhenItsHeightMatchesLegacyNoData() throws Exception {
+        // The first column is equidistant from both supports, with the higher X stored first.
+        var source = fixture(new int[][]{{4, 2, 0}, {0, 2, 90}});
+        var target = temp.resolve("nearest-tie.tif");
+        assertEquals(new Pipeline.TerrainStatistics(2, 9, 0, 9),
+                pipeline(source, target, FILL_NEAREST + ",\"nodata\":700").run(1, false).dtm());
+        var expected = new double[9];
+        Arrays.fill(expected, 700);
+        assertArrayEquals(expected, samples(target));
+        var reader = new GeoTiffReader(target.toFile());
+        try {
+            assertFalse(reader.getMetadata().hasNoData());
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3})
+    void fillsFromSparseOrCollinearSupport(int count) throws Exception {
+        int[][] points = {{0, 0, 10}, {4, 0, 20}, {8, 0, 30}};
+        var source = fixture(Arrays.copyOf(points, count));
+        var target = temp.resolve("sparse-complete.tif");
+        assertEquals(new Pipeline.TerrainStatistics(count, 9, 0, 9),
+                pipeline(source, target, FILL_NEAREST).run(1, false).dtm());
+        double a = z(10);
+        double b = z(count >= 2 ? 20 : 10);
+        double c = z(count == 3 ? 30 : count == 2 ? 20 : 10);
+        assertArrayEquals(new double[]{a, b, c, a, b, c, a, b, c}, samples(target));
+    }
+
+    @Test
+    void failsWithoutPublishingWhenThereAreNoSelectedPointsToFillFrom() throws Exception {
+        var source = fixture(new int[0][]);
+        var target = temp.resolve("empty-complete.tif");
+        var error = assertThrows(IOException.class, () -> pipeline(source, target, FILL_NEAREST).run(2, false));
+        assertTrue(error.getMessage().contains("requires at least one selected support point"), error::getMessage);
+        assertNoPartialOutput(target);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {",\"max_triangle_edge_length\":0", ",\"nodata\":1e900", ",\"compression\":\"lzw\"",
-            ",\"width\":1000001", ",\"window_size\":1", ",\"resolution\":0"})
+            ",\"width\":1000001", ",\"window_size\":1", ",\"resolution\":0",
+            ",\"fill_nodata\":\"idw\"", ",\"fill_nodata\":true"})
     void rejectsInvalidStageOptions(String options) {
         var error = assertThrows(IllegalArgumentException.class, () -> pipeline(temp.resolve("input.las"),
                 temp.resolve("output.tif"), options));
@@ -221,10 +306,11 @@ class TerrainWriterTest {
         assertNoPartialOutput(target);
     }
 
-    @Test
-    void declinedEofAndCancellationPublishNothing() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"", FILL_NEAREST})
+    void declinedEofAndCancellationPublishNothing(String options) throws Exception {
         var target = temp.resolve("interrupted.tif");
-        var pipeline = pipeline(fixture(TRIANGLE), target, "");
+        var pipeline = pipeline(fixture(TRIANGLE), target, options);
         assertThrows(IOException.class, () -> pipeline.run(2, false, (path, size) -> {
             var source = Pipeline.openSequential(path, size);
             return new Pipeline.BatchInput(source.header(), source.channel(), source.reader(), () -> false, source);
@@ -305,9 +391,20 @@ class TerrainWriterTest {
         las.putDouble(155, 2606740).putDouble(163, 1229150).putDouble(171, 700);
         int start = las.getInt(96);
         int stride = las.getChar(105);
+        int templateCount = las.getInt(107);
+        var points = ByteBuffer.allocate(coordinates.length * stride).order(ByteOrder.LITTLE_ENDIAN);
+        int[] returnCounts = new int[5];
         for (int i = 0; i < coordinates.length; i++) {
-            int offset = start + i * stride;
-            las.putInt(offset, coordinates[i][0]).putInt(offset + 4, coordinates[i][1]).putInt(offset + 8, coordinates[i][2]);
+            int offset = points.position();
+            points.put(las.array(), start + (i % templateCount) * stride, stride);
+            points.putInt(offset, coordinates[i][0]).putInt(offset + 4, coordinates[i][1])
+                    .putInt(offset + 8, coordinates[i][2]);
+            int returnNumber = points.get(offset + 14) & 7;
+            returnCounts[returnNumber - 1]++;
+        }
+        las.putInt(107, coordinates.length);
+        for (int i = 0; i < returnCounts.length; i++) {
+            las.putInt(111 + i * Integer.BYTES, returnCounts[i]);
         }
         var keyBytes = ByteBuffer.allocate(keys.length * 2).order(ByteOrder.LITTLE_ENDIAN);
         for (int value : keys) {
@@ -321,12 +418,12 @@ class TerrainWriterTest {
         }
         las.putInt(96, start + metadataLength)
                 .putInt(100, las.getInt(100) + (wkt == null ? 1 : 2) + auxiliaryRecords.length);
-        var result = ByteBuffer.allocate(las.capacity() + metadataLength).put(las.array(), 0, start)
+        var result = ByteBuffer.allocate(start + metadataLength + points.capacity()).put(las.array(), 0, start)
                 .put(geokeys).put(wktRecord);
         for (byte[] auxiliary : auxiliaryRecords) {
             result.put(auxiliary);
         }
-        result.put(las.array(), start, las.capacity() - start);
+        result.put(points.array());
         return Files.write(Files.createTempFile(temp, "points-", ".las"), result.array());
     }
 

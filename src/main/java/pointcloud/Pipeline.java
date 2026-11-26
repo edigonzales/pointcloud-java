@@ -63,7 +63,12 @@ public final class Pipeline {
         }
     }
 
-    public record TerrainStatistics(int supportPoints, int cellsCovered, int cellsNoData) {}
+    public record TerrainStatistics(int supportPoints, int cellsCovered, int cellsNoData,
+                                    @JsonAdapter(value = OmitNull.class, nullSafe = false) Integer cellsFilledNearest) {
+        public TerrainStatistics(int supportPoints, int cellsCovered, int cellsNoData) {
+            this(supportPoints, cellsCovered, cellsNoData, null);
+        }
+    }
 
     public record StageStatistics(int stage, List<Statistics> dimensions) {}
 
@@ -540,12 +545,15 @@ public final class Pipeline {
 
     private static TerrainWriter.Grid parseTerrainGrid(JsonObject stage) {
         options(stage, "filename", "resolution", "origin_x", "origin_y", "width", "height",
-                "max_triangle_edge_length", "nodata", "compression");
+                "max_triangle_edge_length", "nodata", "compression", "fill_nodata");
+        if (stage.has("fill_nodata")) {
+            exact(stage, "fill_nodata", "nearest");
+        }
         double maxEdge = stage.has("max_triangle_edge_length") ? number(stage, "max_triangle_edge_length")
                 : Double.POSITIVE_INFINITY;
         return new TerrainWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
                 number(stage, "resolution"), gridDimension(stage, "width"), gridDimension(stage, "height"),
-                maxEdge, nodata(stage), deflate(stage));
+                maxEdge, nodata(stage), deflate(stage), stage.has("fill_nodata"));
     }
 
     private static int gridDimension(JsonObject stage, String key) {
