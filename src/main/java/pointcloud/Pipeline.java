@@ -30,7 +30,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -479,38 +478,55 @@ public final class Pipeline {
 
     private static GroundGridWriter.Grid parseRasterGrid(JsonObject stage) {
         options(stage, "filename", "binmode", "resolution", "origin_x", "origin_y", "width", "height",
-                "output_type", "dimension", "data_type", "nodata", "window_size");
+                "output_type", "dimension", "data_type", "nodata", "window_size", "compression");
         if (!bool(stage, "binmode", false)) {
             throw new IllegalArgumentException("binmode must be true");
         }
-        var types = string(stage, "output_type").split(",", -1);
-        var bands = new HashSet<String>();
-        for (String type : types) {
-            bands.add(type.strip());
+        var bands = EnumSet.of(GroundGridWriter.Band.MIN, GroundGridWriter.Band.MAX,
+                GroundGridWriter.Band.MEAN, GroundGridWriter.Band.COUNT);
+        if (stage.has("output_type")) {
+            bands.clear();
+            for (String type : string(stage, "output_type").split(",", -1)) {
+                var band = switch (type.strip()) {
+                    case "min" -> GroundGridWriter.Band.MIN;
+                    case "max" -> GroundGridWriter.Band.MAX;
+                    case "mean" -> GroundGridWriter.Band.MEAN;
+                    case "count" -> GroundGridWriter.Band.COUNT;
+                    case "stdev" -> GroundGridWriter.Band.STDEV;
+                    default -> throw new IllegalArgumentException("unsupported output_type: " + type);
+                };
+                if (!bands.add(band)) {
+                    throw new IllegalArgumentException("duplicate output_type: " + type);
+                }
+            }
         }
-        if (types.length != 4 || !bands.equals(Set.of("min", "max", "mean", "count"))) {
-            throw new IllegalArgumentException("output_type must list min, max, mean and count once each");
-        }
-        if (stage.has("dimension")) {
-            exact(stage, "dimension", "Z");
-        }
+        var dimension = switch (stage.has("dimension") ? string(stage, "dimension") : "Z") {
+            case "Z" -> Dimension.Z;
+            case "Intensity" -> Dimension.Intensity;
+            default -> throw new IllegalArgumentException("dimension must be 'Z' or 'Intensity'");
+        };
         if (stage.has("data_type")) {
             exact(stage, "data_type", "double");
         }
-        if (stage.has("nodata") && number(stage, "nodata") != GeoTiffOutput.NODATA) {
-            throw new IllegalArgumentException("nodata must be -9999");
+        double nodata = stage.has("nodata") ? number(stage, "nodata") : GeoTiffOutput.NODATA;
+        if (nodata == 0 && bands.contains(GroundGridWriter.Band.COUNT)) {
+            throw new IllegalArgumentException("nodata must be nonzero when count is selected");
         }
+        boolean deflate = switch (stage.has("compression") ? string(stage, "compression") : "none") {
+            case "none" -> false;
+            case "deflate" -> true;
+            default -> throw new IllegalArgumentException("compression must be 'none' or 'deflate'");
+        };
         long windowSize = integer(stage, "window_size", 0);
-        if (windowSize > 1) {
-            throw new IllegalArgumentException("window_size must be 0 or 1");
-        }
         long width = integer(stage, "width", 0);
         long height = integer(stage, "height", 0);
         if (width > GroundGridWriter.Grid.MAX_CELLS || height > GroundGridWriter.Grid.MAX_CELLS) {
             throw new IllegalArgumentException("grid may have at most " + GroundGridWriter.Grid.MAX_CELLS + " cells");
         }
+        int effectiveWindow = (int) Math.min(windowSize, Math.max(width, height) - 1);
         return new GroundGridWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
-                number(stage, "resolution"), (int) width, (int) height, windowSize == 1);
+                number(stage, "resolution"), (int) width, (int) height, effectiveWindow, bands, dimension, nodata,
+                deflate);
     }
 
     private static double number(JsonObject stage, String key) {

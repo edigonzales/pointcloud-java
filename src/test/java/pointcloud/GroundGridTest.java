@@ -96,8 +96,11 @@ class GroundGridTest {
         Path disabled = temp.resolve("disabled.tif");
         Path filled = temp.resolve("filled.tif");
         var baseline = Pipeline.parse(new StringReader(config(input, implicit, "", 5, 5))).run(2, false);
-        var zero = Pipeline.parse(new StringReader(config(input, disabled, "", 5, 5, ",\"window_size\":0")))
-                .run(2, false);
+        var zero = Pipeline.parse(new StringReader(config(input, disabled, "", 5, 5,
+                """
+                ,"window_size":0,"output_type":"count,mean,min,max","dimension":"Z",
+                "data_type":"double","nodata":-9999,"compression":"none"
+                """))).run(2, false);
         var one = Pipeline.parse(new StringReader(config(input, filled, "", 5, 5, ",\"window_size\":1")))
                 .run(2, false);
         assertEquals(baseline, zero);
@@ -132,7 +135,117 @@ class GroundGridTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"-1", "2", "1.0", "\"1\"", "true", "null", "9223372036854775808"})
+    @ValueSource(longs = {2, Long.MAX_VALUE})
+    void weightsMeasuredCellsInBothRings(long radius) throws Exception {
+        Path input = fixture(3, new int[][]{{0, 0, 4}, {1, 1, 12}, {12, 0, 20}, {16, 0, 200}, {0, 4, 400}});
+        Path target = temp.resolve("weighted.tif");
+        String config = config(input, target, "", 4, 1,
+                ",\"window_size\":" + radius + ",\"output_type\":\"stdev,count,mean\"");
+        var result = Pipeline.parse(new StringReader(config)).run(2, false);
+        assertEquals(3, result.pointsBinned());
+
+        var reader = new GeoTiffReader(target.toFile());
+        try {
+            var raster = reader.read().getRenderedImage().getData();
+            assertArrayEquals(new double[]{704, 2, 2}, raster.getPixel(0, 0, (double[]) null));
+            assertArrayEquals(new double[]{706, 0, 4.0 / 3}, raster.getPixel(1, 0, (double[]) null), 1e-12);
+            assertArrayEquals(new double[]{710, 1, 0}, raster.getPixel(3, 0, (double[]) null));
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    @Test
+    void preservesTheHeightOfASingleDistantDonor() throws Exception {
+        Path input = fixture(3, new int[][]{{0, 0, 4}, {200, 0, 0}, {0, 4, 0}, {200, 4, 0}, {0, 8, 0}});
+        Path target = temp.resolve("single-donor.tif");
+        String config = config(input, target, "", 50, 1, ",\"window_size\":49,\"output_type\":\"mean\"");
+        assertEquals(1, Pipeline.parse(new StringReader(config)).run(2, false).pointsBinned());
+        var reader = new GeoTiffReader(target.toFile());
+        try {
+            var raster = reader.read().getRenderedImage().getData();
+            assertEquals(702, raster.getSampleDouble(49, 0, 0));
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    @Test
+    void writesAllIntensityBandsWithLosslessDeflate() throws Exception {
+        var las = LasIoTest.bytes(fixture(8));
+        int points = las.getInt(96);
+        int stride = las.getChar(105);
+        las.putChar(points + 12, (char) 65_535);
+        las.putChar(points + stride + 12, (char) 32_768);
+        las.putChar(points + 2 * stride + 12, (char) 0);
+        Path input = Files.write(temp.resolve("intensity.las"), las.array());
+        String bands = ",\"output_type\":\"stdev,count,max,mean,min\",\"dimension\":\"Intensity\",\"nodata\":-77.25";
+        for (String codec : new String[]{"none", "deflate"}) {
+            Path output = temp.resolve(codec + ".tif");
+            var config = config(input, output, "", 2, 2, bands + ",\"compression\":\"" + codec + "\"");
+            Pipeline.parse(new StringReader(config)).run(2, false);
+            var reader = new GeoTiffReader(output.toFile());
+            try {
+                assertEquals(-77.25, reader.getMetadata().getNoData());
+                var raster = reader.read().getRenderedImage().getData();
+                assertEquals(DataBuffer.TYPE_DOUBLE, raster.getTransferType());
+                assertEquals(5, raster.getNumBands());
+                assertArrayEquals(new double[]{32768, 65535, 49151.5, 2, 16383.5},
+                        raster.getPixel(0, 1, (double[]) null));
+                assertArrayEquals(new double[]{0, 0, 0, 1, 0}, raster.getPixel(1, 0, (double[]) null));
+                assertArrayEquals(new double[]{-77.25, -77.25, -77.25, 0, -77.25},
+                        raster.getPixel(0, 0, (double[]) null));
+            } finally {
+                reader.dispose();
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"count", "stdev"})
+    void writesSingleBandWithAWindow(String band) throws Exception {
+        Path target = temp.resolve("single.tif");
+        String config = config(fixture(3), target, "", 2, 2,
+                ",\"output_type\":\"" + band + "\",\"window_size\":20,\"compression\":\"deflate\"");
+        Pipeline.parse(new StringReader(config)).run(2, false);
+        var reader = new GeoTiffReader(target.toFile());
+        try {
+            var raster = reader.read().getRenderedImage().getData();
+            assertEquals(1, raster.getNumBands());
+            assertEquals(2, raster.getSampleDouble(0, 1, 0));
+            assertEquals(band.equals("count") ? 0 : 1, raster.getSampleDouble(0, 0, 0));
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {706, 714})
+    void rejectsNodataCollisionWithoutReplacingOutput(int marker) throws Exception {
+        Path input = fixture(3, new int[][]{{0, 0, 4}, {1, 1, 12}, {3, 3, 20}, {8, 8, 40}, {11, 11, 48}});
+        Path target = Files.writeString(temp.resolve("protected.tif"), "previous output");
+        String config = config(input, target, "", 5, 5,
+                ",\"output_type\":\"mean\",\"window_size\":1,\"nodata\":" + marker);
+        var pipeline = Pipeline.parse(new StringReader(config));
+        var error = assertThrows(IOException.class, () -> pipeline.run(2, true));
+        assertTrue(error.getMessage().contains("collides with valid data"), error::getMessage);
+        assertEquals("previous output", Files.readString(target));
+        assertNoPartFiles();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "\"output_type\":\"all\"", "\"output_type\":\"mean,mean\"", "\"output_type\":\"mean,\"",
+            "\"nodata\":0", "\"nodata\":1e400", "\"dimension\":\"Red\"", "\"compression\":\"lzw\""
+    })
+    void rejectsInvalidRasterOptions(String option) {
+        String config = config(temp.resolve("missing.las"), temp.resolve("grid.tif"), "", 2, 2, "," + option);
+        var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
+        assertTrue(error.getMessage().startsWith("Stage 2 (writers.raster): "), error::getMessage);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"-1", "1.0", "\"1\"", "true", "null", "9223372036854775808"})
     void rejectsInvalidWindowSizeDuringParsing(String value) {
         Path target = temp.resolve("invalid-window.tif");
         String config = config(temp.resolve("missing.las"), target, "", 2, 2, ",\"window_size\":" + value);
@@ -224,8 +337,7 @@ class GroundGridTest {
         return """
                 [%s, %s
                  {"type":"writers.raster","filename":%s,"binmode":true,"resolution":1,
-                  "origin_x":%s,"origin_y":%s,"width":%d,"height":%d,
-                  "output_type":"count,mean,min,max","dimension":"Z","data_type":"double","nodata":-9999%s}]
+                  "origin_x":%s,"origin_y":%s,"width":%d,"height":%d%s}]
                 """.formatted(Pipeline.JSON.toJson(input.toString()), filter, Pipeline.JSON.toJson(target.toString()),
                 ORIGIN_X, ORIGIN_Y, width, height, writerOptions);
     }

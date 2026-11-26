@@ -1297,3 +1297,87 @@ Füllung schneller war, und Runden mit zusätzlicher Wandzeit.
 Mit vier Workern und Füllung lag die mediane Spitzen-RSS von Java bei
 260 MiB und die von PDAL bei 101 MiB.
 [64 Einzelmessungen](measurements/ground-grid-fill-pdal.csv)
+
+## Raster-Release gegen PDAL
+
+26. November 2026, Apple M1 arm64, macOS 15.8.1, 16 GiB RAM, Netzbetrieb.
+Temurin 25.0.3+9 mit `-Xmx512m`, GeoTools 35.1 und ImageIO-Ext 2.1.1.
+PDAL 2.10.2/LazPerf aus `libpdal-core h151f718_4`, GDAL 3.13.3.
+Alle drei Profile lesen dieselbe Solothurn-2019-Kachel, selektieren
+195'738 Bodenpunkte im Rechteck und rasterisieren 195'715 davon
+in ein 200 × 200-Gitter. Die Messung umfasst Prozessstart, Dekodierung,
+Zuschnitt, Selektion, Z-Statistik, `mean,count,stdev` und die Ausgaben
+GeoTIFF und JSON. Alle Raster verwenden Float64 und NoData −7777.
+
+Die Profile sind Fenster 1 unkomprimiert, Fenster 2 unkomprimiert und
+Fenster 2 mit Deflate. Java verwendet `--laz-workers 1` oder `4`.
+PDAL verwendet `--stream --readers.las.threads=1` oder `4`. Nach einem
+verifizierten Warmlauf je Kombination folgen acht Runden in frischen
+Prozessen bei warmem Dateicache. Innerhalb jeder Runde rotieren Profile
+und Engine-/Worker-Reihenfolge. Die Rasterprüfung mit GDAL und der Vergleich
+der Zellwerte und Metadaten liegen ausserhalb der Zeitmessung. Die
+Wandzeit verwendet `perf_counter_ns()`, CPU und Spitzen-RSS kommen von
+`/usr/bin/time -lp`.
+
+Java schreibt pixelweise und PDAL bandweise. Beim komprimierten Profil
+verwendet Java die Deflate-Standardeinstellung des TIFF-Encoders, PDAL
+`gdalopts: "COMPRESS=DEFLATE"` mit dem GDAL-Standard. Die Dateigrössen
+beziehen sich auf diese vollständigen CLI-Ausgaben.
+
+```sh
+./gradlew installDist
+python3 tools/check-ground-grid.py /pfad/zu/pdal --release \
+  --benchmark-csv .cache/raster-release-pdal.csv
+```
+
+| Fenster und Kompression | Reader-Worker | Engine | Wandzeit, Median (Min–Max) in s | Prozess-CPU, Median in s | Median der Spitzen-RSS in MiB | TIFF-Byte |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| 1, none | 1 | Java | 5.382 (5.237–5.764) | 6.78 | 242.55 | 960'832 |
+| 1, none | 1 | PDAL | 4.965 (4.880–5.489) | 7.55 | 75.15 | 962'592 |
+| 1, none | 4 | Java | 2.103 (2.002–2.431) | 8.38 | 258.89 | 960'832 |
+| 1, none | 4 | PDAL | 2.977 (2.922–3.382) | 8.29 | 99.26 | 962'592 |
+| 2, none | 1 | Java | 5.339 (5.259–5.957) | 6.75 | 243.43 | 960'832 |
+| 2, none | 1 | PDAL | 4.916 (4.871–5.111) | 7.53 | 72.73 | 962'592 |
+| 2, none | 4 | Java | 2.042 (1.992–2.428) | 8.22 | 259.14 | 960'832 |
+| 2, none | 4 | PDAL | 2.955 (2.931–3.298) | 8.23 | 107.09 | 962'592 |
+| 2, deflate | 1 | Java | 5.510 (5.386–5.945) | 6.89 | 244.73 | 491'402 |
+| 2, deflate | 1 | PDAL | 4.955 (4.887–5.895) | 7.56 | 74.41 | 477'508 |
+| 2, deflate | 4 | Java | 2.241 (2.161–2.665) | 8.67 | 260.51 | 491'402 |
+| 2, deflate | 4 | PDAL | 2.996 (2.937–3.434) | 8.29 | 103.45 | 477'508 |
+
+Die JSON-Dateien haben 435 Byte für Java und 12'235 Byte für PDAL.
+Die folgenden Prozentsätze sind Mediane der paarweisen Zeitverhältnisse
+innerhalb derselben Runde.
+
+| Reader-Worker | Java relativ zu PDAL, Fenster 1 | Fenster 2 | Fenster 2 mit Deflate |
+| ---: | ---: | ---: | ---: |
+| 1 | +6.82 % | +8.76 % | +9.99 % |
+| 4 | −29.37 % | −30.75 % | −24.58 % |
+
+Bei vier Workern brauchte Java in jeder Runde aller drei Profile weniger
+Wandzeit. Der Wechsel von Fenster 1 auf 2 lag bei beiden Engines im Bereich
+der Streuung. Deflate reduzierte die TIFF-Grösse um 48.86 % in Java und
+50.39 % in PDAL. Bei Fenster 2 und vier Workern stieg die gepaarte Wandzeit
+durch Deflate um 9.93 % in Java und 0.96 % in PDAL. Die Spannweite betrug
+für Java +3.18 bis +29.02 % und für PDAL −0.11 bis +7.92 %.
+[96 verifizierte Einzelmessungen](measurements/raster-release-pdal.csv)
+
+### Stressprobe mit einer Million Zellen
+
+`tools/check-ground-grid.py /pfad/zu/pdal --stress` erzeugt ein gemeinsames
+unkomprimiertes LAS mit 500'000 synthetischen Höhenpunkten auf einem
+1'000 × 1'000-Schachbrett. Eine Hälfte der Zellen hat genau einen Messpunkt
+und eine Hälfte ist leer. Pro Kombination wurde ein vollständiger Lauf
+mit einem Reader und den Bändern `mean,count,stdev` gemessen.
+
+| Fenster | Engine | Wandzeit in s | Prozess-CPU in s | Spitzen-RSS in MiB | TIFF-Byte |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Java | 0.705 | 1.56 | 256.55 | 24'001'632 |
+| 1 | PDAL | 0.209 | 0.17 | 68.84 | 24'037'152 |
+| 20 | Java | 3.773 | 4.66 | 251.34 | 24'001'632 |
+| 20 | PDAL | 1.741 | 1.71 | 71.45 | 24'037'152 |
+
+Alle Rasterwerte wurden geprüft. Beide Fenster füllten die 500'000 Lücken,
+die Punktzahlen blieben exakt und die grösste Höhenabweichung bei Fenster 20
+betrug 6.03 × 10⁻¹² m. Die Messung zeigt die Mehrarbeit eines breiten
+Suchfensters auf einem Gitter mit vielen Lücken.

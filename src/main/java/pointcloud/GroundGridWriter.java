@@ -10,10 +10,23 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.Locale;
 
-/** Accumulates Z by pixel and stages a north-up GeoTIFF for publication. */
+/** Accumulates point statistics by pixel and stages a north-up GeoTIFF for publication. */
 final class GroundGridWriter implements AutoCloseable {
-    record Grid(double originX, double originY, double resolution, int width, int height, boolean fillGaps) {
+    enum Band {
+        MIN, MAX, MEAN, COUNT, STDEV;
+
+        String label() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+    }
+
+    record Grid(double originX, double originY, double resolution, int width, int height, int windowSize,
+                EnumSet<Band> bands, Dimension dimension, double nodata, boolean deflate) {
         static final int MAX_CELLS = 1_000_000;
 
         Grid {
@@ -25,6 +38,7 @@ final class GroundGridWriter implements AutoCloseable {
                     || originX + resolution <= originX || originY + resolution <= originY) {
                 throw new IllegalArgumentException("grid extent and cell size must be representable");
             }
+            bands = bands.clone();
         }
     }
 
@@ -34,7 +48,13 @@ final class GroundGridWriter implements AutoCloseable {
     private final Grid grid;
     private final CoordinateReferenceSystem crs;
     private final long[] counts;
-    private final double[][] bands;
+    private final double[] minima;
+    private final double[] maxima;
+    private final double[] means;
+    private final double[] deviations;
+    private final double[] countBand;
+    private final double[][] outputBands;
+    private final double[][] statisticBands;
     private final double east;
     private final double north;
     private long pointsBinned;
@@ -50,7 +70,29 @@ final class GroundGridWriter implements AutoCloseable {
         crs = GeoTiffOutput.resolveCrs(header, source);
         int cells = grid.width * grid.height;
         counts = new long[cells];
-        bands = new double[4][cells];
+        minima = grid.bands.contains(Band.MIN) ? new double[cells] : null;
+        maxima = grid.bands.contains(Band.MAX) ? new double[cells] : null;
+        deviations = grid.bands.contains(Band.STDEV) ? new double[cells] : null;
+        means = grid.bands.contains(Band.MEAN) || deviations != null ? new double[cells] : null;
+        countBand = grid.bands.contains(Band.COUNT) ? new double[cells] : null;
+
+        var output = new ArrayList<double[]>(grid.bands.size());
+        var statistics = new ArrayList<double[]>(grid.bands.size());
+        for (Band band : grid.bands) {
+            double[] values = switch (band) {
+                case MIN -> minima;
+                case MAX -> maxima;
+                case MEAN -> means;
+                case COUNT -> countBand;
+                case STDEV -> deviations;
+            };
+            output.add(values);
+            if (band != Band.COUNT) {
+                statistics.add(values);
+            }
+        }
+        outputBands = output.toArray(double[][]::new);
+        statisticBands = statistics.toArray(double[][]::new);
         east = grid.originX + grid.width * grid.resolution;
         north = grid.originY + grid.height * grid.resolution;
     }
@@ -64,18 +106,26 @@ final class GroundGridWriter implements AutoCloseable {
         int column = Math.min(grid.width - 1, (int) ((x - grid.originX) / grid.resolution));
         int rowFromSouth = Math.min(grid.height - 1, (int) ((y - grid.originY) / grid.resolution));
         int cell = (grid.height - 1 - rowFromSouth) * grid.width + column;
-        double z = batch.z(point);
         long count = ++counts[cell];
         pointsBinned++;
-        if (count == 1) {
-            bands[0][cell] = z;
-            bands[1][cell] = z;
-            bands[2][cell] = z;
+        if (statisticBands.length == 0) {
             return;
         }
-        bands[0][cell] = Math.min(bands[0][cell], z);
-        bands[1][cell] = Math.max(bands[1][cell], z);
-        bands[2][cell] = updatedMean(bands[2][cell], z, count);
+        double value = grid.dimension.value(batch, point);
+        if (minima != null) {
+            minima[cell] = count == 1 ? value : Math.min(minima[cell], value);
+        }
+        if (maxima != null) {
+            maxima[cell] = count == 1 ? value : Math.max(maxima[cell], value);
+        }
+        if (means != null) {
+            double previous = means[cell];
+            double mean = count == 1 ? value : updatedMean(previous, value, count);
+            means[cell] = mean;
+            if (deviations != null && count > 1) {
+                deviations[cell] += (value - previous) * (value - mean);
+            }
+        }
     }
 
     long pointsBinned() {
@@ -87,66 +137,117 @@ final class GroundGridWriter implements AutoCloseable {
             throw new IOException("GeoTIFF output requires a complete source scan");
         }
         checkInterrupted();
-        for (int cell = 0; cell < counts.length; cell++) {
-            if (counts[cell] == 0) {
-                bands[0][cell] = GeoTiffOutput.NODATA;
-                bands[1][cell] = GeoTiffOutput.NODATA;
-                bands[2][cell] = GeoTiffOutput.NODATA;
-            }
-            bands[3][cell] = counts[cell];
-        }
-        if (grid.fillGaps) {
-            fillGaps();
-            checkInterrupted();
-        }
+        finishBands();
+        checkInterrupted();
         Files.createDirectories(target.getParent());
         temporary = Files.createTempFile(target.getParent(), ".pointcloud-", ".tif.part");
-        GeoTiffOutput.write(temporary, crs, grid.originX, grid.originY, grid.resolution, grid.width, grid.height, bands);
+        var names = grid.bands.stream().map(Band::label).toList();
+        GeoTiffOutput.write(temporary, crs, grid.originX, grid.originY, grid.resolution, grid.width, grid.height,
+                outputBands, names, grid.nodata, grid.deflate);
         checkInterrupted();
     }
 
-    private void fillGaps() throws InterruptedIOException {
-        double[] minima = bands[0];
-        double[] maxima = bands[1];
-        double[] means = bands[2];
+    private void finishBands() throws IOException {
         int width = grid.width;
-        for (int row = 0; row < grid.height; row++) {
+        int west = width;
+        int east = -1;
+        int north = grid.height;
+        int south = -1;
+        int measured = 0;
+        for (int cell = 0; cell < counts.length; cell++) {
+            if ((cell & 4095) == 0) {
+                checkInterrupted();
+            }
+            long count = counts[cell];
+            if (countBand != null) {
+                countBand[cell] = count;
+                checkSample(countBand[cell], cell);
+            }
+            if (count == 0) {
+                for (var band : statisticBands) {
+                    band[cell] = grid.nodata;
+                }
+                continue;
+            }
+            measured++;
+            int row = cell / width;
+            int column = cell % width;
+            north = Math.min(north, row);
+            south = Math.max(south, row);
+            west = Math.min(west, column);
+            east = Math.max(east, column);
+            if (deviations != null) {
+                deviations[cell] = Math.sqrt(deviations[cell] / count);
+            }
+            for (var band : statisticBands) {
+                checkSample(band[cell], cell);
+            }
+        }
+        if (grid.windowSize > 0 && statisticBands.length > 0 && measured > 0 && measured < counts.length) {
+            fillGaps(west, east, north, south);
+        }
+    }
+
+    private void fillGaps(int donorWest, int donorEast, int donorNorth, int donorSouth) throws IOException {
+        int width = grid.width;
+        int radius = grid.windowSize;
+        int firstRow = Math.max(0, donorNorth - radius);
+        int lastRow = Math.min(grid.height - 1, donorSouth + radius);
+        int firstColumn = Math.max(0, donorWest - radius);
+        int lastColumn = Math.min(width - 1, donorEast + radius);
+        double[] averages = new double[statisticBands.length];
+        for (int row = firstRow; row <= lastRow; row++) {
             checkInterrupted();
-            int north = Math.max(0, row - 1);
-            int south = Math.min(grid.height - 1, row + 1);
-            for (int column = 0; column < width; column++) {
+            int north = Math.max(donorNorth, row - radius);
+            int south = Math.min(donorSouth, row + radius);
+            for (int column = firstColumn; column <= lastColumn; column++) {
                 int cell = row * width + column;
                 if (counts[cell] != 0) {
                     continue;
                 }
-                int west = Math.max(0, column - 1);
-                int east = Math.min(width - 1, column + 1);
-                double min = 0;
-                double max = 0;
-                double mean = 0;
-                int neighbors = 0;
+                int west = Math.max(donorWest, column - radius);
+                int east = Math.min(donorEast, column + radius);
+                Arrays.fill(averages, 0);
+                double weights = 0;
                 for (int y = north; y <= south; y++) {
+                    checkInterrupted();
+                    int dy = Math.abs(y - row);
                     for (int x = west; x <= east; x++) {
                         int neighbor = y * width + x;
+                        if ((neighbor & 4095) == 0) {
+                            checkInterrupted();
+                        }
                         // Counts identify measured cells even after earlier gaps have been filled.
                         if (counts[neighbor] > 0) {
-                            neighbors++;
-                            min = updatedMean(min, minima[neighbor], neighbors);
-                            max = updatedMean(max, maxima[neighbor], neighbors);
-                            mean = updatedMean(mean, means[neighbor], neighbors);
+                            int distance = Math.max(dy, Math.abs(x - column));
+                            double divisor = 1 + weights * distance;
+                            weights += 1.0 / distance;
+                            for (int i = 0; i < averages.length; i++) {
+                                averages[i] = updatedMean(averages[i], statisticBands[i][neighbor], divisor);
+                            }
                         }
                     }
                 }
-                if (neighbors > 0) {
-                    minima[cell] = min;
-                    maxima[cell] = max;
-                    means[cell] = mean;
+                if (weights > 0) {
+                    for (int i = 0; i < averages.length; i++) {
+                        checkSample(averages[i], cell);
+                        statisticBands[i][cell] = averages[i];
+                    }
                 }
             }
         }
     }
 
-    private static double updatedMean(double mean, double value, long count) {
+    private void checkSample(double value, int cell) throws IOException {
+        if (value == grid.nodata) {
+            throw new IOException("nodata value " + grid.nodata + " collides with valid data at raster cell " + cell);
+        }
+        if (!Double.isFinite(value)) {
+            throw new IOException("Nonfinite value at raster cell " + cell);
+        }
+    }
+
+    private static double updatedMean(double mean, double value, double count) {
         double delta = value - mean;
         return Double.isFinite(delta) ? mean + delta / count : (mean - mean / count) + value / count;
     }
