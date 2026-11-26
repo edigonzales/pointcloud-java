@@ -104,7 +104,7 @@ Punktformat geprüft.
 | `filters.decimation` | Ganzzahlige `step` (Standard 1), `offset` (Standard 0) und exklusives `limit` (optional). Zählung ab 0 über die Eingabe dieser Stage. |
 | `filters.hag_dem` | `raster` für ein lokales GeoTIFF. Erzeugt `HeightAboveGround` für nachfolgende Ausdrücke und Statistiken. [Weitere Optionen](#höhe-über-grund) |
 | `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. Optional `count: "Classification"`. |
-| `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
+| `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `compression: false` (Standard). `extra_dims: "all"` reicht die Originalrecords durch. Für den Export von `HeightAboveGround` siehe [LAS-Export](#las-export-der-höhe-über-grund). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
 | `writers.raster` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width` und `height`. Optionen für Bandwahl, Dimension, Füllfenster, NoData und Kompression stehen unter [Rasterausgabe](#rasterausgabe). |
 | `writers.dtm` | Float64-GeoTIFF aus einem Delaunay-Netz. `filename` mit `.tif` oder `.tiff`, `resolution`, `origin_x`, `origin_y`, `width` und `height`. Weitere Optionen unter [TIN-Terrainmodell](#tin-terrainmodell). |
@@ -287,7 +287,25 @@ Höhenbezug offenlassen, stellt der Aufrufer dessen Übereinstimmung sicher.
 
 Der [Solothurn-Workflow](../examples/hag-dem-solothurn-urban.json)
 verwendet das vollständige Stadt-DTM. Er wählt Vegetationspunkte über
-5 m und schreibt deren LAS-Records mit unverändertem `Z`.
+5 m und exportiert deren Originalrecords mit zusätzlicher Höhe über Grund.
+
+### LAS-Export der Höhe über Grund
+
+`extra_dims: "HeightAboveGround=double"` aktiviert den Export nach
+`filters.hag_dem`. `HeightAboveGround=float64` ist ein Alias. Jeder
+ausgewählte Record erhält acht Little-Endian-Bytes hinter seinen
+Originalbytes. Der Writer übernimmt LAS-Version, Punktformat,
+Quantisierung und Reihenfolge. Er ergänzt den Double-Deskriptor vom
+Typ 10 im VLR `LASF_Spec/4`. Vorhandene Deskriptoren werden übernommen.
+Unbeschriebene Originalbytes erhalten vor dem neuen Attribut
+Typ-0-Deskriptoren mit je höchstens 255 Bytes.
+
+Für den Export ist höchstens ein vorhandener Extra-Bytes-VLR zulässig.
+Ein gleichnamiges Attribut, ein Extra-Bytes-EVLR, ungültige Deskriptoren
+und Überschreitungen der LAS-Feldgrenzen führen zu einem Writerfehler.
+`extra_dims: "all"` übernimmt auch beim Wiedereinlesen die gespeicherten
+HAG-Bytes. Für Ausdrücke und Statistik berechnet `filters.hag_dem` die
+Dimension weiterhin aus dem angegebenen DEM.
 
 ## Kompatibilität mit PDAL 2.10.2
 
@@ -297,7 +315,13 @@ verwendet das vollständige Stadt-DTM. Er wählt Vegetationspunkte über
   analytische Java-Referenz, da PDAL 2.10.2 in unserer GeoTIFF-Probe
   den NoData-Wert als Höhe verrechnet hat.
   [PDAL HAG-Implementierung](https://github.com/PDAL/PDAL/blob/2.10.2/filters/HagDemFilter.cpp)
-
+- PDAL erkennt archiviertes HAG in LAS 1.4 direkt über den Extra-Bytes-VLR.
+  Bei LAS 1.2 setzt der Reader `use_eb_vlr: true`. Damit verwendet er
+  die Feldreihenfolge des VLR auch bei zusätzlichen Originalattributen.
+  Eine explizite Reader-Liste in `extra_dims` ersetzt die Deskriptoren.
+  Die Realdatenprüfung startet mit `tools/check-hag-dem.py --las-extra-bytes`.
+  [PDAL LAS-Reader](https://pdal.io/en/stable/stages/readers.las.html#options) ·
+  [HAG-Abnahme](../tools/check-hag-dem.py)
 - Das Gegenstück zu `writers.dtm` ist die PDAL-Stagefolge
   `filters.delaunay`, `filters.faceraster`, `writers.raster`.
   Kozyklische Stützpunkte können verschiedene Delaunay-Diagonalen und daher

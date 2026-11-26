@@ -28,7 +28,7 @@
       "type": "writers.las",
       "filename": "build/results/hag-dem-solothurn-urban.las",
       "forward": "all",
-      "extra_dims": "all"
+      "extra_dims": "HeightAboveGround=double"
     }
   ]
 }

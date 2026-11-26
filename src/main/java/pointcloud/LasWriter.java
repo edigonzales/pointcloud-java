@@ -4,6 +4,7 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.file.FileAlreadyExistsException;
@@ -22,6 +23,8 @@ public final class LasWriter implements AutoCloseable {
     private final LasHeader header;
     private final Path target;
     private final boolean overwrite;
+    private final LasExtraBytes extraBytes;
+    private final ByteBuffer heightBytes;
     private final Path temporary;
     private final FileChannel channel;
     private final BufferedOutputStream output;
@@ -38,6 +41,11 @@ public final class LasWriter implements AutoCloseable {
 
     LasWriter(Path sourcePath, FileChannel source, LasHeader header, BooleanSupplier sourceFinished,
               Path target, boolean overwrite) throws IOException {
+        this(sourcePath, source, header, sourceFinished, target, overwrite, false);
+    }
+
+    LasWriter(Path sourcePath, FileChannel source, LasHeader header, BooleanSupplier sourceFinished,
+              Path target, boolean overwrite, boolean appendHeightAboveGround) throws IOException {
         this.sourcePath = sourcePath;
         this.source = source;
         this.sourceFinished = sourceFinished;
@@ -48,6 +56,8 @@ public final class LasWriter implements AutoCloseable {
             throw new IOException("LAS output filename must end in .las");
         }
         checkTarget();
+        extraBytes = appendHeightAboveGround ? LasExtraBytes.appendHeightAboveGround(header, source) : null;
+        heightBytes = extraBytes == null ? null : ByteBuffer.allocate(Double.BYTES).order(ByteOrder.LITTLE_ENDIAN);
         Files.createDirectories(this.target.getParent());
         temporary = Files.createTempFile(this.target.getParent(), ".pointcloud-", ".las.part");
         FileChannel opened = null;
@@ -56,6 +66,9 @@ public final class LasWriter implements AutoCloseable {
             channel = opened;
             outputHeader = header.copyHeader();
             outputHeader.put(104, (byte) header.pointFormat());
+            if (heightBytes != null) {
+                outputHeader.putChar(105, (char) (header.recordLength() + Double.BYTES));
+            }
             channel.position(outputHeader.capacity());
             long vlrs = copyMetadata(false);
             long pointOffset = channel.position();
@@ -87,7 +100,16 @@ public final class LasWriter implements AutoCloseable {
             throw new IOException("Writer requires an open output and a batch from its source");
         }
         int start = batch.start(point);
+        if (heightBytes != null) {
+            if (batch.heightAboveGround == null || !Double.isFinite(batch.heightAboveGround[point])) {
+                throw new IOException("LAS Extra Bytes export requires a finite HeightAboveGround value");
+            }
+            heightBytes.putDouble(0, batch.heightAboveGround[point]);
+        }
         output.write(batch.records.array(), start, header.recordLength());
+        if (heightBytes != null) {
+            output.write(heightBytes.array());
+        }
         int returnNumber = batch.returnNumber(point);
         if (returnNumber != 0) {
             returns[returnNumber - 1]++;
@@ -155,14 +177,29 @@ public final class LasWriter implements AutoCloseable {
         var count = new long[1];
         long end = header.visitMetadata(source, extended, record -> {
             if (!record.isPointIndex()) {
-                transfer(record.start(), record.payload() - record.start() + record.length());
+                if (!extended && extraBytes != null && record.start() == extraBytes.existingStart) {
+                    writeExtraBytesVlr();
+                } else {
+                    transfer(record.start(), record.payload() - record.start() + record.length());
+                }
                 count[0]++;
             }
         });
         if (!extended) {
+            if (extraBytes != null && extraBytes.existingStart == -1) {
+                writeExtraBytesVlr();
+                count[0]++;
+            }
             transfer(end, header.pointOffset() - end);
         }
         return count[0];
+    }
+
+    private void writeExtraBytesVlr() throws IOException {
+        var bytes = ByteBuffer.wrap(extraBytes.vlr);
+        while (bytes.hasRemaining()) {
+            channel.write(bytes);
+        }
     }
 
     private void transfer(long offset, long remaining) throws IOException {

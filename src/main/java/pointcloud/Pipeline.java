@@ -115,6 +115,7 @@ public final class Pipeline {
     private final Path input;
     private final Path output;
     private final HagStage hag;
+    private final boolean appendHeightAboveGround;
     private final GroundGridWriter.Grid rasterGrid;
     private final TerrainWriter.Grid terrainGrid;
     private final JsonArray stages;
@@ -143,6 +144,7 @@ public final class Pipeline {
         int position = stages.size();
         JsonObject writer = stageObject(stages.get(position - 1), position);
         String type = type(writer, position);
+        boolean appendHeight = false;
         try {
             rasterGrid = type.equals(RASTER_WRITER) ? parseRasterGrid(writer) : null;
             terrainGrid = type.equals(DTM_WRITER) ? parseTerrainGrid(writer) : null;
@@ -150,7 +152,12 @@ public final class Pipeline {
                 case "writers.las" -> {
                     options(writer, "filename", "forward", "compression", "extra_dims");
                     exact(writer, "forward", "all");
-                    exact(writer, "extra_dims", "all");
+                    appendHeight = switch (string(writer, "extra_dims")) {
+                        case "all" -> false;
+                        case "HeightAboveGround=double", "HeightAboveGround=float64" -> true;
+                        default -> throw new IllegalArgumentException(
+                                "extra_dims must be 'all', 'HeightAboveGround=double' or 'HeightAboveGround=float64'");
+                    };
                     if (bool(writer, "compression", false)) {
                         throw new IllegalArgumentException("compression must be false");
                     }
@@ -186,6 +193,10 @@ public final class Pipeline {
             }
         }
         hag = found;
+        if (appendHeight && hag == null) {
+            throw atStage(position, type, "HeightAboveGround export requires a preceding " + HAG_FILTER + " stage");
+        }
+        appendHeightAboveGround = appendHeight;
     }
 
     public static Pipeline read(Path path) throws IOException {
@@ -299,7 +310,8 @@ public final class Pipeline {
             }
             try (var tiff = openTiff(reader, overwrite);
                  var writer = output == null || tiff != null ? null
-                         : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output, overwrite)) {
+                         : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output,
+                               overwrite, appendHeightAboveGround)) {
                 var raster = rasterGrid == null ? null : new GroundGridWriter(tiff, rasterGrid);
                 var terrain = terrainGrid == null ? null : new TerrainWriter(tiff, terrainGrid, reader.header());
                 long selected = 0;
