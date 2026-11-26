@@ -296,8 +296,8 @@ Relative Dateipfade werden wie beim Referenzlauf relativ zum Arbeitsverzeichnis 
 | `filters.expression` | Genau ein Ausdruck als String in der unten definierten Teilgrammatik |
 | `filters.decimation` | Ganzzahliges `step >= 1`, `offset >= 0`, optional exklusives `limit`. Positionszählung über den gesamten dieser Stage zugeführten Strom, nicht je Batch |
 | `filters.stats` | Explizite `dimensions` als kommaseparierte Liste; Anzahl, Minimum, Maximum, Mittelwert und Stichprobenvarianz/-standardabweichung nach überprüfter Referenzsemantik. Keine globalen Mediane oder vollständigen Wertelisten |
-| `filters.hag_dem` | Höhe über Grund aus einem lokalen, nach Norden ausgerichteten GeoTIFF im Eingabe-CRS. Ein Band mit bis zu vier Millionen Zellen. `HeightAboveGround` steht nach der Stage für Ausdrücke und Statistik zur Verfügung. Ausgewählte LAS-Records bleiben unverändert. |
-| `writers.las` | `filename`, ausdrücklich `forward: "all"`, `compression: false` und `extra_dims: "all"`. Für diese erste Teilmenge sind diese Einstellungen verbindlich; andere Header-/Quantisierungseinstellungen klar zurückweisen |
+| `filters.hag_dem` | Höhe über Grund aus einem lokalen, nach Norden ausgerichteten GeoTIFF im Eingabe-CRS. Ein Band mit bis zu vier Millionen Zellen. `HeightAboveGround` steht nach der Stage für Ausdrücke, Statistik und den optionalen LAS-Export zur Verfügung. |
+| `writers.las` | `filename`, ausdrücklich `forward: "all"`, `compression: false` als Standard. `extra_dims: "all"` übernimmt die Originalrecords. Nach `filters.hag_dem` hängt `extra_dims: "HeightAboveGround=double"` oder `"HeightAboveGround=float64"` acht Bytes an jeden ausgewählten Originalrecord an. |
 | `writers.null` | Terminierung ohne Punktdatei; für Statistik- und Dekodiermessungen |
 | `writers.raster` | Lokales Float64-GeoTIFF für `Z` oder `Intensity` mit `binmode: true` und explizitem Gitter. Wählbare Bänder `min,max,mean,count,stdev`, nichtnegatives `window_size`, endliches `nodata` und optionale Deflate-Kompression. |
 | `writers.dtm` | Lokales Float64-GeoTIFF aus einem XY-Delaunay-Netz über den ausgewählten LAS-Punkten. Explizites Gitter im projizierten Eingabe-CRS, höchstens eine Million ausgewählte Stützpunkte vor Deduplizierung, lineare Z-Interpolation und optionales XY-Kantenlimit. Mit `fill_nodata: "nearest"` ergänzt der nächste ausgewählte Punkt alle unbelegten Zellen. Die vollständige Ausgabe setzt mindestens einen ausgewählten Punkt voraus. |
@@ -309,7 +309,10 @@ JVM-Distribution. GDAL und PDAL sind Referenzwerkzeuge für die Abnahme.
 Die [Pipeline-Dokumentation](docs/architecture.md#pipelines) führt die
 Rasteroptionen, Zellgrenzen und NoData-Werte auf.
 
-Bei `writers.las` darf `compression` entfallen, wenn der dokumentierte Standard `false` ist. `forward: "all"` und `extra_dims: "all"` sind in dieser Teilmenge ausdrücklich anzugeben. So werden die Quantisierung und vorhandenen Attribute bewusst behandelt; PDAL bewahrt Scale/Offset ohne entsprechende Einstellung nicht automatisch. [Q6]
+Bei `writers.las` darf `compression` mit Standard `false` entfallen.
+`forward: "all"` und die Wahl von `extra_dims` werden ausdrücklich
+angegeben. Der HAG-Export übernimmt die LAS-Version, die Quantisierung
+und die ursprünglichen Attribute. [Q6]
 
 `filters.range` gehört zunächst nicht zur Teilmenge. Für neue Pipelines empfiehlt PDAL `filters.expression`. Damit entfällt eine zweite parallele Filtersyntax. [Q5]
 

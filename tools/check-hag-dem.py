@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import runpy
 import statistics
+import struct
 import subprocess
 import tempfile
 from typing import NamedTuple
@@ -22,6 +23,8 @@ run = REFERENCE["run"]
 compare_stats = REFERENCE["compare_stats"]
 DEM_URL = "https://files.geo.so.ch/ch.so.agi.lidar_2019.dtm/aktuell/ch.so.agi.lidar_2019.dtm.tif"
 ROUNDS = 8
+HAG_EXTRA = "HeightAboveGround=double"
+URBAN_HAG_SELECTION = 3_512_369
 
 
 class Area(NamedTuple):
@@ -92,7 +95,11 @@ def configure(args, work, source, dem, engine, workers, *, select=False, dimensi
     if select:
         stages.append({"type": "filters.expression", "expression": "HeightAboveGround > 5"})
         writer = {"type": "writers.las", "filename": str(las), "forward": "all", "compression": False}
-        if engine == "java":
+        if args.las_extra_bytes:
+            writer["extra_dims"] = HAG_EXTRA
+            if engine == "pdal":
+                writer.update(minor_version=2, dataformat_id=3)
+        elif engine == "java":
             writer["extra_dims"] = "all"
         stages.append(writer)
     else:
@@ -106,6 +113,58 @@ def configure(args, work, source, dem, engine, workers, *, select=False, dimensi
     return list(map(str, command)), metadata, las
 
 
+def compare_hag_records(java, pdal, source, count):
+    point = struct.Struct("<34sd")
+    read_header = REFERENCE["read_las_header"]
+    with source.open("rb") as original, java.open("rb") as left, pdal.open("rb") as right:
+        original_header, lh, rh = map(read_header, (original, left, right))
+        require(original_header[24:26] == lh[24:26] == rh[24:26] == b"\x01\x02"
+                and original_header[104] & 63 == lh[104] == rh[104] == 3
+                and struct.unpack_from("<H", original_header, 105)[0] == 34
+                and struct.unpack_from("<H", lh, 105)[0] == point.size
+                and lh[104:131] == rh[104:131]
+                and struct.unpack_from("<I", lh, 107)[0] == count,
+                "Expected LAS 1.2 format 3 with one Float64 extra and matching point counts")
+        require(lh[131:179] == original_header[131:179]
+                and struct.unpack_from("<12d", lh, 131) == struct.unpack_from("<12d", rh, 131),
+                "LAS quantization or output bounds differ")
+        left.seek(struct.unpack_from("<I", lh, 96)[0])
+        right.seek(struct.unpack_from("<I", rh, 96)[0])
+        maximum_error = 0.0
+        for start in range(0, count, 8192):
+            size = min(count - start, 8192) * point.size
+            a, b = left.read(size), right.read(size)
+            require(len(a) == len(b) == size, "Truncated HAG point records")
+            for index, ((raw, height), (pdal_raw, pdal_height)) in enumerate(
+                    zip(point.iter_unpack(a), point.iter_unpack(b)), start):
+                error = abs(height - pdal_height)
+                if raw != pdal_raw or not (height > 5 and pdal_height > 5 and error <= 1e-9):
+                    raise RuntimeError(f"HAG record {index} differs: raw {raw == pdal_raw}, "
+                                       f"heights {height} / {pdal_height}")
+                maximum_error = max(maximum_error, error)
+        require(not left.read(1) and not right.read(1), "Unexpected bytes after HAG point records")
+    print(f"{count} ordered original records match; maximum Float64 HAG difference {maximum_error:.3g} m",
+          flush=True)
+
+
+def check_hag_descriptor(args, original, java, pdal):
+    vlrs = REFERENCE["projection_and_other_vlrs"]
+    java_vlrs = vlrs(java)
+    key = (b"LASF_Spec", 4)
+    require([record for record in java_vlrs if record[:2] != key] == vlrs(original),
+            "Java did not preserve source VLR payloads and order")
+    for path, records in ((java, java_vlrs), (pdal, vlrs(pdal))):
+        descriptors = [data for user, record, data in records if (user, record) == key]
+        require(len(descriptors) == 1 and len(descriptors[0]) == 192
+                and descriptors[0][2:4] == b"\x0a\x00"
+                and descriptors[0][4:36].rstrip(b"\0") == b"HeightAboveGround",
+                f"{path}: expected one Float64 HeightAboveGround Extra Bytes descriptor")
+        schema = run([args.pdal, "info", "--schema", path, "--readers.las.use_eb_vlr=true"], capture=True)
+        dimension = [d for d in schema["schema"]["dimensions"] if d["name"] == "HeightAboveGround"]
+        require(dimension == [{"name": "HeightAboveGround", "size": 8, "type": "floating"}],
+                f"{path}: PDAL did not read HeightAboveGround as Float64")
+
+
 def acceptance(args, area, work, source, dem):
     results = {}
     for engine, workers in (("java", 1), ("java", 4), ("pdal", 4)):
@@ -113,10 +172,11 @@ def acceptance(args, area, work, source, dem):
         case.mkdir()
         command, metadata, las = configure(args, case, source, dem, engine, workers, select=True)
         run(command)
-        results[engine, workers] = json.loads(metadata.read_text()), las
-    reference, serial = results["java", 1]
-    parallel, parallel_las = results["java", 4]
-    pdal, pdal_las = results["pdal", 4]
+        results[engine, workers] = metadata, las
+    serial_meta, serial = results["java", 1]
+    parallel_meta, parallel_las = results["java", 4]
+    pdal_meta, pdal_las = results["pdal", 4]
+    reference, parallel, pdal = [json.loads(path.read_text()) for path in (serial_meta, parallel_meta, pdal_meta)]
     stages = pdal["stages"]
     require(reference == parallel and filecmp.cmp(serial, parallel_las, shallow=False),
             f"{area.name}: Java LAS or metadata differs between one and four workers")
@@ -130,9 +190,15 @@ def acceptance(args, area, work, source, dem):
     hag = next(d for d in dimensions if d["name"] == "HeightAboveGround")
     require(hag["minimum"] < 0 and hag["maximum"] > 5,
             f"{area.name}: signed HAG range or selection threshold not exercised")
-    REFERENCE["compare_las"](serial, pdal_las, count)
-    vlrs = REFERENCE["projection_and_other_vlrs"]
-    require(vlrs(serial) == vlrs(source), f"{area.name}: Java did not preserve source VLRs")
+    if args.las_extra_bytes:
+        require(serial_meta.read_bytes() == parallel_meta.read_bytes(), "Java metadata bytes differ")
+        require(count == URBAN_HAG_SELECTION, f"{area.name}: expected {URBAN_HAG_SELECTION} retained points")
+        compare_hag_records(serial, pdal_las, source, count)
+        check_hag_descriptor(args, source, serial, pdal_las)
+    else:
+        REFERENCE["compare_las"](serial, pdal_las, count)
+        vlrs = REFERENCE["projection_and_other_vlrs"]
+        require(vlrs(serial) == vlrs(source), f"{area.name}: Java did not preserve source VLRs")
     summaries = [run([args.pdal, "info", "--summary", las], capture=True)["summary"] for las in (serial, pdal_las)]
     require(summaries[0].get("srs") and summaries[0]["srs"] == summaries[1].get("srs"),
             f"{area.name}: CRS differs between Java and PDAL outputs")
@@ -228,9 +294,13 @@ def main():
     parser.add_argument("--data", type=Path, default=Path(".cache/test-data"))
     parser.add_argument("--dem-dir", type=Path, default=Path(".cache/hag-dem/dem"))
     parser.add_argument("--work", type=Path, default=Path(".cache/hag-dem"))
+    parser.add_argument("--las-extra-bytes", action="store_true",
+                        help="verify persisted Float64 HAG for the urban LAS output")
     parser.add_argument("--benchmark-csv", type=Path, help="also time full-tile HAG and Java Z control pipelines")
     parser.add_argument("--setup-csv", type=Path, help="also trace DEM load separately after any benchmark")
     args = parser.parse_args()
+    if args.las_extra_bytes and (args.benchmark_csv or args.setup_csv):
+        parser.error("--las-extra-bytes is only for LAS acceptance; run timing options separately")
     args.pdal, args.cli, args.data, args.dem_dir, args.work = (
         path.resolve() for path in (args.pdal, args.cli, args.data, args.dem_dir, args.work))
     args.gdal = args.gdal.resolve() if args.gdal else args.pdal.parent
@@ -240,7 +310,7 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="run-", dir=args.work))
     print(f"HAG DEM outputs: {work}", flush=True)
     profiles = []
-    for area in AREAS:
+    for area in AREAS[:1] if args.las_extra_bytes else AREAS:
         section = work / area.name
         section.mkdir()
         source = args.data / area.laz

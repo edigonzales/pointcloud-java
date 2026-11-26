@@ -33,6 +33,8 @@ class HagDemTest {
     private static final double X = 2594100;
     private static final double Y = 1227600;
     private static final double NODATA = -77.25;
+    private static final String HAG_DOUBLE = "HeightAboveGround=double";
+    private static final int DESCRIPTOR_BYTES = 192;
     private static final String STATISTICS = """
             {"type":"filters.stats","dimensions":"HeightAboveGround"}
             """;
@@ -62,6 +64,168 @@ class HagDemTest {
         assertStats(result.statistics().get(0).dimensions().get(1), "HeightAboveGround", 5, -2, 9, 1.8);
         assertStats(result.statistics().get(1).dimensions().getFirst(), "HeightAboveGround", 3, -1, 9, 11.0 / 3);
         assertOriginalRecords(input, target, 1, 2, 4);
+    }
+
+    @Test
+    void appendsHagAfterExistingAttributesAndRetainsVlrAndEvlrContents() throws Exception {
+        Path input = appendOpaqueTail(points(2056, coordinates()), 256);
+        Path dem = dem(input, NODATA, new double[]{701, 710, 702, 703});
+        Path target = temp.resolve("hag.las");
+        var result = pipeline(input, hag(dem, ""), """
+                {"type":"filters.expression","expression":"HeightAboveGround > 2 || HeightAboveGround == -1"}
+                """, las(target, HAG_DOUBLE)).run(2, false);
+        assertEquals(3, result.pointsWritten());
+
+        var before = LasIoTest.bytes(input);
+        var after = LasIoTest.bytes(target);
+        assertEquals(4, after.get(25));
+        assertEquals(8, after.get(104));
+        assertEquals(before.getInt(100), after.getInt(100));
+        assertEquals(before.getInt(96) + 3 * DESCRIPTOR_BYTES, after.getInt(96));
+        assertEquals(3, after.getLong(247));
+        assertEquals(before.getInt(243), after.getInt(243));
+        assertEquals(after.getInt(96) + 3L * after.getChar(105), after.getLong(235));
+        assertForwardedEvlrs(before, after);
+        int firstVlr = before.getChar(94);
+        int firstVlrEnd = firstVlr + 54 + before.getChar(firstVlr + 20);
+        assertArrayEquals(Arrays.copyOfRange(before.array(), firstVlr, firstVlrEnd),
+                Arrays.copyOfRange(after.array(), firstVlr, firstVlrEnd));
+
+        var descriptors = extraBytes(after);
+        assertEquals(4 * DESCRIPTOR_BYTES, descriptors.capacity());
+        var oldDescriptor = extraBytes(before);
+        assertArrayEquals(oldDescriptor.array(), Arrays.copyOf(descriptors.array(), oldDescriptor.capacity()));
+        assertDescriptor(descriptors, 1, 0, 255, null);
+        assertDescriptor(descriptors, 2, 0, 1, null);
+        assertDescriptor(descriptors, 3, 10, 0, "HeightAboveGround");
+        assertHagRecords(before, after, new double[]{-1, 3, 9}, 1, 2, 4);
+
+        Path copy = temp.resolve("forwarded.las");
+        assertEquals(3, pipeline(target, las(copy)).run(1, false).pointsWritten());
+        assertEquals(-1, Files.mismatch(target, copy));
+    }
+
+    @Test
+    void createsALegacyDescriptorVlrWithTheFloat64AliasAndPreservesZeroPointLayout() throws Exception {
+        Path input = appendOpaqueTail(legacyPoints(), 1);
+        Path dem = dem(input, NODATA, new double[]{701, 710, 702, 703});
+        String alias = "HeightAboveGround=float64";
+        Path target = temp.resolve("legacy-hag.las");
+        assertEquals(5, pipeline(input, hag(dem, ""), las(target, alias)).run(2, false).pointsWritten());
+        var before = LasIoTest.bytes(input);
+        var after = LasIoTest.bytes(target);
+        assertEquals(2, after.get(25));
+        assertEquals(3, after.get(104));
+        assertEquals(5, after.getInt(107));
+        assertEquals(before.getInt(100) + 1, after.getInt(100));
+        assertEquals(before.getInt(96) + 54 + 2 * DESCRIPTOR_BYTES, after.getInt(96));
+        var descriptors = extraBytes(after);
+        assertEquals(2 * DESCRIPTOR_BYTES, descriptors.capacity());
+        assertDescriptor(descriptors, 0, 0, 1, null);
+        assertDescriptor(descriptors, 1, 10, 0, "HeightAboveGround");
+        assertHagRecords(before, after, new double[]{0, -1, 3, -2, 9}, 0, 1, 2, 3, 4);
+
+        Path empty = temp.resolve("empty-hag.las");
+        assertEquals(0, pipeline(input, hag(dem, ""), """
+                {"type":"filters.expression","expression":"HeightAboveGround > 100"}
+                """, las(empty, alias)).run(2, false).pointsWritten());
+        var writtenEmpty = LasIoTest.bytes(empty);
+        assertEquals(0, writtenEmpty.getInt(107));
+        assertEquals(after.getChar(105), writtenEmpty.getChar(105));
+        assertEquals(writtenEmpty.getInt(96), writtenEmpty.capacity());
+        assertArrayEquals(descriptors.array(), extraBytes(writtenEmpty).array());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"bad-payload", "duplicate-vlr", "extra-bytes-evlr", "existing-hag", "over-described",
+            "reserved-type", "zero-width", "record-overflow", "vlr-overflow"})
+    void rejectsInvalidExtraBytesLayoutsWithoutReplacingExistingFiles(String layout) throws Exception {
+        Path input = legacyPoints();
+        String failure = switch (layout) {
+            case "bad-payload" -> {
+                input = addExtraBytesVlr(input, new byte[]{1});
+                yield "Extra Bytes VLR payload length";
+            }
+            case "duplicate-vlr" -> {
+                input = appendOpaqueTail(input, 1);
+                input = addExtraBytesVlr(input, descriptor(1, "first"));
+                input = addExtraBytesVlr(input, descriptor(1, "second"));
+                yield "Multiple LAS Extra Bytes VLRs";
+            }
+            case "extra-bytes-evlr" -> {
+                var las = fixtureWithCoordinates(7, coordinates());
+                byte[] wkt = projectionWkt(CRS.decode("EPSG:2056", true).toWKT());
+                input = addEvlr(las, "LASF_Projection", 2112, wkt);
+                input = appendOpaqueTail(input, 1);
+                input = addEvlr(LasIoTest.bytes(input), "LASF_Spec", 4, descriptor(1, "Other"));
+                yield "Extra Bytes in an EVLR";
+            }
+            case "existing-hag" -> {
+                input = appendOpaqueTail(input, Double.BYTES);
+                input = addExtraBytesVlr(input, descriptor(10, "HeightAboveGround"));
+                yield "already contain HeightAboveGround";
+            }
+            case "over-described" -> {
+                input = addExtraBytesVlr(input, descriptor(10, "Other"));
+                yield "descriptors exceed the point record";
+            }
+            case "reserved-type" -> {
+                input = appendOpaqueTail(input, 1);
+                input = addExtraBytesVlr(input, descriptor(31, "Reserved"));
+                yield "descriptor type: 31";
+            }
+            case "zero-width" -> {
+                input = addExtraBytesVlr(input, descriptor(0, "Empty"));
+                yield "descriptor has zero width";
+            }
+            case "record-overflow" -> {
+                input = appendOpaqueTail(input, 65530 - 34);
+                yield "point record length exceeds unsigned 16-bit range";
+            }
+            case "vlr-overflow" -> {
+                int descriptors = 65535 / DESCRIPTOR_BYTES;
+                input = appendOpaqueTail(input, descriptors);
+                var payload = ByteBuffer.allocate(descriptors * DESCRIPTOR_BYTES);
+                for (int i = 0; i < descriptors; i++) {
+                    payload.put(descriptor(1, "Extra" + i));
+                }
+                input = addExtraBytesVlr(input, payload.array());
+                yield "VLR payload exceeds unsigned 16-bit range";
+            }
+            default -> throw new AssertionError(layout);
+        };
+        Path dem = dem(input, NODATA, new double[]{701, 710, 702, 703});
+        Path target = Files.writeString(temp.resolve("existing.las"), "original point output");
+        Path metadata = Files.writeString(temp.resolve("existing.json"), "original metadata");
+        Path config = Files.writeString(temp.resolve("pipeline.json"),
+                config(input, hag(dem, ""), las(target, HAG_DOUBLE)));
+        assertCliFailure(config, metadata, failure);
+        assertEquals("original point output", Files.readString(target));
+        assertEquals("original metadata", Files.readString(metadata));
+        assertNoPartFiles();
+    }
+
+    @Test
+    void rejectsNewHagExtraFieldWithoutHagAndOtherExtraDimensions() {
+        Path input = LasIoTest.fixture(3, "las");
+        Path target = temp.resolve("undeclared-hag.las");
+        assertThrows(IllegalArgumentException.class, () -> pipeline(input, las(target, HAG_DOUBLE)).run(1, false));
+        assertThrows(IllegalArgumentException.class, () -> pipeline(input, las(target, "HeightAboveGround=float32")));
+        assertFalse(Files.exists(target));
+    }
+
+    @Test
+    void missingDemValueAfterWrittenRecordsDoesNotPublishAppendedHag() throws Exception {
+        Path input = points(2056, coordinates());
+        Path dem = dem(input, NODATA, new double[]{701, NODATA, 702, 703});
+        Path target = Files.writeString(temp.resolve("previous.las"), "previous points");
+        Path metadata = Files.writeString(temp.resolve("previous.json"), "previous metadata");
+        Path config = Files.writeString(temp.resolve("pipeline.json"),
+                config(input, hag(dem, ""), las(target, HAG_DOUBLE)));
+        assertCliFailure(config, metadata, "Stage 2 (filters.hag_dem)");
+        assertEquals("previous points", Files.readString(target));
+        assertEquals("previous metadata", Files.readString(metadata));
+        assertNoPartFiles();
     }
 
     @Test
@@ -202,12 +366,13 @@ class HagDemTest {
         assertNoPartFiles();
     }
 
-    @Test
-    void interruptionLeavesLasUnpublished() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"all", HAG_DOUBLE})
+    void interruptionLeavesLasUnpublished(String extraDimensions) throws Exception {
         Path input = points(2056, coordinates());
         Path dem = dem(input, NODATA, new double[]{701, 710, 702, 703});
         Path target = temp.resolve("cancelled.las");
-        var pipeline = pipeline(input, hag(dem, ""), las(target));
+        var pipeline = pipeline(input, hag(dem, ""), las(target, extraDimensions));
         try {
             assertThrows(InterruptedIOException.class, () -> pipeline.run(2, false, (path, size) -> {
                 var source = Pipeline.openSequential(path, size);
@@ -233,25 +398,140 @@ class HagDemTest {
     }
 
     private Path points(String crsWkt, int[][] coordinates) throws IOException {
-        var las = LasIoTest.bytes(LasIoTest.fixture(8, "las"));
+        return addEvlr(fixtureWithCoordinates(8, coordinates), "LASF_Projection", 2112, projectionWkt(crsWkt));
+    }
+
+    private static byte[] projectionWkt(String crsWkt) {
+        return (crsWkt + "\0").getBytes(StandardCharsets.UTF_8);
+    }
+
+    private Path addEvlr(ByteBuffer las, String user, int id, byte[] contents) throws IOException {
+        var record = ByteBuffer.allocate(60 + contents.length).order(ByteOrder.LITTLE_ENDIAN);
+        record.position(2).put(user.getBytes(StandardCharsets.US_ASCII));
+        record.putChar(18, (char) id).putLong(20, contents.length).position(60).put(contents);
+        if (las.getInt(243) == 0) {
+            las.putLong(235, las.capacity());
+        }
+        las.putInt(243, las.getInt(243) + 1);
+        var result = ByteBuffer.allocate(las.capacity() + record.capacity()).put(las.array()).put(record.array());
+        return Files.write(Files.createTempFile(temp, "points-", ".las"), result.array());
+    }
+
+    private Path legacyPoints() throws IOException {
+        var las = fixtureWithCoordinates(3, coordinates());
+        var keys = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+        for (int value : new int[]{1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 2056}) {
+            keys.putChar((char) value);
+        }
+        return addVlr(las, "LASF_Projection", 34735, keys.array());
+    }
+
+    private static ByteBuffer fixtureWithCoordinates(int format, int[][] coordinates) throws IOException {
+        var las = LasIoTest.bytes(LasIoTest.fixture(format, "las"));
         las.putDouble(131, .25).putDouble(139, .25).putDouble(147, .25);
         las.putDouble(155, X).putDouble(163, Y).putDouble(171, 700);
         int start = las.getInt(96);
         int stride = las.getChar(105);
+        int classificationByte = format < 6 ? 15 : 16;
         for (int i = 0; i < coordinates.length; i++) {
             int offset = start + i * stride;
             var point = coordinates[i];
             las.putInt(offset, point[0]).putInt(offset + 4, point[1]).putInt(offset + 8, point[2]);
-            las.put(offset + 16, (byte) point[3]);
+            int oldFlags = format < 6 ? las.get(offset + classificationByte) & 0xe0 : 0;
+            las.put(offset + classificationByte, (byte) (oldFlags | point[3]));
         }
-        byte[] wkt = (crsWkt + "\0").getBytes(StandardCharsets.UTF_8);
-        var projection = ByteBuffer.allocate(60 + wkt.length).order(ByteOrder.LITTLE_ENDIAN);
-        projection.position(2).put("LASF_Projection".getBytes(StandardCharsets.US_ASCII));
-        projection.putChar(18, (char) 2112).putLong(20, wkt.length).position(60).put(wkt);
-        las.putInt(243, las.getInt(243) + 1); // The template already has an EVLR.
-        var result = ByteBuffer.allocate(las.capacity() + projection.capacity());
-        result.put(las.array()).put(projection.array());
-        return Files.write(Files.createTempFile(temp, "points-", ".las"), result.array());
+        return las;
+    }
+
+    private Path addExtraBytesVlr(Path input, byte[] contents) throws IOException {
+        return addVlr(LasIoTest.bytes(input), "LASF_Spec", 4, contents);
+    }
+
+    private Path addVlr(ByteBuffer las, String user, int id, byte[] contents) throws IOException {
+        var vlr = ByteBuffer.allocate(54 + contents.length).order(ByteOrder.LITTLE_ENDIAN);
+        vlr.position(2).put(user.getBytes(StandardCharsets.US_ASCII));
+        vlr.putChar(18, (char) id).putChar(20, (char) contents.length).position(54).put(contents);
+        int start = las.getInt(96);
+        las.putInt(96, start + vlr.capacity()).putInt(100, las.getInt(100) + 1);
+        byte[] bytes = ByteBuffer.allocate(las.capacity() + vlr.capacity())
+                .put(las.array(), 0, start).put(vlr.array())
+                .put(las.array(), start, las.capacity() - start).array();
+        return Files.write(Files.createTempFile(temp, "points-", ".las"), bytes);
+    }
+
+    private Path appendOpaqueTail(Path input, int size) throws IOException {
+        var las = LasIoTest.bytes(input);
+        int start = las.getInt(96);
+        int stride = las.getChar(105);
+        boolean modern = las.get(25) == 4;
+        int pointCount = modern ? (int) las.getLong(247) : las.getInt(107);
+        las.putChar(105, (char) (stride + size));
+        if (modern && las.getInt(243) != 0) {
+            las.putLong(235, las.getLong(235) + pointCount * size);
+        }
+        var bytes = ByteBuffer.allocate(las.capacity() + pointCount * size).put(las.array(), 0, start);
+        for (int i = 0; i < pointCount; i++) {
+            bytes.put(las.array(), start + i * stride, stride);
+            for (int j = 0; j < size; j++) {
+                bytes.put((byte) (i + j));
+            }
+        }
+        int pointEnd = start + pointCount * stride;
+        bytes.put(las.array(), pointEnd, las.capacity() - pointEnd);
+        return Files.write(Files.createTempFile(temp, "opaque-", ".las"), bytes.array());
+    }
+
+    private static byte[] descriptor(int type, String name) {
+        var descriptor = ByteBuffer.allocate(DESCRIPTOR_BYTES);
+        descriptor.put(2, (byte) type).position(4).put(name.getBytes(StandardCharsets.US_ASCII));
+        return descriptor.array();
+    }
+
+    private static ByteBuffer extraBytes(ByteBuffer las) {
+        int offset = las.getChar(94);
+        ByteBuffer descriptors = null;
+        for (int i = 0; i < las.getInt(100); i++) {
+            int length = las.getChar(offset + 20);
+            if (las.getChar(offset + 18) == 4 && "LASF_Spec".equals(ascii(las, offset + 2, 16))) {
+                assertNull(descriptors, "duplicate Extra Bytes VLR");
+                descriptors = ByteBuffer.wrap(Arrays.copyOfRange(las.array(), offset + 54, offset + 54 + length));
+            }
+            offset += 54 + length;
+        }
+        assertNotNull(descriptors, "missing Extra Bytes VLR");
+        return descriptors;
+    }
+
+    private static String ascii(ByteBuffer bytes, int start, int limit) {
+        int length = 0;
+        while (length < limit && bytes.get(start + length) != 0) {
+            length++;
+        }
+        return new String(bytes.array(), start, length, StandardCharsets.US_ASCII);
+    }
+
+    private static void assertDescriptor(ByteBuffer descriptors, int index, int type, int options, String name) {
+        int offset = index * DESCRIPTOR_BYTES;
+        assertEquals(type, Byte.toUnsignedInt(descriptors.get(offset + 2)));
+        assertEquals(options, Byte.toUnsignedInt(descriptors.get(offset + 3)));
+        if (name != null) {
+            assertEquals(name, ascii(descriptors, offset + 4, 32));
+        }
+    }
+
+    private static void assertHagRecords(ByteBuffer before, ByteBuffer after, double[] heights, int... selected) {
+        int sourceStart = before.getInt(96);
+        int targetStart = after.getInt(96);
+        int sourceStride = before.getChar(105);
+        int targetStride = after.getChar(105);
+        assertEquals(sourceStride + Double.BYTES, targetStride);
+        for (int i = 0; i < selected.length; i++) {
+            int from = sourceStart + selected[i] * sourceStride;
+            int to = targetStart + i * targetStride;
+            assertArrayEquals(Arrays.copyOfRange(before.array(), from, from + sourceStride),
+                    Arrays.copyOfRange(after.array(), to, to + sourceStride));
+            assertEquals(Double.doubleToRawLongBits(heights[i]), after.getLong(to + sourceStride));
+        }
     }
 
     private Path dem(Path input, double nodata, double[]... bands) throws IOException {
@@ -308,14 +588,18 @@ class HagDemTest {
         assertEquals(selected.length, after.getLong(247));
         assertArrayEquals(Arrays.copyOfRange(before.array(), before.getChar(94), sourceStart),
                 Arrays.copyOfRange(after.array(), after.getChar(94), targetStart));
-        assertArrayEquals(Arrays.copyOfRange(before.array(), Math.toIntExact(before.getLong(235)), before.capacity()),
-                Arrays.copyOfRange(after.array(), Math.toIntExact(after.getLong(235)), after.capacity()));
+        assertForwardedEvlrs(before, after);
         for (int i = 0; i < selected.length; i++) {
             int from = sourceStart + selected[i] * stride;
             int to = targetStart + i * stride;
             assertArrayEquals(Arrays.copyOfRange(before.array(), from, from + stride),
                     Arrays.copyOfRange(after.array(), to, to + stride));
         }
+    }
+
+    private static void assertForwardedEvlrs(ByteBuffer before, ByteBuffer after) {
+        assertArrayEquals(Arrays.copyOfRange(before.array(), Math.toIntExact(before.getLong(235)), before.capacity()),
+                Arrays.copyOfRange(after.array(), Math.toIntExact(after.getLong(235)), after.capacity()));
     }
 
     private static void assertCliFailure(Path config, Path metadata, String message) {
@@ -340,9 +624,13 @@ class HagDemTest {
     }
 
     private static String las(Path target) {
+        return las(target, "all");
+    }
+
+    private static String las(Path target, String extraDimensions) {
         return """
-                {"type":"writers.las","filename":%s,"forward":"all","extra_dims":"all"}
-                """.formatted(Pipeline.JSON.toJson(target.toString()));
+                {"type":"writers.las","filename":%s,"forward":"all","extra_dims":%s}
+                """.formatted(Pipeline.JSON.toJson(target.toString()), Pipeline.JSON.toJson(extraDimensions));
     }
 
     private static String config(Path input, String... stages) {

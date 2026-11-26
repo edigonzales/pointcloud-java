@@ -110,11 +110,14 @@ nächstgelegenen Bodenpunkts.
 [`filters.hag_dem`](docs/architecture.md#höhe-über-grund) berechnet aus
 einem vorhandenen DTM die Punktdimension `HeightAboveGround`. Nach dem
 Stadt-DTM oben liest dieses Beispiel erneut die ursprüngliche LAZ,
-wählt Vegetationspunkte über 5 m und schreibt deren Originalrecords.
-Die Metadaten enthalten die Statistik der relativen Höhen.
+wählt Vegetationspunkte über 5 m und hängt mit
+`extra_dims: "HeightAboveGround=double"` die Höhe über Grund an
+deren Originalrecords an. Die Metadaten enthalten die Statistik
+der relativen Höhen.
 
 ```sh
 "$cli" pipeline examples/hag-dem-solothurn-urban.json --laz-workers 4 --metadata build/results/hag-dem-solothurn-urban.json
+pdal info --schema build/results/hag-dem-solothurn-urban.las --readers.las.use_eb_vlr=true
 ```
 
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier

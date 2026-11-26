@@ -1509,3 +1509,44 @@ Die Einfachheitsprüfung belässt die Transformation im vorhandenen
 Filterdurchlauf. Die Stichprobe greift auf ein begrenztes Array zu, die
 Rasterdaten und die abgeleiteten Batchwerte benötigen keine eigenen
 Reader-Worker. Der LAS-Writer behält den bestehenden Recordpfad.
+
+## Höhe über Grund als LAS Extra Bytes
+
+26. November 2026. `writers.las` hängt auf ausdrücklichen Wunsch
+`HeightAboveGround` als Double hinter den vollständigen Originalrecord.
+Der Writer prüft den Extra-Bytes-VLR und die Feldgrenzen vor dem Anlegen
+der temporären LAS. Er übernimmt bestehende Deskriptoren in ihrer
+Reihenfolge und beschreibt undokumentierte Restbytes durch Typ 0.
+Die Veröffentlichung und die Übernahme der übrigen Metadaten nutzen
+den bestehenden LAS-Writer.
+
+- `tools/check-hag-dem.py <pdal> --las-extra-bytes` endete auf dem
+  M1 mit Exit 0. Die vollständige Solothurner Stadt-LAZ enthält
+  11'963'266 Punkte. Beide Java-Läufe wählten 3'512'369 Punkte aus
+  und schrieben bytegleiche LAS-Dateien und JSON-Metadaten.
+  Bei PDAL 2.10.2 waren alle 34 Originalbytes je Record gleich
+  und in Dateireihenfolge. Die maximal gemessene HAG-Höhendifferenz
+  betrug 0 m. Das Ergebnis hat LAS-Version 1.2, Punktformat 3
+  und eine Recordlänge von 42 Bytes.
+- PDAL erkannte den Acht-Byte-HAG-Wert der Solothurn-Datei mit
+  `readers.las.use_eb_vlr=true`. Für die LAS-1.4-Probe
+  im Punktformat 8 bestätigte der Standard-Reader die bestehende
+  UInt16-Dimension `Confidence` und die neue Double-Dimension.
+  Bei den drei Punkten in EPSG:32632 stimmten alle 40 Originalbytes
+  und die HAG-Werte mit der Referenz überein. Ein LV95-Vorversuch
+  mit von PDAL erzeugtem WKT scheiterte bereits an der vorhandenen
+  CRS-Prüfung des HAG-Filters.
+- Die unabhängige Produktsuite mit PDAL 2.10.2 verglich 496'586
+  vollständige LAS-Records ohne Unterschied. SIGTERM ergab Exit 143
+  nach 0.18 s ohne temporäre oder veröffentlichte Ausgabe.
+- `./gradlew --offline clean check installDist` endete in 7 s
+  mit Exit 0. Alle 179 JUnit-Tests bestanden, darunter 30 HAG-Fälle.
+  Keine Fehler, Fehlschläge oder übersprungenen Tests. Die Summe
+  der XML-Suitezeiten beträgt 3.816 s.
+- Das dokumentierte Stadtbeispiel erzeugte 254'465 LAS-Records
+  mit je 42 Bytes. Die Ausgabe umfasst 10'688'285 Bytes und PDAL
+  erkannte den Double-Deskriptor.
+
+Die Einfachheitsprüfung belässt das HAG-Attribut im vorhandenen
+Batch. Die Erweiterung des VLR erfolgt einmal pro Datei. Der Writer
+verwendet für die zusätzlichen acht Bytes denselben Puffer je Punkt.
