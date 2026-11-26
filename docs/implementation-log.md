@@ -1550,3 +1550,51 @@ den bestehenden LAS-Writer.
 Die Einfachheitsprüfung belässt das HAG-Attribut im vorhandenen
 Batch. Die Erweiterung des VLR erfolgt einmal pro Datei. Der Writer
 verwendet für die zusätzlichen acht Bytes denselben Puffer je Punkt.
+
+## PDAL-WKT für LV95 in `filters.hag_dem`
+
+26. November 2026. Auf Basis von `79a5908` wies der HAG-Filter
+eine von PDAL 2.10.2 geschriebene LAS 1.4 mit LV95-WKT gegen
+das amtliche Stadt-DTM ab. GeoTools 35.1 las die Breite und
+Länge des Projektionszentrums mit fünf beziehungsweise vier ULP
+Abstand zur EPSG-Definition. Die Korrektur prüft beide LV95-CRS
+einmal beim Öffnen des Rasters. Die Toleranz von acht ULP gilt nur
+für die beiden Winkel. Basis- und Projektions-CRS, deklarierte
+EPSG-Kennungen und explizite Datumtransformationen werden geprüft.
+Die Rasterabfrage verwendet die ursprünglichen Punktkoordinaten.
+[CRS-Vertrag](architecture.md#höhe-über-grund)
+
+- `./gradlew --offline clean check installDist` bestand auf dem M1
+  mit Temurin 25.0.3+9 in 4 s. Der native Bericht unter
+  `build/test-results/test/` enthält 194 erfolgreiche Tests bei
+  null Fehlern, Fehlschlägen und übersprungenen Tests. Davon
+  prüfen 45 Fälle HAG. Die XML-Suitezeiten summieren sich auf
+  2.275 s. Die direkten Regressionen prüfen den Original-WKT,
+  gültige und falsche Datumtransformationen, die Acht- und
+  Neun-ULP-Grenzen, geänderte CRS-Parameter und LN02 gegen LHN95.
+- `python3 tools/check-hag-dem.py <pdal> --lv95-wkt` bestand mit
+  PDAL 2.10.2 und GDAL 3.13.3 gegen das amtliche Solothurner
+  Stadt-DTM mit 252'004 Zellen. Java las und schrieb drei Punkte.
+  Der Java-CLI-Aufruf dauerte 1.33 s. Die drei 40-Byte-Präfixe
+  stimmen mit der Quelle und der PDAL-Referenz byteweise und in
+  Dateireihenfolge überein. Die Recordlänge stieg auf 48 Bytes,
+  die Dateigrösse von 2'271 auf 2'487 Bytes. Die maximale
+  Float64-HAG-Abweichung bei einer Toleranz von 1e-9 m betrug
+  0 m. PDAL las `Confidence` als UInt16 und HAG als Float64
+  mit den Standardeinstellungen zurück.
+- `python3 tools/check-hag-dem.py <pdal> --las-extra-bytes` bestand
+  für die vollständige Solothurner Stadt-LAZ. Java mit einem und
+  vier LAZ-Workern las je 11'963'266 Punkte und schrieb je
+  3'512'369 Punkte in bytegleichen LAS-Dateien und Metadaten.
+  Alle verglichenen 34-Byte-Präfixe waren gleich, die maximale
+  HAG-Abweichung betrug 0 m. Die GeoKey-Eingabe und der PDAL-Import
+  der 42-Byte-Records mit `use_eb_vlr: true` sind damit geprüft.
+- `python3 tools/check-real-data.py <pdal>` bestand mit PDAL 2.10.2.
+  Die unabhängige Produktsuite verglich insgesamt 496'586
+  vollständige LAS-Records ohne Abweichung. SIGTERM ergab Exit 143
+  nach 0.17 s ohne temporäre oder veröffentlichte Ausgabe.
+
+Die Einfachheitsprüfung belässt den Vergleich bei der vorhandenen
+CRS-Prüfung in `HagDem`. Die Stage verwendet den bestehenden
+GeoTools-Parser und die normalisierten Projektionsparameter. Die
+Pflichtprüfungen und beide HAG-Roundtrips sind abgeschlossen.

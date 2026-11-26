@@ -1,6 +1,10 @@
 package pointcloud;
 
+import org.geotools.api.parameter.ParameterValue;
 import org.geotools.api.referencing.FactoryException;
+import org.geotools.api.referencing.IdentifiedObject;
+import org.geotools.api.referencing.crs.CoordinateReferenceSystem;
+import org.geotools.api.referencing.crs.ProjectedCRS;
 import org.geotools.api.referencing.crs.VerticalCRS;
 import org.geotools.api.referencing.datum.PixelInCell;
 import org.geotools.coverage.grid.io.AbstractGridFormat;
@@ -9,6 +13,7 @@ import org.geotools.coverage.grid.io.imageio.geotiff.GeoTiffConstants;
 import org.geotools.coverage.util.CoverageUtilities;
 import org.geotools.gce.geotiff.GeoTiffReader;
 import org.geotools.referencing.CRS;
+import org.geotools.referencing.datum.DefaultGeodeticDatum;
 
 import javax.imageio.stream.FileImageInputStream;
 import java.awt.geom.AffineTransform;
@@ -22,6 +27,8 @@ import java.nio.file.Path;
 /** One band of a local north-up GeoTIFF for repeated sampling. */
 final class HagDem {
     private static final int MAX_CELLS = 4_000_000;
+    private static final String LV95_EPSG = "2056";
+    private static final int LV95_CENTER_ANGLE_ULPS = 8;
 
     private final double[] elevations;
     private final int width;
@@ -124,7 +131,7 @@ final class HagDem {
             throw new IOException("Missing GeoTIFF CRS or unsupported georeferencing");
         }
         var lasCrs = GeoTiffOutput.samplingCrs(header, source);
-        if (!CRS.equalsIgnoreMetadata(CRS.getHorizontalCRS(lasCrs), demHorizontal)) {
+        if (!sameHorizontalCrs(CRS.getHorizontalCRS(lasCrs), demHorizontal)) {
             throw new IOException("DEM horizontal CRS differs from LAS horizontal CRS");
         }
         var lasVertical = CRS.getVerticalCRS(lasCrs);
@@ -141,6 +148,93 @@ final class HagDem {
         if (lasVertical != null && demVertical != null && !CRS.equalsIgnoreMetadata(lasVertical, demVertical)) {
             throw new IOException("DEM vertical CRS differs from LAS vertical CRS");
         }
+    }
+
+    private static boolean sameHorizontalCrs(CoordinateReferenceSystem las, CoordinateReferenceSystem dem)
+            throws IOException {
+        if (las instanceof ProjectedCRS lasProjected && dem instanceof ProjectedCRS demProjected
+                && declaresLv95(lasProjected) && declaresLv95(demProjected)) {
+            try {
+                var canonical = (ProjectedCRS) CRS.decode("EPSG:" + LV95_EPSG, true);
+                return matchesLv95(lasProjected, canonical) && matchesLv95(demProjected, canonical);
+            } catch (FactoryException e) {
+                throw new IOException("Cannot resolve canonical LV95 CRS", e);
+            }
+        }
+        return CRS.equalsIgnoreMetadata(las, dem);
+    }
+
+    private static boolean declaresLv95(ProjectedCRS crs) {
+        return crs.getIdentifiers().stream().anyMatch(id ->
+                "EPSG".equalsIgnoreCase(id.getCodeSpace()) && LV95_EPSG.equals(id.getCode()));
+    }
+
+    private static boolean hasConsistentEpsg(IdentifiedObject object, String code) {
+        return object.getIdentifiers().stream().noneMatch(id ->
+                "EPSG".equalsIgnoreCase(id.getCodeSpace()) && !code.equals(id.getCode()));
+    }
+
+    private static boolean matchesLv95(ProjectedCRS crs, ProjectedCRS canonical) {
+        var base = crs.getBaseCRS();
+        var canonicalBase = canonical.getBaseCRS();
+        if (!hasConsistentEpsg(crs, LV95_EPSG) || !hasConsistentEpsg(base, "4150")
+                || !hasConsistentEpsg(base.getDatum(), "6150")
+                || !CRS.equalsIgnoreMetadata(crs.getCoordinateSystem(), canonical.getCoordinateSystem())
+                || !CRS.equalsIgnoreMetadata(base, canonicalBase)
+                || !(base.getDatum() instanceof DefaultGeodeticDatum datum)
+                || !(canonicalBase.getDatum() instanceof DefaultGeodeticDatum canonicalDatum)
+                || !matchesDatumShifts(datum, canonicalDatum)) {
+            return false;
+        }
+
+        var actual = crs.getConversionFromBase().getParameterValues();
+        var expected = canonical.getConversionFromBase().getParameterValues();
+        // GeoTools maps the PDAL WKT projection name to the same normalized provider.
+        var actualMethod = actual.getDescriptor().getName();
+        var expectedMethod = expected.getDescriptor().getName();
+        if (!actualMethod.equals(expectedMethod) || actual.values().size() != expected.values().size()) {
+            return false;
+        }
+        for (var value : expected.values()) {
+            if (!(value instanceof ParameterValue<?> parameter)) {
+                return false;
+            }
+            String name = parameter.getDescriptor().getName().getCode();
+            var actualParameter = actual.parameter(name);
+            var unit = parameter.getUnit();
+            double actualValue = unit == null ? actualParameter.doubleValue() : actualParameter.doubleValue(unit);
+            double expectedValue = parameter.doubleValue();
+            // PDAL's WKT decimal serialization rounds these two angles by a few ULPs.
+            double tolerance = switch (name) {
+                case "latitude_of_center", "longitude_of_center" -> LV95_CENTER_ANGLE_ULPS * Math.ulp(expectedValue);
+                default -> 0;
+            };
+            if (!(Math.abs(actualValue - expectedValue) <= tolerance)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean matchesDatumShifts(DefaultGeodeticDatum datum, DefaultGeodeticDatum canonical) {
+        // The base CRS comparison ignores optional Bursa-Wolf parameters such as WKT1 TOWGS84.
+        var canonicalShifts = canonical.getBursaWolfParameters();
+        for (var shift : datum.getBursaWolfParameters()) {
+            boolean matches = false;
+            for (var expected : canonicalShifts) {
+                if (CRS.equalsIgnoreMetadata(shift.targetDatum, expected.targetDatum)
+                        && shift.dx == expected.dx && shift.dy == expected.dy && shift.dz == expected.dz
+                        && shift.ex == expected.ex && shift.ey == expected.ey && shift.ez == expected.ez
+                        && shift.ppm == expected.ppm) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (!matches) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static double[] copySamples(RenderedImage image, int width, int height, double noData) throws IOException {
