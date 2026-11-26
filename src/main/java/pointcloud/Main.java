@@ -296,7 +296,7 @@ public final class Main {
     }
 
     private static void checkMetadataAliases(Path metadata, Pipeline pipeline, Path config) throws IOException {
-        for (Path path : new Path[]{pipeline.input(), pipeline.output(), config}) {
+        for (Path path : new Path[]{pipeline.input(), pipeline.output(), config, pipeline.demInput()}) {
             if (path != null && (metadata.normalize().equals(path.toAbsolutePath().normalize())
                     || Files.exists(metadata) && Files.exists(path) && Files.isSameFile(metadata, path))) {
                 throw new IOException("Metadata destination aliases a pipeline file: " + metadata);

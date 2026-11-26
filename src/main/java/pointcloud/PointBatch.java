@@ -9,6 +9,8 @@ public final class PointBatch {
     final LasHeader header;
     final ByteBuffer records;
     int size;
+    // Bound by the pipeline only while the consumer processes this batch.
+    double[] heightAboveGround;
 
     PointBatch(LasHeader header, int capacity) {
         this.header = header;

@@ -9,11 +9,13 @@ import org.eclipse.imagen.NotAColorSpace;
 import org.geotools.api.referencing.FactoryException;
 import org.geotools.api.referencing.crs.CoordinateReferenceSystem;
 import org.geotools.api.referencing.crs.ProjectedCRS;
+import org.geotools.api.referencing.crs.VerticalCRS;
 import org.geotools.coverage.grid.io.imageio.geotiff.CRS2GeoTiffMetadataAdapter;
 import org.geotools.coverage.grid.io.imageio.geotiff.GeoTiffConstants;
 import org.geotools.coverage.grid.io.imageio.geotiff.GeoTiffIIOMetadataEncoder;
 import org.geotools.gce.geotiff.GeoTiffWriter;
 import org.geotools.referencing.CRS;
+import org.geotools.referencing.crs.DefaultCompoundCRS;
 
 import javax.imageio.IIOImage;
 import javax.imageio.ImageTypeSpecifier;
@@ -42,6 +44,7 @@ import java.util.List;
 final class GeoTiffOutput implements AutoCloseable {
     static final double NODATA = -9999;
     static final int MAX_CELLS = 1_000_000;
+    static final int VERTICAL_TYPE_KEY = 4096;
     private static final int COORDINATE_SYSTEM_WKT = 2112;
     private static final int GEO_KEY_DIRECTORY = 34735;
     private static final int GEO_DOUBLE_PARAMS = 34736;
@@ -64,7 +67,7 @@ final class GeoTiffOutput implements AutoCloseable {
         this.target = target.toAbsolutePath();
         this.overwrite = overwrite;
         checkTarget();
-        crs = resolveCrs(header, source);
+        crs = resolveCrs(header, source, false);
     }
 
     boolean isProjected() {
@@ -127,7 +130,13 @@ final class GeoTiffOutput implements AutoCloseable {
         }
     }
 
-    private static CoordinateReferenceSystem resolveCrs(LasHeader header, FileChannel source) throws IOException {
+    static CoordinateReferenceSystem samplingCrs(LasHeader header, FileChannel source) throws IOException {
+        return resolveCrs(header, source, true);
+    }
+
+    private static CoordinateReferenceSystem resolveCrs(LasHeader header, FileChannel source, boolean includeVertical)
+            throws IOException {
+        String usage = includeVertical ? "HAG DEM" : "GeoTIFF output";
         var records = new LasHeader.VariableRecord[2];
         long[] auxiliaryLengths = {-1, -1};
         LasHeader.RecordVisitor findProjection = record -> {
@@ -166,21 +175,51 @@ final class GeoTiffOutput implements AutoCloseable {
                 crs = CRS.parseWKT(new String(bytes, 0, end, StandardCharsets.UTF_8));
             } else if (records[1] != null) {
                 var directory = geoKeyDirectory(source, records[1]);
-                if (isDirectLv95(directory, auxiliaryLengths[0], auxiliaryLengths[1])) {
+                if (!includeVertical && isDirectLv95(directory, auxiliaryLengths[0], auxiliaryLengths[1])) {
                     return null;
                 }
                 crs = CRS.decode("EPSG:" + epsgCode(directory), true);
+                if (includeVertical) {
+                    int vertical = verticalCode(directory);
+                    if (vertical != 0) {
+                        crs = new DefaultCompoundCRS("LAS CRS", crs, verticalCrs(vertical));
+                    }
+                }
             } else {
-                throw new IOException("Missing LAS CRS for GeoTIFF output");
+                throw new IOException("Missing LAS CRS for " + usage);
             }
             var horizontal = CRS.getHorizontalCRS(crs);
             if (horizontal == null) {
-                throw new IOException("LAS CRS has no horizontal component for GeoTIFF output");
+                throw new IOException("LAS CRS has no horizontal component for " + usage);
             }
-            return horizontal;
+            return includeVertical ? crs : horizontal;
         } catch (FactoryException e) {
-            throw new IOException("Cannot resolve LAS CRS for GeoTIFF output: " + e.getMessage(), e);
+            throw new IOException("Cannot resolve LAS CRS for " + usage + ": " + e.getMessage(), e);
         }
+    }
+
+    private static int verticalCode(ByteBuffer directory) throws IOException {
+        int result = 0;
+        boolean found = false;
+        for (int i = 0; i < directory.getChar(6); i++) {
+            int offset = 8 + i * 8;
+            if (directory.getChar(offset) == VERTICAL_TYPE_KEY) {
+                if (found || directory.getChar(offset + 2) != 0 || directory.getChar(offset + 4) != 1) {
+                    throw new IOException("Invalid LAS vertical CRS GeoKey");
+                }
+                found = true;
+                result = directory.getChar(offset + 6);
+            }
+        }
+        return result;
+    }
+
+    static VerticalCRS verticalCrs(int code) throws FactoryException {
+        var crs = CRS.decode("EPSG:" + code, true);
+        if (crs instanceof VerticalCRS vertical) {
+            return vertical;
+        }
+        throw new FactoryException("EPSG:" + code + " is not a vertical CRS");
     }
 
     private static int projectionSize(LasHeader.VariableRecord record) throws IOException {

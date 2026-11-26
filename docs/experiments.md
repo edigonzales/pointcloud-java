@@ -1815,3 +1815,70 @@ python3 experiments/check-tin.py "$pdal" \
   --mode both --complete --extended --allow-mesh-differences --include-pdal \
   --name delaunator --csv "$work/delaunator.csv"
 ```
+
+## Höhe über Grund gegen PDAL 2.10.2
+
+Apple M1 mit 16 GiB, macOS 15.8.1, Temurin 25.0.3+9 mit `-Xmx512m`,
+PDAL 2.10.2 und GDAL 3.13.3. Beide Engines lesen je Gebiet dieselbe
+vollständige LAZ-Kachel und dasselbe vorbereitete, unkomprimierte
+502 × 502 GeoTIFF. Die Raster stammen aus der kantonalen Befliegung
+2019. Die acht rotierenden Runden messen frische Prozesse bei warmen
+Dateicaches mit 1 und 4 LAZ-Readern, Float64-Höhenberechnung,
+Statistik über `Z,HeightAboveGround`, JSON-Metadaten und `writers.null`.
+`zero_ground: false` erzwingt eine Rasterabfrage für jeden Punkt.
+PDAL erhält eine explizite negative Clamp-Untergrenze.
+
+Fünf weitere rotierende Runden messen Java mit derselben Z-Statistik
+mit und ohne HAG. Das Einlesen des Rasters mitsamt CRS-Validierung
+und GeoTools-Initialisierung wird auf drei separaten frischen Läufen
+je Kachel per JFR gemessen. Diese Durchläufe sind ausserhalb des
+Wandzeitvergleichs. Die DTM-Erzeugung ist Teil des separaten
+Solothurn-Beispiels.
+
+### Vollständige HAG-Pipeline
+
+| Gebiet | Engine | Reader | Wandzeit Median / Min–Max (s) | CPU Median (s) | Spitzen-RSS Max (MiB) | Mio. Punkte/s Median |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Stadt | Java | 1 | 4.623 / 4.376–4.905 | 5.92 | 216 | 2.59 |
+| Stadt | PDAL 2.10.2 | 1 | 4.042 / 3.725–4.316 | 7.45 | 87 | 2.96 |
+| Stadt | Java | 4 | 2.041 / 1.813–2.217 | 7.62 | 245 | 5.86 |
+| Stadt | PDAL 2.10.2 | 4 | 3.595 / 3.443–4.089 | 7.40 | 125 | 3.33 |
+| Wald | Java | 1 | 5.743 / 5.566–6.574 | 7.21 | 252 | 2.54 |
+| Wald | PDAL 2.10.2 | 1 | 5.211 / 4.943–5.587 | 9.27 | 87 | 2.80 |
+| Wald | Java | 4 | 2.243 / 2.138–3.070 | 9.17 | 266 | 6.50 |
+| Wald | PDAL 2.10.2 | 4 | 4.611 / 4.368–5.133 | 9.84 | 134 | 3.16 |
+
+Mit vier Readern braucht Java im Wandzeitmedian 43 % weniger Zeit
+in der Stadt und 51 % weniger im Wald. Mit einem Reader ist PDAL
+in beiden Gebieten schneller. Die Java-Prozesse belegen in allen
+Konfigurationen mehr Spitzen-RSS. Die Abnahme verglich dazu in der
+Stadt 3'512'369 und im Wald 10'262'303 vollständige, unveränderte
+LAS-Records mit HAG über 5 m. Die Statistik für Z und HAG lag
+innerhalb der bestehenden Produkttoleranz.
+
+### Zusatzaufwand in Java
+
+| Gebiet | Reader | Nur Z-Statistik (s) | HAG und gleiche Z-Statistik (s) | Gepaarter Mehrbedarf (s) |
+| --- | ---: | ---: | ---: | ---: |
+| Stadt | 1 | 3.673 | 4.426 | 0.690 |
+| Stadt | 4 | 1.219 | 1.856 | 0.629 |
+| Wald | 1 | 4.876 | 5.543 | 0.675 |
+| Wald | 4 | 1.524 | 2.134 | 0.623 |
+
+Das Laden des DEMs einschliesslich der CRS-Prüfung und
+GeoTools-Initialisierung dauerte laut `jdk.MethodTrace` im Median
+0.516 s in der Stadt und 0.518 s im Wald. Die Kontrollmessung
+vergleicht dieselbe Z-Statistik mit und ohne HAG und umfasst den
+Rasteraufbau und alle Punktabfragen. Die JFR-Zeit stammt aus
+separaten Prozessen mit eigener JIT-Aufwärmung.
+[104 Einzelmessungen](measurements/hag-dem-pdal.csv) · [Sechs JFR-Ladezeiten](measurements/hag-dem-load.csv)
+
+### Reproduktion
+
+```sh
+./gradlew installDist
+./gradlew downloadTestData
+./gradlew downloadTestData -Ptile=2019-urban
+python3 tools/check-hag-dem.py "$pdal" \
+  --benchmark-csv .cache/hag-dem/benchmark.csv --setup-csv .cache/hag-dem/setup.csv
+```
