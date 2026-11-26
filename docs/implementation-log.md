@@ -1598,3 +1598,61 @@ Die Einfachheitsprüfung belässt den Vergleich bei der vorhandenen
 CRS-Prüfung in `HagDem`. Die Stage verwendet den bestehenden
 GeoTools-Parser und die normalisierten Projektionsparameter. Die
 Pflichtprüfungen und beide HAG-Roundtrips sind abgeschlossen.
+
+## Kronenhöhenraster und Einzelbaumdetektion
+
+26. November 2026. Basis `1e74f8f`. `writers.raster` verarbeitet
+nach `filters.hag_dem` auch `HeightAboveGround`. Der bestehende
+Rasterwriter übernimmt die abgeleitete Dimension aus dem Batch.
+Das Solothurner CHM-Beispiel schreibt Höhenmaximum und Punktzahl
+pro 0,5-m-Zelle. Im optionalen Experimentprojekt sammelt derselbe
+LAZ-Durchlauf Zellgewinner nach absoluter Höhe und Höhe über Grund.
+Ein gemeinsamer Rasterdetektor prüft acht Suchvarianten.
+
+- `./gradlew --offline clean check installDist` bestand in 5 s
+  auf Apple M1, macOS 15.8.1, Temurin 25.0.3+9. Die 196
+  Produkttests unter `build/test-results/test/` bestanden mit
+  null Fehlern, Fehlschlägen und übersprungenen Tests. Die
+  Suitezeiten summierten sich auf 2,558 s. Der separate kombinierte
+  Lauf mit `-Pexperiments` bestand in 7 s. Die sieben direkten
+  Detektortests unter `experiments/build/test-results/test/`
+  summierten sich auf 0,259 s, ebenfalls ohne Fehler, Fehlschläge
+  oder übersprungene Tests.
+- Die CLI-Beispiele `dtm-solothurn-forest-complete.json` und
+  `chm-solothurn-forest.json` liefen mit vier LAZ-Workern
+  erfolgreich. Das DTM lieferte 40'000 gültige Zellen.
+  Die CHM-Pipeline las 14'566'627 LAZ-Punkte und rasterte
+  1'584'291 ausgewählte Vegetationspunkte. Der serielle
+  Kontrolllauf dauerte 5,93 s und schrieb dieselben 2'560'944
+  GeoTIFF-Bytes und dieselben Metadaten. PDAL 2.10.2 bestätigte
+  Maximum und Punktzahl für sämtliche 160'000 Zellen im
+  EPSG:2056-Gitter einschliesslich 26'695 NoData-Zellen.
+- `python3 tools/check-real-data.py <pdal>` bestand mit
+  PDAL 2.10.2. Alle 496'586 verglichenen LAS-Records stimmten
+  überein. SIGTERM ergab Exit 143 nach 0,17 s, ohne temporäre
+  oder veröffentlichte Ausgabe.
+- `experiments/check-treetops.py <pdal> --generate` und
+  `--verify` bestanden. PDAL bestätigte 466'560 Float64-Zellen
+  mit identischen NoData-Masken. `lidR` 4.3.3 wich bei neun
+  Gleichstandszellen ab. Der ausgewählte Kandidat `dsm-r3`
+  stimmte auf allen fünf Flächen überein. Die acht seriellen
+  und parallelen CSV-Paare waren bytegleich. Der geteilte
+  Lauf reproduzierte die Originalkoordinaten und HAG-Werte.
+- `experiments/check-treetops.py <pdal> --benchmark dsm-r3`
+  bestand. Acht Prozessläufe je Workerzahl lasen je 14'566'627
+  Punkte und schrieben 2'498 bytegleiche Spitzen. Mit vier
+  Workern betrugen die Mediane 2,294 s Wandzeit, 9,330 s
+  CPU-Zeit, 292,0 MiB Spitzen-RSS und 23,8 ms Detektionszeit
+  inklusive Suchfensteraufbau. Die Detektion erfüllte das
+  Zeitbudget mit 1,02 % der Wandzeit.
+
+Der Kandidat bleibt wegen der fachlichen Abnahme im
+Experimentmodul. Auf den drei vorab visuell annotierten
+Prüfflächen wurden 128 von 185 Referenzspitzen getroffen.
+63,7 % Precision, 69,2 % Recall und F1 von 0,595 auf der
+steilen Fläche liegen unter den Freigabeschwellen.
+Die Einfachheitsprüfung belässt HAG in der bestehenden
+Rasterpipeline und die lokalen Maxima in einem gemeinsamen
+Detektor mit primitiven Arrays. Die Realdaten- und
+Auswertungsbefehle sind im Experimentbericht dokumentiert.
+[Versuch und Prüfergebnisse](experiments.md#einzelbaumdetektion-im-solothurner-wald)

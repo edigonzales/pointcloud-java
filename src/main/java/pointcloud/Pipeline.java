@@ -196,6 +196,9 @@ public final class Pipeline {
         if (appendHeight && hag == null) {
             throw atStage(position, type, "HeightAboveGround export requires a preceding " + HAG_FILTER + " stage");
         }
+        if (rasterGrid != null && rasterGrid.dimension() == Dimension.HeightAboveGround && hag == null) {
+            throw atStage(position, type, "HeightAboveGround requires a preceding " + HAG_FILTER + " stage");
+        }
         appendHeightAboveGround = appendHeight;
     }
 
@@ -668,7 +671,8 @@ public final class Pipeline {
         var dimension = switch (stage.has("dimension") ? string(stage, "dimension") : "Z") {
             case "Z" -> Dimension.Z;
             case "Intensity" -> Dimension.Intensity;
-            default -> throw new IllegalArgumentException("dimension must be 'Z' or 'Intensity'");
+            case "HeightAboveGround" -> Dimension.HeightAboveGround;
+            default -> throw new IllegalArgumentException("dimension must be 'Z', 'Intensity' or 'HeightAboveGround'");
         };
         if (stage.has("data_type")) {
             exact(stage, "data_type", "double");

@@ -1882,3 +1882,113 @@ separaten Prozessen mit eigener JIT-Aufwärmung.
 python3 tools/check-hag-dem.py "$pdal" \
   --benchmark-csv .cache/hag-dem/benchmark.csv --setup-csv .cache/hag-dem/setup.csv
 ```
+
+## Einzelbaumdetektion im Solothurner Wald
+
+Ein Durchlauf durch die LAZ sammelt die beiden Zellgewinner nach
+Höhe über Grund (CHM) und absolutem Z (Vegetations-DSM). Verwendet
+werden Vegetationsklassen 3–5, `Withheld == 0` und HAG ab 5 m.
+Die Variante gibt XYZ und HAG am selben Originalrücklauf aus.
+Wir verglichen auf einem 0,5-m-Gitter feste Kreisradien von 2, 3
+und 4 m und einen höhenabhängigen Radius `clamp(0.12 × HAG, 1.5, 4)`.
+Gleich hohe Zellen im Suchkreis erhalten Nordwest-Vorrang.
+Der 4-m-Halo liegt ausserhalb des halboffenen Ausgabekerns.
+[Studie zum Hangeffekt](https://doi.org/10.1016/j.isprsjprs.2015.02.013)
+
+### Fachliche Abnahme
+
+Die [visuellen Referenzen](../experiments/treetop-reference/README.md)
+standen vor der ersten Detektion fest. Die Eins-zu-eins-Zuordnung
+maximiert bei höchstens 2 m Abstand zuerst die Trefferzahl und
+minimiert danach die Summe der XY-Abstände. CHM und DSM mit 3 m
+Radius erreichten auf den Kalibrierflächen praktisch dasselbe
+mittlere F1. Die vorab definierte Regel wählte den schnelleren
+festen Kandidaten `dsm-r3` vor dem Öffnen der Prüfergebnisse.
+Die Detektorzeiten für diese Stichentscheidung lagen bei rund
+1,12 ms (DSM) und 1,16 ms (CHM).
+
+| Radius | CHM, mittleres Kalibrier-F1 | DSM, mittleres Kalibrier-F1 |
+|---|---:|---:|
+| 2 m | 0,548 | 0,539 |
+| 3 m | 0,645 | **0,646** |
+| 4 m | 0,623 | 0,596 |
+| Höhenabhängig | 0,472 | 0,461 |
+
+| Prüffläche | Referenzen | Detektiert | Zugeordnet | Precision | Recall | F1 | Ø XY-Fehler | HAG-MAE | Ausgeschlossen |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Wald, 8° mediane Neigung | 52 | 76 | 44 | 57,9 % | 84,6 % | 0,688 | 0,78 m | 0,46 m | 954,3 m² |
+| Wald, 39° mediane Neigung | 99 | 86 | 55 | 64,0 % | 55,6 % | 0,595 | 0,80 m | 0,36 m | 344,5 m² |
+| Höhenkachel, Wald und Offenland | 34 | 39 | 29 | 74,4 % | 85,3 % | 0,795 | 0,28 m | 0,06 m | 160,5 m² |
+| Gesamt | 185 | 201 | 128 | **63,7 %** | **69,2 %** | **0,663** | | | |
+
+Der Detektor bleibt im Experimentmodul. Die Freigabe verlangte
+insgesamt je 80 % Precision und Recall sowie F1 ≥ 0,75 je Fläche.
+Im flacheren Wald blieben 32 Detektionen ohne Zuordnung.
+Die Karte zeigt mehrere davon auf plausiblen Kronen, die in
+der visuellen Referenz fehlen können. Im steilen Wald blieben
+44 Referenzspitzen ohne Treffer. Bei allen 44 lag im 3-m-Kreis
+der Referenzzelle ein höheres absolutes Z. Bei 20 davon hatte
+der höchste Nachbar eine geringere Höhe über Grund als der
+Zellgewinner der Referenzzelle. Ob beide Zellen zur selben
+Krone gehören, ist aus dem Höhenvergleich allein offen.
+Diese Fälle eignen sich für einen Vergleich mit lokaler
+Prominenz und einem höhenabhängigen Fenster mit grösserem
+Mindestradius. Grau hinterlegte Bereiche in der Karte waren
+von der Zuordnung ausgeschlossen.
+[Prüfkarte](measurements/treetops-holdout.jpg) · [Qualitätsdaten](measurements/treetops-quality.json)
+
+### Technische Abnahme
+
+PDAL 2.10.2 und GDAL 3.13.3 lieferten auf denselben Gittern
+466'560 identische Float64-Zellwerte, davon 131'578 NoData.
+`lidR` 4.3.3 bestätigte auf den fünf Rastern alle Maxima mit
+eindeutigem Ergebnis über 30 Vergleiche. Neun Ergebniszellen
+unterschieden sich bei Gleichständen. Für `dsm-r3` waren alle
+fünf Resultate identisch. Auf `cal-flat` schrieben Java mit
+einem und vier Readern acht bytegleiche CSV-Paare. Eine Teilung
+des Kerns in West und Ost lieferte die gleichen XYZ/HAG-Zeilen.
+Die IDs beginnen pro CSV bei 1.
+
+### Laufzeit des gewählten Kandidaten
+
+Der 480 × 480 m grosse Kern umfasst bei 0,5 m Auflösung
+921'600 Zellen und 30'976 zusätzliche Halozellen. Von den
+14'566'627 LAZ-Punkten wurden 9'796'048 in das erweiterte
+Gitter übernommen. Jeder Lauf schrieb dieselben 2'498
+Baumspitzen bytegleich. Gemessen auf Apple M1, macOS 15.8.1,
+Temurin 25.0.3+9 und `-Xmx512m`, mit warmem Dateicache und
+je acht rotierenden Läufen in frischen Prozessen.
+
+| LAZ-Worker | Wandzeit, Median (Min–Max) | CPU, Median | Spitzen-RSS, Median / Max | DEM, Median | Dekodieren und Raster, Median | Detektor inkl. Suchfensteraufbau, Median |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 5,697 s (5,651–6,020 s) | 7,255 s | 274,9 / 279,1 MiB | 0,556 s | 4,973 s | 21,6 ms |
+| 4 | 2,294 s (2,184–3,699 s) | 9,330 s | 292,0 / 300,5 MiB | 0,566 s | 1,596 s | 23,8 ms |
+
+Mit vier Workern entsprachen 23,8 ms im Median 1,02 % der
+Wandzeit. Die Laufzeitgrenzen von 0,5 s und 20 % sind erfüllt.
+[16 Einzelmessungen](measurements/treetops-runtime.csv)
+
+### Reproduktion
+
+Das optionale Gradle-Projekt nutzt die Produkt-CLI-Abhängigkeiten.
+Für den Referenzlauf braucht es PDAL 2.10.2 mit GDAL, R mit
+`lidR` und `terra` in `.cache/treetops/r-library` sowie Python mit
+NumPy und SciPy für die Zuordnung. Die Vergleiche liefen mit
+R 4.5.3, `lidR` 4.3.3, `terra` 1.9.60, NumPy 2.0.2 und SciPy 1.13.1.
+Die Realdaten und das Wald-DEM liegen an den Pfaden aus der
+[HAG-Abnahme](#höhe-über-grund-gegen-pdal-2102).
+
+```sh
+./gradlew downloadTestData
+./gradlew downloadTestData -Ptile=2019-height
+./gradlew -Pexperiments :experiments:test installDist
+mkdir -p .cache/treetops/r-library
+Rscript --vanilla -e 'install.packages(c("lidR", "terra"), lib=".cache/treetops/r-library", repos="https://cloud.r-project.org")'
+python3 experiments/check-treetops.py "$pdal" --generate
+python3 experiments/score-treetops.py experiments/treetop-reference \
+  .cache/treetops/comparison calibrate > .cache/treetops/nomination.json
+python3 experiments/score-treetops.py experiments/treetop-reference \
+  .cache/treetops/comparison evaluate .cache/treetops/nomination.json
+python3 experiments/check-treetops.py "$pdal" --verify
+python3 experiments/check-treetops.py "$pdal" --benchmark dsm-r3
+```
