@@ -201,8 +201,13 @@ public final class Pipeline {
             if (hag == null) {
                 throw atStage(position, type, "HeightAboveGround requires a preceding " + HAG_FILTER + " stage");
             }
-            if (rasterGrid.heightThresholds().length > 0 && Double.isFinite(hag.missing())) {
-                throw atStage(position, type, "height_thresholds cannot be used with nodata_hag");
+            if (Double.isFinite(hag.missing())) {
+                if (rasterGrid.heightThresholds().length > 0) {
+                    throw atStage(position, type, "height_thresholds cannot be used with nodata_hag");
+                }
+                if (!rasterGrid.percentiles().isEmpty()) {
+                    throw atStage(position, type, "percentile bands cannot be used with nodata_hag");
+                }
             }
         }
         appendHeightAboveGround = appendHeight;
@@ -658,10 +663,20 @@ public final class Pipeline {
         }
         var bands = EnumSet.of(GroundGridWriter.Band.MIN, GroundGridWriter.Band.MAX,
                 GroundGridWriter.Band.MEAN, GroundGridWriter.Band.COUNT);
+        var percentiles = new ArrayList<Integer>(2);
         if (stage.has("output_type")) {
             bands.clear();
             for (String type : string(stage, "output_type").split(",", -1)) {
-                var band = switch (type.strip()) {
+                String name = type.strip();
+                if (name.equals("p50") || name.equals("p90")) {
+                    int percentile = name.equals("p50") ? 50 : 90;
+                    if (percentiles.contains(percentile)) {
+                        throw new IllegalArgumentException("duplicate output_type: " + type);
+                    }
+                    percentiles.add(percentile);
+                    continue;
+                }
+                var band = switch (name) {
                     case "min" -> GroundGridWriter.Band.MIN;
                     case "max" -> GroundGridWriter.Band.MAX;
                     case "mean" -> GroundGridWriter.Band.MEAN;
@@ -702,7 +717,7 @@ public final class Pipeline {
         int effectiveWindow = (int) Math.min(windowSize, Math.max(width, height) - 1);
         return new GroundGridWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
                 number(stage, "resolution"), width, height, effectiveWindow, bands, dimension, nodata,
-                deflate(stage), heightThresholds);
+                deflate(stage), heightThresholds, percentiles);
     }
 
     private static double[] parseHeightThresholds(JsonElement value) {

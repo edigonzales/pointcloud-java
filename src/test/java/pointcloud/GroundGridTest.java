@@ -6,6 +6,7 @@ import org.geotools.referencing.CRS;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.awt.image.DataBuffer;
@@ -30,6 +31,7 @@ class GroundGridTest {
     private static final String THRESHOLD_OPTIONS = """
             ,"output_type":"count","dimension":"HeightAboveGround","height_thresholds":[0.5,2,5]
             """;
+    private static final String HAG_PERCENTILES = ",\"output_type\":\"count,p50,p90\",\"dimension\":\"HeightAboveGround\"";
 
     @TempDir Path temp;
 
@@ -131,15 +133,78 @@ class GroundGridTest {
         }
     }
 
-    @Test
-    void rejectsHeightAboveGroundRasterWithoutAPrecedingHagFilter() {
+    @ParameterizedTest
+    @ValueSource(strings = {"", ",\"output_type\":\"p50,p90\""})
+    void rejectsHeightAboveGroundRasterWithoutAPrecedingHagFilter(String options) {
         Path target = temp.resolve("missing-hag.tif");
         String config = config(temp.resolve("missing.las"), target, "", 2, 2,
-                ",\"dimension\":\"HeightAboveGround\"");
+                ",\"dimension\":\"HeightAboveGround\"" + options);
         var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
         assertEquals("Stage 2 (writers.raster): HeightAboveGround requires a preceding filters.hag_dem stage",
                 error.getMessage());
         assertFalse(Files.exists(target));
+    }
+
+    @Test
+    void computesHeightPercentilesInRequestedOrderAlongsideThresholdFractions() throws Exception {
+        Path input = fixture(3, new int[][]{{1, 1, 14}, {5, 5, 10}, {2, 2, -5}, {6, 6, 2}, {3, 3, -5}});
+        Path target = temp.resolve("height-percentiles.tif");
+        String options = """
+                ,"output_type":"p90,count,p50,max","dimension":"HeightAboveGround",
+                "height_thresholds":[0.5,5],"window_size":1,"nodata":-77.25
+                """;
+        String config = config(input, target, hag(dem(input, 700, 700, 700, 700)), 2, 2, options);
+        var result = Pipeline.parse(new StringReader(config)).run(2, false);
+        assertEquals(5, result.pointsRead());
+        assertEquals(5, result.pointsSelected());
+        assertEquals(5, result.pointsBinned());
+        assertEquals(0, result.pointsWritten());
+
+        double[] filled = {6, 0, -77.25, -77.25, -77.25, -77.25};
+        assertPercentileGrid(target, -77.25, List.of("max", "count", "p90", "p50",
+                "fraction_above_0.5", "fraction_above_5"), new double[][]{
+                filled, {5, 2, 4.6, 3, 1, 0},
+                {7, 3, 5.1, -2.5, 1.0 / 3, 1.0 / 3}, filled
+        });
+    }
+
+    @ParameterizedTest
+    @CsvSource({"p50,703", "p90,704.6"})
+    void writesOneZPercentileAndPreservesASingleSample(String band, double interpolated) throws Exception {
+        Path target = temp.resolve("z-percentile.tif");
+        String config = config(fixture(3), target, "", 2, 2, ",\"output_type\":\"" + band + "\"");
+        var result = Pipeline.parse(new StringReader(config)).run(2, false);
+        assertEquals(3, result.pointsBinned());
+        assertPercentileGrid(target, -9999, List.of(band), new double[][]{{-9999}, {710}, {interpolated}, {-9999}});
+    }
+
+    @Test
+    void writesUnsignedIntensityPercentilesWithDeflate() throws Exception {
+        var las = LasIoTest.bytes(fixture(8));
+        int points = las.getInt(96);
+        int stride = las.getChar(105);
+        las.putChar(points + 12, (char) 65_535);
+        las.putChar(points + stride + 12, (char) 32_768);
+        las.putChar(points + 2 * stride + 12, (char) 0);
+        Path input = Files.write(temp.resolve("intensity-percentiles.las"), las.array());
+        Path target = temp.resolve("intensity-percentiles.tif");
+        String options = ",\"output_type\":\"p90,p50\",\"dimension\":\"Intensity\",\"compression\":\"deflate\"";
+        Pipeline.parse(new StringReader(config(input, target, "", 2, 2, options))).run(2, false);
+        assertPercentileGrid(target, -9999, List.of("p90", "p50"), new double[][]{
+                {-9999, -9999}, {0, 0}, {62258.3, 49151.5}, {-9999, -9999}
+        });
+    }
+
+    @Test
+    void writesNamedPercentileBandsForACompletelyEmptySelection() throws Exception {
+        Path target = temp.resolve("empty-percentiles.tif");
+        String filter = """
+                {"type":"filters.expression","expression":"Z < 0"},
+                """;
+        String config = config(fixture(3), target, filter, 2, 2, ",\"output_type\":\"count,p50,p90\",\"window_size\":1");
+        assertEquals(0, Pipeline.parse(new StringReader(config)).run(2, false).pointsBinned());
+        double[] empty = {0, -9999, -9999};
+        assertPercentileGrid(target, -9999, List.of("count", "p50", "p90"), new double[][]{empty, empty, empty, empty});
     }
 
     @ParameterizedTest
@@ -247,15 +312,17 @@ class GroundGridTest {
         assertFalse(Files.exists(target));
     }
 
-    @Test
-    void rejectsHeightThresholdsWithConfiguredHagFallback() {
+    @ParameterizedTest
+    @ValueSource(strings = {THRESHOLD_OPTIONS, HAG_PERCENTILES})
+    void rejectsHeightThresholdsAndPercentilesWithConfiguredHagFallback(String options) {
         Path target = temp.resolve("invalid-threshold-mode.tif");
         Path dem = temp.resolve("dem.tif");
         String hag = """
                 {"type":"filters.hag_dem","raster":%s,"nodata_hag":-99},
                 """.formatted(Pipeline.JSON.toJson(dem.toString()));
-        String config = config(temp.resolve("missing.las"), target, hag, 2, 2, THRESHOLD_OPTIONS);
+        String config = config(temp.resolve("missing.las"), target, hag, 2, 2, options);
         var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
+        assertTrue(error.getMessage().startsWith("Stage 3 (writers.raster): "), error::getMessage);
         assertTrue(error.getMessage().contains("nodata_hag"), error::getMessage);
         assertFalse(Files.exists(target));
     }
@@ -404,12 +471,12 @@ class GroundGridTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {706, 714})
-    void rejectsNodataCollisionWithoutReplacingOutput(int marker) throws Exception {
+    @CsvSource({"mean,706", "mean,714", "p50,706", "p90,723.6"})
+    void rejectsNodataCollisionWithoutReplacingOutput(String band, double marker) throws Exception {
         Path input = fixture(3, new int[][]{{0, 0, 4}, {1, 1, 12}, {3, 3, 20}, {8, 8, 40}, {11, 11, 48}});
         Path target = Files.writeString(temp.resolve("protected.tif"), "previous output");
         String config = config(input, target, "", 5, 5,
-                ",\"output_type\":\"mean\",\"window_size\":1,\"nodata\":" + marker);
+                ",\"output_type\":\"" + band + "\",\"window_size\":1,\"nodata\":" + marker);
         var pipeline = Pipeline.parse(new StringReader(config));
         var error = assertThrows(IOException.class, () -> pipeline.run(2, true));
         assertTrue(error.getMessage().contains("collides with valid data"), error::getMessage);
@@ -417,9 +484,26 @@ class GroundGridTest {
         assertNoPartFiles();
     }
 
+    @Test
+    void rejectsNonfinitePercentileInterpolationWithoutPublishingRaster() throws Exception {
+        var las = LasIoTest.bytes(fixture(3, new int[][]{
+                {1, 1, Integer.MIN_VALUE}, {3, 3, Integer.MAX_VALUE}, {5, 5, 0}, {8, 0, 0}, {0, 8, 0}
+        }));
+        las.putDouble(147, 1e308 / Integer.MAX_VALUE).putDouble(171, 0);
+        Path input = Files.write(temp.resolve("extreme-percentile.las"), las.array());
+        Path target = temp.resolve("extreme-percentile.tif");
+        String config = config(input, target, "", 2, 2, ",\"output_type\":\"p50\"");
+        var pipeline = Pipeline.parse(new StringReader(config));
+        var error = assertThrows(IOException.class, () -> pipeline.run(2, false));
+        assertTrue(error.getMessage().contains("Nonfinite value at raster cell"), error::getMessage);
+        assertFalse(Files.exists(target));
+        assertNoPartFiles();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
             "\"output_type\":\"all\"", "\"output_type\":\"mean,mean\"", "\"output_type\":\"mean,\"",
+            "\"output_type\":\"p50,p50\"", "\"output_type\":\"p90,count,p90\"", "\"output_type\":\"p95\"",
             "\"nodata\":0", "\"nodata\":1e400", "\"dimension\":\"Red\"", "\"compression\":\"lzw\""
     })
     void rejectsInvalidRasterOptions(String option) {
@@ -468,23 +552,20 @@ class GroundGridTest {
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void discardsStagedRasterWhenInterruptedBeforePublication(boolean heightThresholds) throws Exception {
+    @ValueSource(strings = {",\"window_size\":1", THRESHOLD_OPTIONS, HAG_PERCENTILES})
+    void discardsStagedRasterWhenInterruptedBeforePublication(String options) throws Exception {
         Path target = temp.resolve("interrupted.tif");
         Path input;
         String filters;
-        String options;
-        if (heightThresholds) {
+        if (options.contains("HeightAboveGround")) {
             input = fixture(3, new int[][]{{1, 1, 2}, {3, 3, 10}, {4, 4, 20}, {8, 1, 200}, {8, 1, 400}});
             Path dem = dem(input, 700, 700, 700, 700);
             filters = """
                     {"type":"filters.expression","expression":"X < 2594102"},
                     """ + hag(dem);
-            options = THRESHOLD_OPTIONS;
         } else {
             input = fixture(3);
             filters = "";
-            options = ",\"window_size\":1";
         }
         var pipeline = Pipeline.parse(new StringReader(config(input, target, filters, 2, 2, options)));
         assertThrows(InterruptedIOException.class, () -> pipeline.run(2, false, Pipeline::openSequential,
@@ -528,6 +609,36 @@ class GroundGridTest {
             writer.finish();
         }
         return dem;
+    }
+
+    private static void assertPercentileGrid(Path path, double nodata, List<String> bands, double[][] cells)
+            throws IOException {
+        var reader = new GeoTiffReader(path.toFile());
+        try {
+            assertEquals(nodata, reader.getMetadata().getNoData());
+            String descriptions = reader.getMetadata().getAsciiTIFFTag("42112");
+            assertNotNull(descriptions);
+            for (int band = 0; band < bands.size(); band++) {
+                assertTrue(descriptions.contains("sample=\"" + band + "\" role=\"description\">"
+                        + bands.get(band) + "</Item>"), descriptions);
+            }
+            var coverage = reader.read();
+            try {
+                var raster = coverage.getRenderedImage().getData();
+                assertEquals(2, raster.getWidth());
+                assertEquals(2, raster.getHeight());
+                assertEquals(DataBuffer.TYPE_DOUBLE, raster.getTransferType());
+                assertEquals(bands.size(), raster.getNumBands());
+                for (int cell = 0; cell < cells.length; cell++) {
+                    assertArrayEquals(cells[cell], raster.getPixel(cell % 2, cell / 2, (double[]) null), 1e-12,
+                            "raster cell " + cell);
+                }
+            } finally {
+                coverage.dispose(true);
+            }
+        } finally {
+            reader.dispose();
+        }
     }
 
     private static String hag(Path dem) {

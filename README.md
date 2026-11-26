@@ -140,6 +140,13 @@ python3 tools/check-height-thresholds.py "$(command -v pdal)" --prepare-dem
 "$cli" pipeline examples/height-thresholds-riedholz.json --laz-workers 4 --metadata build/results/height-thresholds-riedholz.json
 ```
 
+Die [Riedholzer Perzentile](examples/raster-percentiles-riedholz.json)
+verwenden dieselben Eingangsdaten und schreiben `count,p50,p90`.
+
+```sh
+"$cli" pipeline examples/raster-percentiles-riedholz.json --laz-workers 4 --metadata build/results/raster-percentiles-riedholz.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 

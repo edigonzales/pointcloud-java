@@ -5,12 +5,16 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Locale;
 
 import static pointcloud.GeoTiffOutput.checkInterrupted;
 
 /** Accumulates point statistics by pixel and stages a north-up GeoTIFF for publication. */
 final class GroundGridWriter {
+    private static final int MAX_PERCENTILE_POINTS = 4_000_000;
+    private static final int PERCENTILE_BLOCK_SIZE = 32_768;
+
     enum Band {
         MIN, MAX, MEAN, COUNT, STDEV;
 
@@ -20,13 +24,17 @@ final class GroundGridWriter {
     }
 
     record Grid(double originX, double originY, double resolution, int width, int height, int windowSize,
-                EnumSet<Band> bands, Dimension dimension, double nodata, boolean deflate, double[] heightThresholds) {
+                EnumSet<Band> bands, Dimension dimension, double nodata, boolean deflate, double[] heightThresholds,
+                List<Integer> percentiles) {
         Grid {
             GeoTiffOutput.validateGrid(originX, originY, resolution, width, height);
             bands = bands.clone();
             heightThresholds = heightThresholds.clone();
+            percentiles = List.copyOf(percentiles);
         }
     }
+
+    private record SampleBlock(int[] cells, double[] values) {}
 
     private final GeoTiffOutput output;
     private final Grid grid;
@@ -36,6 +44,8 @@ final class GroundGridWriter {
     private final double[] means;
     private final double[] deviations;
     private final double[] countBand;
+    private final ArrayList<SampleBlock> percentileSamples;
+    private final double[][] percentileBands;
     private final long[][] thresholdCounts;
     private final double[][] fractionBands;
     private final double[][] outputBands;
@@ -54,10 +64,12 @@ final class GroundGridWriter {
         deviations = grid.bands.contains(Band.STDEV) ? new double[cells] : null;
         means = grid.bands.contains(Band.MEAN) || deviations != null ? new double[cells] : null;
         countBand = grid.bands.contains(Band.COUNT) ? new double[cells] : null;
+        percentileSamples = grid.percentiles.isEmpty() ? null : new ArrayList<>();
+        percentileBands = new double[grid.percentiles.size()][cells];
         thresholdCounts = new long[grid.heightThresholds.length][cells];
         fractionBands = new double[grid.heightThresholds.length][cells];
 
-        var bands = new ArrayList<double[]>(grid.bands.size() + fractionBands.length);
+        var bands = new ArrayList<double[]>(grid.bands.size() + percentileBands.length + fractionBands.length);
         var statistics = new ArrayList<double[]>(grid.bands.size());
         for (Band band : grid.bands) {
             double[] values = switch (band) {
@@ -72,6 +84,9 @@ final class GroundGridWriter {
                 statistics.add(values);
             }
         }
+        for (double[] percentileBand : percentileBands) {
+            bands.add(percentileBand);
+        }
         for (double[] fractionBand : fractionBands) {
             bands.add(fractionBand);
         }
@@ -81,7 +96,7 @@ final class GroundGridWriter {
         north = grid.originY + grid.height * grid.resolution;
     }
 
-    void add(PointBatch batch, int point) {
+    void add(PointBatch batch, int point) throws IOException {
         double x = batch.x(point);
         double y = batch.y(point);
         if (x < grid.originX || x >= east || y < grid.originY || y >= north) {
@@ -92,10 +107,13 @@ final class GroundGridWriter {
         int cell = (grid.height - 1 - rowFromSouth) * grid.width + column;
         long count = ++counts[cell];
         pointsBinned++;
-        if (statisticBands.length == 0 && thresholdCounts.length == 0) {
+        if (statisticBands.length == 0 && thresholdCounts.length == 0 && percentileSamples == null) {
             return;
         }
         double value = grid.dimension.value(batch, point);
+        if (percentileSamples != null) {
+            addPercentileSample(cell, value);
+        }
         // Record only the highest crossed threshold and accumulate lower thresholds when writing.
         int crossed = 0;
         while (crossed < grid.heightThresholds.length && value > grid.heightThresholds[crossed]) {
@@ -120,6 +138,25 @@ final class GroundGridWriter {
         }
     }
 
+    private void addPercentileSample(int cell, double value) throws IOException {
+        if (pointsBinned > MAX_PERCENTILE_POINTS) {
+            throw new IOException("Raster percentiles require at most " + MAX_PERCENTILE_POINTS + " binned points");
+        }
+        if (!Double.isFinite(value)) {
+            throw new IOException("Nonfinite value at raster cell " + cell);
+        }
+        int index = (int) pointsBinned - 1;
+        int offset = index % PERCENTILE_BLOCK_SIZE;
+        if (offset == 0) {
+            checkInterrupted();
+            int capacity = Math.min(PERCENTILE_BLOCK_SIZE, MAX_PERCENTILE_POINTS - index);
+            percentileSamples.add(new SampleBlock(new int[capacity], new double[capacity]));
+        }
+        var block = percentileSamples.getLast();
+        block.cells[offset] = cell;
+        block.values[offset] = value;
+    }
+
     long pointsBinned() {
         return pointsBinned;
     }
@@ -129,14 +166,69 @@ final class GroundGridWriter {
             throw new IOException("GeoTIFF output requires a complete source scan");
         }
         checkInterrupted();
+        if (percentileSamples != null) {
+            finishPercentiles();
+        }
         finishBands();
         var names = new ArrayList<String>(outputBands.length);
         grid.bands.forEach(band -> names.add(band.label()));
+        grid.percentiles.forEach(percentile -> names.add("p" + percentile));
         for (double threshold : grid.heightThresholds) {
             names.add("fraction_above_" + BigDecimal.valueOf(threshold).stripTrailingZeros().toPlainString());
         }
         output.prepare(grid.originX, grid.originY, grid.resolution, grid.width, grid.height,
                 outputBands, names, grid.nodata, grid.deflate);
+    }
+
+    private void finishPercentiles() throws IOException {
+        // The scatter advances each cursor from the cell's start to its exclusive end.
+        int[] ends = new int[counts.length];
+        int size = 0;
+        for (int cell = 0; cell < counts.length; cell++) {
+            if ((cell & 4095) == 0) {
+                checkInterrupted();
+            }
+            ends[cell] = size;
+            size += (int) counts[cell];
+        }
+        double[] grouped = new double[size];
+        int remaining = size;
+        for (var block : percentileSamples) {
+            checkInterrupted();
+            int length = Math.min(remaining, block.cells.length);
+            for (int i = 0; i < length; i++) {
+                grouped[ends[block.cells[i]]++] = block.values[i];
+            }
+            remaining -= length;
+        }
+        percentileSamples.clear();
+
+        int start = 0;
+        for (int cell = 0; cell < ends.length; cell++) {
+            if ((cell & 4095) == 0) {
+                checkInterrupted();
+            }
+            int end = ends[cell];
+            if (start == end) {
+                for (var band : percentileBands) {
+                    band[cell] = grid.nodata;
+                }
+                continue;
+            }
+            Arrays.sort(grouped, start, end);
+            for (int band = 0; band < percentileBands.length; band++) {
+                double rank = (grid.percentiles.get(band) / 100.0) * (end - start - 1);
+                int lower = (int) rank;
+                double fraction = rank - lower;
+                double value = grouped[start + lower];
+                if (fraction != 0) {
+                    value += fraction * (grouped[start + lower + 1] - value);
+                }
+                checkSample(value, cell);
+                percentileBands[band][cell] = value;
+            }
+            start = end;
+        }
     }
 
     private void finishBands() throws IOException {

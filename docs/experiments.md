@@ -1977,3 +1977,88 @@ python3 tools/check-height-thresholds.py "$pdal" --stress
 python3 tools/check-height-thresholds.py "$pdal" \
   --benchmark-csv .cache/height-thresholds/benchmark.csv
 ```
+
+## Exakte Rasterperzentile in Riedholz gegen PDAL 2.10.2
+
+Die Pipeline verwendet die Riedholzer LAZ und das amtliche DTM von
+2019. Auf demselben LV95-Gitter mit 200 × 200 Zellen und 1 m Zellbreite
+liegen 599'763 ausgewählte Erstreflexionen in 39'756 Zellen. Beide
+Programme schreiben `count,p50,p90` als Float64. Die Referenz verwendet
+einen `writers.gdal` mit `binmode: true` und `window_size: 0` im
+PDAL-Standardmodus `--nostream`. Die lineare Interpolation folgt dem
+Rang `(p / 100) × (n − 1)`.
+[Eingaben und Prüfflächen](#höhen-schwellenanteile-in-riedholz-gegen-pdal-2102) ·
+[Perzentilformel in PDAL](https://github.com/PDAL/PDAL/blob/2.10.2/io/private/GDALGrid.cpp#L480-L501)
+
+Eine zweite Eingabe enthält dieselben ausgewählten Originalrecords in
+einer unkomprimierten LAS. Der vorhandene LAS-Writer übernimmt Format,
+Skalen, Offsets und Attribute. Beide Programme lesen dieselbe Datei,
+berechnen HAG aus demselben DTM und schreiben dieselben drei Bänder.
+Der LAS-Zuschnitt und die Vorbereitung des DEM liegen ausserhalb der
+Zeitmessung.
+
+### Zellvergleich und Prüfflächen
+
+Java lieferte mit einem und vier LAZ-Workern bytegleiche GeoTIFFs
+und JSON-Metadaten. Die Punktzahlen und die Maske der 244 unbelegten
+Zellen stimmten in allen sechs Abnahmeläufen exakt mit PDAL überein.
+`p50` war in allen 40'000 Zellen identisch. Bei `p90` betrug die
+grösste absolute Abweichung in 2'341 verschieden gerundeten Zellen
+3,553 × 10⁻¹⁵ m. Die native ARM-Fassung von PDAL verwendet bei der
+Interpolation eine verschmolzene Multiplikation mit Addition.
+Die vorbereitete LAS hatte 599'763 Records und 20'392'451 Bytes.
+Sie reproduzierte je Engine dieselben Zellwerte wie die volle LAZ.
+
+Die Tabelle zeigt den Median der Zellperzentile in den belegten Zellen
+der drei bestehenden Prüfflächen. Die wechselnden Zellpunktzahlen
+werden hier durch `count` nachvollziehbar.
+
+| Fläche | Zellen belegt / insgesamt | Echos | Median der p50-Zellen (m) | Median der p90-Zellen (m) |
+| --- | ---: | ---: | ---: | ---: |
+| Wiese | 450 / 450 | 5'413 | 0,002 | 0,015 |
+| Uferhecke | 217 / 217 | 4'095 | 16,888 | 19,260 |
+| Geschlossener Wald | 593 / 600 | 10'968 | 16,008 | 20,317 |
+
+[Karte der Perzentilbänder und Prüfflächen](measurements/raster-percentiles-riedholz.png)
+
+### Laufzeit auf dem M1
+
+MacBook Air M1 mit 16 GiB RAM, macOS 15.8.1, Temurin 25.0.3+9
+mit `-Xmx512m`, PDAL 2.10.2 und GDAL 3.13.3. Acht rotierende
+Runden für die vollständige LAZ und fünf gepaarte Runden für die
+vorbereitete LAS verwendeten frische Prozesse und warme Dateicaches.
+Jeder Lauf schrieb dasselbe unkomprimierte Dreifachraster und
+JSON-Metadaten. Alle Rasterwerte wurden nach dem jeweiligen Lauf
+mit der abgenommenen Ausgabe derselben Engine verglichen.
+
+| Eingabe | Engine | Reader | Wandzeit Median / Min–Max (s) | CPU Median (s) | Spitzen-RSS Max (MiB) | Mio. gelesene Punkte/s Median |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Vollständige LAZ | Java | 1 | 4,515 / 3,685–6,129 | 6,20 | 199,2 | 1,62 |
+| Vollständige LAZ | PDAL | 1 | 4,038 / 3,419–5,851 | 4,95 | 575,8 | 1,81 |
+| Vollständige LAZ | Java | 4 | 3,029 / 2,429–3,590 | 8,98 | 226,3 | 2,42 |
+| Vollständige LAZ | PDAL | 4 | 2,819 / 2,566–5,245 | 6,38 | 603,0 | 2,60 |
+| Vorbereitete LAS | Java | 1 | 1,179 / 1,156–1,566 | 2,92 | 163,8 | 0,51 |
+| Vorbereitete LAS | PDAL | 1 | 0,301 / 0,285–0,385 | 0,29 | 102,6 | 2,00 |
+
+Bei vier LAZ-Readern hatte PDAL den niedrigeren Wandzeitmedian.
+Die gepaarte Differenz Java minus PDAL betrug im Median 30 ms.
+Jede Engine war in vier der acht Paare schneller. Auf der vorbereiteten
+LAS lag PDAL in allen fünf Paaren vorne. Dieses Profil umfasst auch
+den Prozessstart, das Öffnen des DEM, HAG und das Schreiben des GeoTIFFs.
+
+Die Ein-Minuten-Systemlast lag während der ausgewerteten Reihe
+zwischen 6,10 und 9,46. Ein erster Messanlauf wurde wegen parallel
+laufender Tests abgebrochen. Die Tabelle enthält nur den vollständigen
+Neustart mit 42 Messläufen.
+[42 Einzelmessungen mit Systemlast](measurements/raster-percentiles-riedholz-pdal.csv)
+
+### Reproduktion
+
+```sh
+./gradlew installDist
+./gradlew downloadTestData -Ptile=2019-riedholz
+python3 tools/check-raster-percentiles.py "$pdal"
+python3 tools/check-raster-percentile-memory.py "$pdal"
+python3 tools/check-raster-percentiles.py "$pdal" \
+  --benchmark-csv .cache/raster-percentiles/benchmark.csv
+```

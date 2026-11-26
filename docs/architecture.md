@@ -175,6 +175,16 @@ Standard sind `min,max,mean,count`. `stdev` gibt die
 Populationsstandardabweichung der Zellwerte an. Bei einem einzigen Punkt
 beträgt sie 0.
 
+`p50` und `p90` geben exakte Zellperzentile für die gewählte Dimension aus.
+Die Bänder folgen auf die regulären Bänder in der Reihenfolge aus
+`output_type`. Bei `height_thresholds` folgen danach die Anteilsbänder.
+Der nullbasierte Rang ist `(p / 100) × (n − 1)`. Bei einem ganzzahligen
+Rang gilt der entsprechende sortierte Wert. Sonst interpoliert die
+Stage linear zwischen den beiden benachbarten Werten. Bei HAG-Perzentilen
+ist `nodata_hag` unzulässig. Die Stage hält je eingerastertem Punkt
+einen Messwert und erlaubt in diesem Modus bis zu 4'000'000 Werte.
+Leere Zellen erhalten in diesen Bändern auch bei einem Füllfenster NoData.
+
 `dimension` wählt `Z` (Standard), den vorzeichenlosen LAS-Rohwert
 `Intensity` oder `HeightAboveGround` nach `filters.hag_dem`.
 Der Ausgabetyp ist `double` (Float64). `compression` akzeptiert
@@ -233,6 +243,12 @@ Schwellen von 0,5 m, 2 m und 5 m.
 Für bestehende Java-Pipelines mit `"type": "writers.gdal"` reicht es,
 den Typ der letzten Stage auf `"type": "writers.raster"` zu setzen.
 Die Stage-Optionen sind direkt übertragbar.
+
+Bei Perzentilen verlangt PDAL 2.10.2 den Standardmodus `--nostream`.
+Der Referenzvergleich verwendet `window_size: 0`. Bei einem positiven
+Fenster kann PDAL leere Perzentilzellen mit Nachbardaten als 0 ausgeben.
+[PDAL-Rasterwriter](https://github.com/PDAL/PDAL/blob/2.10.2/io/GDALWriter.cpp#L188-L201) ·
+[PDAL-Füllregel](https://github.com/PDAL/PDAL/blob/2.10.2/io/private/GDALGrid.cpp#L525-L622)
 
 ## TIN-Terrainmodell
 

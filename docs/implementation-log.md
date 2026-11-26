@@ -1675,3 +1675,49 @@ Standardbänder und transaktionale Publikation im bestehenden
 Rasterwriter. Je Schwelle kommt ein primitiver Zähler je Zelle
 hinzu. Ein Echo erhöht höchstens einen Zähler.
 [Riedholz-Abnahme und Vergleich](experiments.md#höhen-schwellenanteile-in-riedholz-gegen-pdal-2102)
+
+## Exakte Zellperzentile `p50` und `p90`
+
+26. November 2026. Basis `8b9a13c`. `writers.raster` unterstützt
+`p50` und `p90` für die Rasterdimensionen `Z`, `Intensity` und
+`HeightAboveGround`. Im Perzentilmodus erfasst der Writer höchstens
+4'000'000 eingerasterte Werte. Er verwendet die vorhandenen Zählungen
+zum Gruppieren und sortiert die Werte je belegter Zelle einmal.
+
+- `./gradlew --offline clean check` und `./gradlew --offline installDist`
+  bestanden auf Apple M1, macOS 15.8.1 und Temurin 25.0.3+9.
+  Alle 228 Produkttests bestanden ohne Fehler, Fehlschläge oder
+  übersprungene Tests. Die XML-Suitezeiten summierten sich auf 10,564 s.
+  Der erste NoData-Kollisionstest verwendete 720 als erwarteten p90.
+  Für die Zelle mit 720 und 724 wurde der Testwert auf 723,6 korrigiert.
+- `tools/check-raster-percentiles.py <pdal>` bestätigte die
+  Zählungen und die NoData-Maske aller 40'000 Zellen. Java seriell
+  und mit vier LAZ-Workern schrieb bytegleiche Ausgaben. Gegen
+  PDAL 2.10.2 stimmte `p50` exakt. Der grösste Unterschied in
+  `p90` betrug 3,553 × 10⁻¹⁵ m. Die vorbereitete LAS bewahrte die
+  Ergebnisse pro Engine für alle Zellen.
+- `tools/check-raster-percentile-memory.py <pdal>` prüfte vier
+  Millionen Werte unter `-Xmx512m`. Das Millionenzellengitter
+  belegte 233,92 MiB Spitzen-RSS, die Einzelzelle 195,92 MiB.
+  Beide Grenzüberschreitungen endeten mit Fehlern ohne Ausgabe.
+  Im synthetischen LAS-Fixture wurde die Point Source ID ergänzt.
+  Damit entspricht es dem 20-Byte-Layout des Formats 0.
+- `python3 tools/check-real-data.py <pdal>` bestand mit PDAL 2.10.2.
+  Alle 496'586 vollständigen LAS-Records stimmten überein. SIGTERM
+  ergab Exit 143 ohne temporäre oder veröffentlichte Ausgabe.
+  `python3 tools/check-ground-grid.py <pdal> --release` bestätigte
+  Bandwahl, Füllfenster, Intensität und Deflate.
+- Die Laufzeitabnahme prüfte 32 vollständige LAZ- und zehn
+  vorbereitete LAS-Läufe. Mit vier Readern lagen die LAZ-Mediane
+  bei 3,029 s für Java und 2,819 s für PDAL. Beide gewannen vier
+  der acht Paare. Java erreichte höchstens 226,3 MiB Spitzen-RSS,
+  PDAL 603,0 MiB. Die vorbereitete LAS ergab 1,179 s für Java
+  und 0,301 s für PDAL. Die Ein-Minuten-Systemlast lag zwischen
+  6,10 und 9,46. Nach einem Abbruch wegen paralleler Tests wurde
+  die vollständige Messreihe neu gestartet.
+
+Die Einfachheitsprüfung belässt die Zellzuordnung, Messwertabfrage
+und transaktionale Veröffentlichung im vorhandenen Rasterwriter.
+Die Perzentile teilen sich den Blockpuffer und die Sortierung.
+Der Puffer wird vor der Sortierung freigegeben.
+[Riedholz-Abnahme](experiments.md#exakte-rasterperzentile-in-riedholz-gegen-pdal-2102)
