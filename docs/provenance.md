@@ -78,14 +78,15 @@ unter `licenses/jts/`.
 
 ## Dreiecksnetz
 
-`writers.dtm` verwendet `org.tinfour:TinfourCore:2.1.9` mit Apache-2.0-Lizenz.
+`writers.dtm` verwendet für den Tinfour-Pfad `org.tinfour:TinfourCore:2.1.9`
+mit Apache-2.0-Lizenz.
 Das Artefakt enthält die von Tinfour angepasste Double-Double-Arithmetik
 aus JTS unter EDL 1.0. Die mitgelieferten Lizenztexte und Hinweise liegen
 unter `licenses/tinfour/`. [Tinfour 2.1.9](https://github.com/gwlucastrig/Tinfour/tree/2.1.9)
 
-Der separate Delaunator-Kandidat adaptiert den radialen Aufbau aus
-Mapbox Delaunator 5.0.1. Die Java-Fassung arbeitet mit ganzzahligen
-LAS-XY-Koordinaten und verwendet eigene exakte geometrische Prädikate.
+Der Delaunator-Pfad adaptiert den radialen Aufbau aus Mapbox Delaunator
+5.0.1. Die Java-Fassung arbeitet mit ganzzahligen LAS-XY-Koordinaten
+und verwendet eigene exakte geometrische Prädikate.
 Die Distribution enthält den Lizenztext unter `licenses/delaunator/`.
 [Delaunator 5.0.1 und ISC-Lizenz](https://github.com/mapbox/delaunator/tree/v5.0.1)
 

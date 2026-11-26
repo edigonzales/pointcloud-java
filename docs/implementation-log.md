@@ -1440,3 +1440,26 @@ Einfachheitsprüfung mit `simplify-change`. Die Engine-Grenze
 liegt direkt im Terrain-Writer. Deduplizierung, Rasterisierung,
 Restzellensuche und GeoTIFF-Ausgabe bleiben gemeinsam. Die
 Backend- und Dreiecksdiagnose liegt im vorhandenen Abnahmewerkzeug.
+
+## Übernahme von Delaunator in `codex/tin-complete`
+
+26. November 2026. Der Produktbranch wurde auf den abgenommenen Commit
+`41acc87` vorgezogen. Die Produktdokumentation nennt Delaunator und
+seinen SemiVirtual-Tinfour-Fallback als Bestandteile von `writers.dtm`.
+
+- `./gradlew --offline clean check installDist` bestand auf dem M1
+  mit Temurin 25.0.3+9 in 5 s. Alle 149 JUnit-Fälle bestanden,
+  ohne Fehler, Fehlschläge oder übersprungene Fälle.
+- Die installierte CLI wiederholte Stadt mit 20 m und breiten Wald mit
+  5 m Kantenlimit und je vier LAZ-Workern. Beide GeoTIFFs und ihre
+  JSON-Metadaten stimmten byteweise mit der Kandidatenabnahme überein.
+  Die Stadt lieferte 40'000 gültige Zellen, davon 7'227 ergänzt.
+  Der breite Wald lieferte 78'400 gültige Zellen, davon 648 ergänzt.
+  `TerrainFaces` bestätigte auf den jeweiligen Boden-LAS die Kernwahl
+  Delaunator und Tinfour.
+- `tools/check-real-data.py` verglich mit PDAL 2.10.2 erneut
+  496'586 LAS-Records ohne Abweichung. SIGTERM ergab Exit 143
+  ohne veröffentlichte oder temporäre Ausgabe.
+- Die 108 Klassendateien in den Produkt- und Codec-JARs sind bytegleich
+  zur abgenommenen Distribution. Die vollständig gemessenen Läufe
+  bleiben damit als Leistungsnachweis gültig.

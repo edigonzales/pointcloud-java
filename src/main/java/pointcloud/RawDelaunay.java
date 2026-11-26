@@ -24,7 +24,7 @@ import java.util.Arrays;
 
 import static pointcloud.GeoTiffOutput.checkInterrupted;
 
-/** Experimental radial sweep over distinct LAS points on an equal-scale, bounded XY grid. */
+/** Radial sweep over distinct LAS points on an equal-scale, bounded XY grid. */
 final class RawDelaunay {
     static final int MAX_SPAN = 35_000;
 

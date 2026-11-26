@@ -221,10 +221,11 @@ zusätzliche Stützpunkte beisteuern.
 
 Die erste ausgewählte Höhe je rohem LAS-XY gewinnt. Bei gleichen positiven
 X- und Y-Skalen und höchstens 35'000 Rohkoordinateneinheiten Spannweite pro
-Achse baut der Kandidat das Delaunay-Netz mit Delaunator auf. Massgebend
+Achse baut `writers.dtm` das Delaunay-Netz mit Delaunator auf. Massgebend
 sind die ausgewählten, deduplizierten Stützpunkte. In den übrigen Fällen
-übernimmt Tinfour 2.1.9. Beide Wege verwenden dieselbe Rasterisierung und
-dieselbe Ersatzregel für unbelegte Zellen. Die Höhen werden separat als Double geführt.
+übernimmt SemiVirtual-Tinfour 2.1.9. Beide Wege verwenden dieselbe
+Rasterisierung und dieselbe Ersatzregel für unbelegte Zellen. Die Höhen
+werden separat als Double geführt.
 Bis zu 1'000'000 ausgewählte Punkte vor der Deduplizierung und 1'000'000
 Rasterzellen sind zulässig. Das Dreiecksnetz benötigt mindestens drei
 unterschiedliche, nicht kollineare Stützpunkte.
