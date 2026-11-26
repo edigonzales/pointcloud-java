@@ -1,0 +1,110 @@
+diff --git a/src/main/java/pointcloud/TerrainWriter.java b/src/main/java/pointcloud/TerrainWriter.java
+index 630f539..3a30e82 100644
+--- a/src/main/java/pointcloud/TerrainWriter.java
++++ b/src/main/java/pointcloud/TerrainWriter.java
+@@ -11,6 +11,7 @@ import java.io.IOException;
+ import java.io.InterruptedIOException;
+ import java.util.ArrayList;
+ import java.util.Arrays;
++import java.util.BitSet;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.concurrent.CancellationException;
+@@ -100,7 +101,7 @@ final class TerrainWriter {
+     }
+
+     private void rasterize(double[] samples) throws IOException {
+-        var tin = triangulate();
++        var tin = triangulate(false);
+         try {
+             double centerX = localX(grid.originX) + grid.resolution / 2;
+             double centerY = localY(grid.originY) + grid.resolution / 2;
+@@ -108,20 +109,41 @@ final class TerrainWriter {
+                 throw new IOException("Nonfinite local DTM raster origin");
+             }
+             var geometry = new GeometricOperations(tin.getThresholds());
++            var visited = new BitSet(vertices.size());
+             int faces = 0;
+             for (var triangle : tin.triangles()) {
+                 if ((++faces & 4095) == 0) {
+                     checkInterrupted();
+                 }
+-                sampleTriangle(triangle.getVertexA(), triangle.getVertexB(), triangle.getVertexC(),
+-                        centerX, centerY, geometry, samples);
++                Vertex a = triangle.getVertexA();
++                Vertex b = triangle.getVertexB();
++                Vertex c = triangle.getVertexC();
++                markSupport(visited, a);
++                markSupport(visited, b);
++                markSupport(visited, c);
++                sampleTriangle(a, b, c, centerX, centerY, geometry, samples);
++            }
++            if (visited.cardinality() != vertices.size()) {
++                throw new IOException("Triangulation merged distinct LAS XY coordinates");
+             }
+         } finally {
+             tin.dispose();
+         }
+     }
+
++    private void markSupport(BitSet visited, Vertex vertex) throws IOException {
++        int index = vertex.getIndex();
++        if (index < 0 || index >= vertices.size() || vertices.get(index) != vertex) {
++            throw new IOException("Triangulation merged distinct LAS XY coordinates");
++        }
++        visited.set(index);
++    }
++
+     SemiVirtualIncrementalTin triangulate() throws IOException {
++        return triangulate(true);
++    }
++
++    private SemiVirtualIncrementalTin triangulate(boolean validateVertices) throws IOException {
+         seen = null;
+         checkInterrupted();
+         double minScale = Math.min(header.scale(0), header.scale(1));
+@@ -132,14 +154,16 @@ final class TerrainWriter {
+                 throw new IOException("DTM requires at least three non-collinear support points");
+             }
+             checkInterrupted();
+-            int vertexCount = 0;
+-            for (var vertex : tin.vertices()) {
+-                if ((++vertexCount & 4095) == 0) {
+-                    checkInterrupted();
++            if (validateVertices) {
++                int vertexCount = 0;
++                for (var vertex : tin.vertices()) {
++                    if ((++vertexCount & 4095) == 0) {
++                        checkInterrupted();
++                    }
++                }
++                if (vertexCount != vertices.size()) {
++                    throw new IOException("Triangulation merged distinct LAS XY coordinates");
+                 }
+-            }
+-            if (vertexCount != vertices.size()) {
+-                throw new IOException("Triangulation merged distinct LAS XY coordinates");
+             }
+             return tin;
+         } catch (CancellationException e) {
+diff --git a/src/test/java/pointcloud/TerrainWriterTest.java b/src/test/java/pointcloud/TerrainWriterTest.java
+index fbf5c0d..7ec2a41 100644
+--- a/src/test/java/pointcloud/TerrainWriterTest.java
++++ b/src/test/java/pointcloud/TerrainWriterTest.java
+@@ -57,6 +57,16 @@ class TerrainWriterTest {
+         }
+     }
+
++    @Test
++    void retainsSupportEvenWhenEveryTriangleIsOutsideTheRaster() throws Exception {
++        var source = fixture(new int[][]{{20, 20, 10}, {28, 20, 20}, {20, 28, 30}, {20, 20, 90}, {28, 20, 99}});
++        var target = temp.resolve("outside.tif");
++        var result = pipeline(source, target, "").run(2, false);
++        assertEquals(new Pipeline.TerrainStatistics(3, 0, 9), result.dtm());
++        assertArrayEquals(new double[]{-9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999},
++                samples(target));
++    }
++
+     @Test
+     void acceptsEdgesEqualToLimitAndRejectsLongerEdges() throws Exception {
+         var source = fixture(TRIANGLE);

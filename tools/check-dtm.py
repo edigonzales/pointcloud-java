@@ -155,14 +155,18 @@ def pdal_faces(mesh, targets):
     return matches
 
 
-def inspect_faces(args, work, writer, ground, targets):
+def inspect_faces(args, work, writer, ground, targets, *, diagnostics=False):
     java_home = os.environ.get("JAVA_HOME")
     java_bin = Path(java_home) / "bin" if java_home else Path(".")
     libraries = args.cli.parent.parent / "lib" / "*"
     classes = work / "classes"
-    run([java_bin / "javac", "-cp", libraries, "-d", classes, "tools/TerrainFaces.java"])
+    classes.mkdir(parents=True, exist_ok=True)
+    run([java_bin / "javac", "-cp", libraries, "-d", classes,
+         getattr(args, "faces_source", "tools/TerrainFaces.java")])
     geometry = [writer[k] for k in ("origin_x", "origin_y", "resolution", "width", "height")]
-    report = subprocess.check_output([java_bin / "java", "-Xmx512m", "-cp", f"{classes}{os.pathsep}{libraries}",
+    report = subprocess.check_output([java_bin / "java", "-Xmx512m",
+                                      *(["-Dpointcloud.tin.diagnostics=true"] if diagnostics else []),
+                                      "-cp", f"{classes}{os.pathsep}{libraries}",
                                       "pointcloud.TerrainFaces", ground, *map(str, geometry), *map(str, targets)],
                                      text=True)
     faces = {}

@@ -1278,3 +1278,52 @@ Die Diagnose der Stützflächen läuft als separates Abnahmewerkzeug.
 Die Produkt- und Referenzprüfungen sind abgeschlossen. Die
 Einfachheitsprüfung bestätigte die direkte Stage samt gemeinsamem
 GeoTIFF-Pfad. Der Referenzvergleich bleibt ausserhalb der Produkt-CLI.
+
+## TIN-Performance-Experimente
+
+26. November 2026, Basis `8021112`, MacBook Air M1, macOS 15.8.1,
+Temurin 25.0.3+9, Gradle 9.9.1. Patches und Messskripte bleiben
+in der Versuchsumgebung. Beide Solothurn-Pipelines verwenden je
+40'000 Rasterzellen. Die kanonischen Boden-LAS-Dateien umfassen
+728'768 und 428'321 selektierte Punkte. Referenz ist PDAL 2.10.2
+mit LazPerf und GDAL 3.13.3.
+
+- `./gradlew --offline clean check installDist` bestand für Basis,
+  Kombination und Delaunator mit 122, 122 und 128 JUnit-Fällen.
+  Die fokussierten Testläufe für Hash-Mischung, primitive Tabelle,
+  Standard-TIN, Hilbert, gemeinsame Prüfung und GeoKeys bestanden mit
+  13, 14, 12, 13, 13 und 48 Fällen. Keine Fehler, Fehlschläge oder
+  übersprungenen Fälle. Die nativen
+  Reports liegen je Worktree unter `build/test-results/test/`.
+- Die zwei Tinfour-Varianten verarbeiteten bei `-Xmx512m` alle
+  eine Million Stützpunkte und erzeugten 40'000 gegen eine
+  analytische Ebene geprüfte Rasterwerte. SemiVirtual erreichte
+  448 MiB, Standard 516 MiB Spitzen-RSS. Die Einzelprobe dauerte
+  4.716 beziehungsweise 3.237 s.
+- `experiments/check-tin.py` prüfte die Raster ohne Kantenlimit
+  und mit 20 m in der Stadt sowie 5 m im Wald vor dem Zeitvergleich.
+  Hashing, gemeinsame Stützpunktprüfung und direkte GeoKeys waren
+  bitgleich. Standard-TIN und Hilbert blieben bei 1.14 × 10⁻¹³ m.
+  Delaunator hat dieselben NoData-Masken und nachgewiesene alternative
+  Diagonalen über kozyklischen XY für alle Differenzen über 1 µm.
+- `experiments/tin-runtime.py` verglich frischen JVM-Start,
+  weitere Pipeline-Läufe im selben Prozess und AOT. Die AOT-Nutzung
+  ist mit `AOTMode=on` und dem Mapping im Startlog belegt.
+- Das Kombinieren von primitiver Tabelle und gemeinsamem Rasterdurchlauf
+  erforderte eine Auflösung im Importblock. Der kombinierte Build und
+  der volle Rastervergleich gegen Basis und PDAL bestanden danach.
+  Die Einfachheitsprüfung bestätigte den gemeinsamen Raster- und TIFF-Pfad
+  sowie getrennt anwendbare Patches.
+- Das Delaunator-Experiment bestand die vollständige LAZ-Abnahme
+  mit je einem und vier Readern. Die unabhängige Prüfung
+  `tools/check-real-data.py` im Delaunator-Worktree verglich
+  496'586 LAS-Records ohne Abweichung, einschliesslich der Polygon-
+  und Decimation-Pfade. In der DTM-Abbruchprobe während `RawDelaunay`
+  ergab SIGTERM nach 0.38 s Exit 143 ohne GeoTIFF, JSON oder Part-Datei.
+- Die Arbeit umfasst 480 A/B- und 56 Laufzeit-Einzelmessungen.
+  Alle Messreihen und Prüfungen sind abgeschlossen. Auf originaler
+  LAZ mit vier Readern liegen die Delaunator-Mediane bei 1.967 s
+  und 2.202 s für Stadt und Wald. Die gepaarten PDAL-Mediane liegen
+  bei 2.651 s und 2.998 s. Der Delaunator-Prototyp bleibt als Patch
+  zur fachlichen und betrieblichen Bewertung verfügbar.
+  [Messaufbau, Ergebnisse und Reproduktion](experiments.md#tin-optimierungsversuche)

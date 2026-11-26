@@ -1,0 +1,37 @@
+diff --git a/src/main/java/pointcloud/TerrainWriter.java b/src/main/java/pointcloud/TerrainWriter.java
+index 630f539..d19bccb 100644
+--- a/src/main/java/pointcloud/TerrainWriter.java
++++ b/src/main/java/pointcloud/TerrainWriter.java
+@@ -5,7 +5,7 @@ import org.tinfour.common.GeometricOperations;
+ import org.tinfour.common.IMonitorWithCancellation;
+ import org.tinfour.common.Thresholds;
+ import org.tinfour.common.Vertex;
+-import org.tinfour.semivirtual.SemiVirtualIncrementalTin;
++import org.tinfour.standard.IncrementalTin;
+
+ import java.io.IOException;
+ import java.io.InterruptedIOException;
+@@ -121,12 +121,12 @@ final class TerrainWriter {
+         }
+     }
+
+-    SemiVirtualIncrementalTin triangulate() throws IOException {
++    IncrementalTin triangulate() throws IOException {
+         seen = null;
+         checkInterrupted();
+         double minScale = Math.min(header.scale(0), header.scale(1));
+         double spacing = Math.min(0.35, minScale * (Thresholds.VERTEX_TOLERANCE_FACTOR_DEFAULT / 4));
+-        var tin = new SemiVirtualIncrementalTin(spacing);
++        var tin = new IncrementalTin(spacing);
+         try {
+             if (vertices.size() < 3 || !tin.add(vertices, TIN_MONITOR)) {
+                 throw new IOException("DTM requires at least three non-collinear support points");
+@@ -253,7 +253,7 @@ final class TerrainWriter {
+         @Override public int getReportingIntervalInPercent() { return 1; }
+         @Override public boolean isCanceled() { return Thread.currentThread().isInterrupted(); }
+         @Override public void reportProgress(int progress) {
+-            // The semi-virtual bulk insert reports progress but does not poll isCanceled().
++            // The bulk insert reports progress but does not poll isCanceled().
+             if (isCanceled()) {
+                 throw new CancellationException();
+             }

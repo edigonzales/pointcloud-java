@@ -26,6 +26,9 @@ final class TerrainFaces {
             }
             var tin = terrain.triangulate();
             try {
+                if (Boolean.getBoolean("pointcloud.tin.diagnostics")) {
+                    tin.printDiagnostics(System.err);
+                }
                 double west = terrain.localX(originX);
                 double south = terrain.localY(originY);
                 for (int index = 6; index < args.length; index++) {
