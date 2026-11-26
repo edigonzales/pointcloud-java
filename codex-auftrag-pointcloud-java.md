@@ -296,6 +296,7 @@ Relative Dateipfade werden wie beim Referenzlauf relativ zum Arbeitsverzeichnis 
 | `filters.expression` | Genau ein Ausdruck als String in der unten definierten Teilgrammatik |
 | `filters.decimation` | Ganzzahliges `step >= 1`, `offset >= 0`, optional exklusives `limit`. Positionszählung über den gesamten dieser Stage zugeführten Strom, nicht je Batch |
 | `filters.stats` | Explizite `dimensions` als kommaseparierte Liste; Anzahl, Minimum, Maximum, Mittelwert und Stichprobenvarianz/-standardabweichung nach überprüfter Referenzsemantik. Keine globalen Mediane oder vollständigen Wertelisten |
+| `filters.hag_dem` | Höhe über Grund aus einem lokalen, nach Norden ausgerichteten GeoTIFF im Eingabe-CRS. Ein Band mit bis zu vier Millionen Zellen. `HeightAboveGround` steht nach der Stage für Ausdrücke und Statistik zur Verfügung. Ausgewählte LAS-Records bleiben unverändert. |
 | `writers.las` | `filename`, ausdrücklich `forward: "all"`, `compression: false` und `extra_dims: "all"`. Für diese erste Teilmenge sind diese Einstellungen verbindlich; andere Header-/Quantisierungseinstellungen klar zurückweisen |
 | `writers.null` | Terminierung ohne Punktdatei; für Statistik- und Dekodiermessungen |
 | `writers.raster` | Lokales Float64-GeoTIFF für `Z` oder `Intensity` mit `binmode: true` und explizitem Gitter. Wählbare Bänder `min,max,mean,count,stdev`, nichtnegatives `window_size`, endliches `nodata` und optionale Deflate-Kompression. |

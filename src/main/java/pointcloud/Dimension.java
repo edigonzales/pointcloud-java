@@ -2,7 +2,7 @@ package pointcloud;
 
 enum Dimension {
     X, Y, Z, Intensity, Classification, Synthetic, KeyPoint, Withheld, Overlap,
-    ReturnNumber, NumberOfReturns, GpsTime, Red, Green, Blue, Infrared;
+    ReturnNumber, NumberOfReturns, GpsTime, Red, Green, Blue, Infrared, HeightAboveGround;
 
     boolean available(int format) {
         return switch (this) {
@@ -43,6 +43,7 @@ enum Dimension {
                 int rgb = format == 2 ? 20 : format == 3 ? 28 : 30;
                 yield batch.records.getChar(start + rgb + (ordinal() - Red.ordinal()) * 2);
             }
+            case HeightAboveGround -> batch.heightAboveGround[point];
         };
     }
 

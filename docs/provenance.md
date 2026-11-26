@@ -108,6 +108,18 @@ PDAL-Datenbestand. Die Dateien für die lokale Abnahme liegen im ignorierten Cac
 · [COPC-Beispieldaten](https://copc.io/#example-data)
 · [Lizenz der PDAL-Beispieldaten (CC BY 4.0)](https://github.com/PDAL/data/blob/main/LICENSE)
 
+Die HAG-Abnahme verwendet das Terrainmodell der kantonalen Befliegung
+2019. `tools/check-hag-dem.py` liest nur die benötigten Ausschnitte
+per HTTP-Range über GDAL und mittelt das 25-cm-Raster auf 1 m.
+Die unkomprimierten Float64-GeoTIFFs enthalten je 252'004 gültige
+Zellen inklusive 1 m Rand, mit je 2'017'904 Bytes bei GDAL 3.13.3.
+[Amtliches Solothurn-DTM](https://files.geo.so.ch/ch.so.agi.lidar_2019.dtm/aktuell/ch.so.agi.lidar_2019.dtm.tif)
+
+| Ausschnitt | SHA-256 des lokalen GeoTIFFs |
+| --- | --- |
+| Stadt | `036ab83686e8fdcb4b9adc9bebab781f0d2054709f5357cb26e89d37453b7977` |
+| Wald | `2a07ab615b5cfdb448b5efdba78bdba094072fe0ad4c13ec3e8950f0bcfdc747` |
+
 ## Kleine Fixtures
 
 `src/test/resources/las` enthält eigene synthetische LAS-Bestände mit

@@ -22,6 +22,7 @@ import org.locationtech.jts.io.WKTReader;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.Reader;
 import java.io.StringReader;
 import java.nio.channels.FileChannel;
@@ -40,6 +41,7 @@ import java.util.regex.Pattern;
 
 /** A linear PDAL-subset pipeline. Execution state is created afresh for each run. */
 public final class Pipeline {
+    private static final String HAG_FILTER = "filters.hag_dem";
     private static final String RASTER_WRITER = "writers.raster";
     private static final String DTM_WRITER = "writers.dtm";
     private static final String BOUND = "\\s*\\[\\s*(" + Expression.NUMBER + ")\\s*,\\s*("
@@ -112,6 +114,7 @@ public final class Pipeline {
 
     private final Path input;
     private final Path output;
+    private final HagStage hag;
     private final GroundGridWriter.Grid rasterGrid;
     private final TerrainWriter.Grid terrainGrid;
     private final JsonArray stages;
@@ -172,6 +175,17 @@ public final class Pipeline {
         } catch (IllegalArgumentException e) {
             throw atStage(position, type, e.getMessage());
         }
+        HagStage found = null;
+        for (int i = 1; i < position - 1; i++) {
+            if (stages.get(i) instanceof JsonObject stage
+                    && HAG_FILTER.equals(type(stage, i + 1))) {
+                if (found != null) {
+                    throw atStage(i + 1, HAG_FILTER, "only one filters.hag_dem stage is supported");
+                }
+                found = parseHag(stage, i + 1);
+            }
+        }
+        hag = found;
     }
 
     public static Pipeline read(Path path) throws IOException {
@@ -197,6 +211,10 @@ public final class Pipeline {
 
     public Path output() {
         return output;
+    }
+
+    Path demInput() {
+        return hag == null ? null : hag.raster;
     }
 
     public Result run(int batchSize, boolean overwrite) throws IOException {
@@ -257,8 +275,14 @@ public final class Pipeline {
     Result run(int batchSize, boolean overwrite, InputFactory inputs, ResultOutput resultOutput) throws IOException {
         var filters = new Filter[stages.size() - 2];
         for (int i = 0; i < filters.length; i++) {
-            filters[i] = compile(i + 2);
+            var filter = compile(i + 2);
+            if (filter.dimensions.contains(Dimension.HeightAboveGround)
+                    && (hag == null || filter.stage < hag.position)) {
+                throw atStage(filter.stage, filter.type, "HeightAboveGround requires a preceding " + HAG_FILTER + " stage");
+            }
+            filters[i] = filter;
         }
+        checkDemOutputAlias();
         try (var reader = inputs.open(input, batchSize)) {
             for (var filter : filters) {
                 for (var dimension : filter.dimensions) {
@@ -268,13 +292,26 @@ public final class Pipeline {
                     }
                 }
             }
+            if (hag != null) {
+                int index = hag.position - 2;
+                var filter = filters[index];
+                filters[index] = new Filter(filter.stage, filter.type, filter.dimensions, hag.open(reader), null);
+            }
             try (var tiff = openTiff(reader, overwrite);
                  var writer = output == null || tiff != null ? null
                          : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output, overwrite)) {
                 var raster = rasterGrid == null ? null : new GroundGridWriter(tiff, rasterGrid);
                 var terrain = terrainGrid == null ? null : new TerrainWriter(tiff, terrainGrid, reader.header());
                 long selected = 0;
+                double[] heights = null;
                 for (var batch = reader.reader().readBatch(); batch != null; batch = reader.reader().readBatch()) {
+                    if (hag != null) {
+                        hag.checkInterrupted();
+                        if (heights == null || heights.length < batch.size()) {
+                            heights = new double[batch.capacity()];
+                        }
+                        batch.heightAboveGround = heights;
+                    }
                     points:
                     for (int point = 0; point < batch.size(); point++) {
                         for (var filter : filters) {
@@ -291,6 +328,10 @@ public final class Pipeline {
                             terrain.add(batch, point);
                         }
                     }
+                    batch.heightAboveGround = null;
+                }
+                if (hag != null) {
+                    hag.checkInterrupted();
                 }
                 var results = new ArrayList<StageStatistics>();
                 for (var filter : filters) {
@@ -306,11 +347,26 @@ public final class Pipeline {
                 }
                 var dtm = terrain == null ? null : terrain.prepare(reader.finished().getAsBoolean());
                 OutputFinish finish = tiff != null ? tiff::finish : writer != null ? writer::finish : null;
+                if (hag != null && finish != null) {
+                    OutputFinish publish = finish;
+                    finish = () -> {
+                        checkDemOutputAlias();
+                        publish.finish();
+                    };
+                }
                 var result = new Result(reader.header().pointCount(), selected, writer == null ? 0 : writer.pointCount(),
                         List.copyOf(results), pointsBinned, dtm);
                 resultOutput.publish(result, finish);
                 return result;
             }
+        }
+    }
+
+    private void checkDemOutputAlias() throws IOException {
+        if (hag != null && output != null
+                && (hag.raster.toAbsolutePath().normalize().equals(output.toAbsolutePath().normalize())
+                    || Files.exists(hag.raster) && Files.exists(output) && Files.isSameFile(hag.raster, output))) {
+            throw hag.failure("output destination aliases the input DEM: " + output, null);
         }
     }
 
@@ -320,6 +376,10 @@ public final class Pipeline {
         var dimensions = EnumSet.noneOf(Dimension.class);
         try {
             switch (type) {
+                case HAG_FILTER -> {
+                    // The action is bound after the input header is available for CRS checks.
+                    return new Filter(position, type, dimensions, null, null);
+                }
                 case "filters.crop" -> {
                     options(stage, "bounds", "polygon", "outside");
                     return new Filter(position, type, dimensions, crop(stage), null);
@@ -373,6 +433,77 @@ public final class Pipeline {
             }
         } catch (IllegalArgumentException e) {
             throw atStage(position, type, e.getMessage());
+        }
+    }
+
+    private static HagStage parseHag(JsonObject stage, int position) {
+        try {
+            options(stage, "raster", "band", "zero_ground", "class", "min_clamp", "max_clamp", "nodata_hag");
+            var raster = Path.of(string(stage, "raster"));
+            long band = integer(stage, "band", 1);
+            if (band < 1 || band > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("band must be a positive 32-bit integer");
+            }
+            long groundClass = integer(stage, "class", 2);
+            if (groundClass > 255) {
+                throw new IllegalArgumentException("class must be in [0, 255]");
+            }
+            double minimum = stage.has("min_clamp") ? number(stage, "min_clamp") : Double.NEGATIVE_INFINITY;
+            double maximum = stage.has("max_clamp") ? number(stage, "max_clamp") : Double.POSITIVE_INFINITY;
+            if (minimum > maximum) {
+                throw new IllegalArgumentException("min_clamp must not exceed max_clamp");
+            }
+            double missing = stage.has("nodata_hag") ? number(stage, "nodata_hag") : Double.NaN;
+            return new HagStage(position, raster, (int) band, bool(stage, "zero_ground", true),
+                    (int) groundClass, minimum, maximum, missing);
+        } catch (IllegalArgumentException e) {
+            throw atStage(position, HAG_FILTER, e.getMessage());
+        }
+    }
+
+    private record HagStage(int position, Path raster, int band, boolean zeroGround, int groundClass,
+                            double minimum, double maximum, double missing) {
+        Expression.Selection open(BatchInput input) throws IOException {
+            HagDem dem;
+            try {
+                dem = HagDem.load(raster, band, input.header(), input.channel());
+            } catch (InterruptedIOException e) {
+                throw e;
+            } catch (IOException e) {
+                throw failure(e.getMessage(), e);
+            }
+            return (batch, point) -> {
+                double value = 0;
+                if (!zeroGround || Dimension.Classification.value(batch, point) != groundClass) {
+                    double x = batch.x(point);
+                    double y = batch.y(point);
+                    double elevation = dem.elevation(x, y);
+                    if (Double.isNaN(elevation)) {
+                        if (Double.isNaN(missing)) {
+                            throw failure("no DEM elevation at XY (" + x + ", " + y + ")", null);
+                        }
+                        value = missing;
+                    } else {
+                        double difference = batch.z(point) - elevation;
+                        if (!Double.isFinite(difference)) {
+                            throw failure("nonfinite height above ground at XY (" + x + ", " + y + ")", null);
+                        }
+                        value = Math.clamp(difference, minimum, maximum);
+                    }
+                }
+                batch.heightAboveGround[point] = value;
+                return true;
+            };
+        }
+
+        IOException failure(String message, Throwable cause) {
+            return new IOException("Stage " + position + " (" + HAG_FILTER + "): " + message, cause);
+        }
+
+        void checkInterrupted() throws InterruptedIOException {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new InterruptedIOException("Stage " + position + " (" + HAG_FILTER + "): processing cancelled");
+            }
         }
     }
 

@@ -1,0 +1,34 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": ".cache/test-data/so-2019-urban.laz"
+    },
+    {
+      "type": "filters.crop",
+      "bounds": "([2606740,2606940],[1229150,1229350])"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "X < 2606940 && Y > 1229150 && Classification >= 3 && Classification <= 5 && Withheld == 0"
+    },
+    {
+      "type": "filters.hag_dem",
+      "raster": "build/results/dtm-solothurn-urban-complete.tif"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "HeightAboveGround > 5"
+    },
+    {
+      "type": "filters.stats",
+      "dimensions": "Z,HeightAboveGround"
+    },
+    {
+      "type": "writers.las",
+      "filename": "build/results/hag-dem-solothurn-urban.las",
+      "forward": "all",
+      "extra_dims": "all"
+    }
+  ]
+}

@@ -102,6 +102,7 @@ Punktformat geprüft.
 | `filters.crop` | Genau eine Geometrieoption. `bounds` als `([xmin,xmax],[ymin,ymax])` mit optionalem dritten Z-Intervall oder `polygon` als einzelnes 2D-WKT-Polygon. Grenzen sind inklusiv. `outside: true` invertiert die Auswahl. |
 | `filters.expression` | `expression` enthält Dimensionsvergleiche mit endlichen Dezimalliteralen. Unterstützt sind `== != < <= > >=`, `!`, `&&`, `\|\|` und Klammern. Negation bindet vor UND, UND vor ODER. |
 | `filters.decimation` | Ganzzahlige `step` (Standard 1), `offset` (Standard 0) und exklusives `limit` (optional). Zählung ab 0 über die Eingabe dieser Stage. |
+| `filters.hag_dem` | `raster` für ein lokales GeoTIFF. Erzeugt `HeightAboveGround` für nachfolgende Ausdrücke und Statistiken. [Weitere Optionen](#höhe-über-grund) |
 | `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. Optional `count: "Classification"`. |
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
@@ -260,7 +261,42 @@ Die JSON-Metadaten zählen unter `dtm` die eindeutigen Stützpunkte
 `pointsSelected` zählt alle
 selektierten Punkte vor der Deduplizierung, `pointsWritten` ist 0.
 
+## Höhe über Grund
+
+`filters.hag_dem` berechnet `HeightAboveGround = Z - DEM(X,Y)` als
+Double. Pro Pipeline ist eine HAG-Stage zulässig. Nachfolgende
+`filters.expression` und `filters.stats` können auf die Dimension
+zugreifen. Die LAS-Ausgabe enthält die ausgewählten Originalrecords
+mit ihren bisherigen Dimensionen und Extra Bytes.
+
+Das lokale, nordorientierte GeoTIFF wird in Originalauflösung ausgelesen.
+`band` zählt ab 1 und hat den Standardwert 1. Das ausgewählte Band darf
+bis zu 4 Millionen Zellen enthalten. Der Filter verwendet den Wert der
+Zelle am Punkt-XY. West und Nord sind inklusive, Ost und Süd exklusiv.
+Die Daten müssen horizontal dasselbe CRS und dieselbe Achsenreihenfolge
+haben. Der Höhenbezug und die Z-Einheit müssen ebenfalls übereinstimmen.
+Deklarierte Konflikte meldet die Stage als Fehler. Wenn Quellen den
+Höhenbezug offenlassen, stellt der Aufrufer dessen Übereinstimmung sicher.
+
+- `zero_ground` hat Standardwert `true` und setzt Bodenpunkte vor der
+  Rasterabfrage auf 0. `class` bestimmt die Bodenklasse, Standardwert 2.
+- `min_clamp` und `max_clamp` begrenzen gültige Differenzen optional.
+  Ohne Grenzen bleiben vorzeichenbehaftete Höhen erhalten.
+- Ein endlicher `nodata_hag` ist der Ersatzwert für NoData und fehlende
+  Rasterabdeckung. Ohne ihn liefert die Stage dort einen Fehler.
+
+Der [Solothurn-Workflow](../examples/hag-dem-solothurn-urban.json)
+verwendet das vollständige Stadt-DTM. Er wählt Vegetationspunkte über
+5 m und schreibt deren LAS-Records mit unverändertem `Z`.
+
 ## Kompatibilität mit PDAL 2.10.2
+
+- Für einen Vergleich von HAG mit vorzeichenbehafteten Höhen setzt PDAL
+  eine explizite negative `min_clamp`-Grenze. Java meldet fehlende
+  DEM-Werte standardmässig als Fehler. Bei getaggtem NoData gilt die
+  analytische Java-Referenz, da PDAL 2.10.2 in unserer GeoTIFF-Probe
+  den NoData-Wert als Höhe verrechnet hat.
+  [PDAL HAG-Implementierung](https://github.com/PDAL/PDAL/blob/2.10.2/filters/HagDemFilter.cpp)
 
 - Das Gegenstück zu `writers.dtm` ist die PDAL-Stagefolge
   `filters.delaunay`, `filters.faceraster`, `writers.raster`.

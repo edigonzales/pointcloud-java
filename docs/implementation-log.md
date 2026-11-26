@@ -1463,3 +1463,49 @@ seinen SemiVirtual-Tinfour-Fallback als Bestandteile von `writers.dtm`.
 - Die 108 Klassendateien in den Produkt- und Codec-JARs sind bytegleich
   zur abgenommenen Distribution. Die vollständig gemessenen Läufe
   bleiben damit als Leistungsnachweis gültig.
+
+## Höhe über Grund aus GeoTIFF
+
+26. November 2026. `filters.hag_dem` liest ein GeoTIFF-Band bis
+vier Millionen Zellen in Originalauflösung und hält die abgeleitete
+Double-Höhe neben dem Rohrecord. Ausdrücke und Statistik können die
+Dimension nach der Stage lesen. Die Ausgabe schreibt die ausgewählten
+Originalrecords. Die Auswahl der Punkte und die HAG-Berechnung laufen
+im geordneten Verbraucher des seriellen oder parallelen Readers.
+
+- `./gradlew --offline clean check installDist` bestand auf dem M1
+  mit Temurin 25.0.3+9. Alle 165 JUnit-Fälle bestanden, davon 16 für HAG.
+  Die abschliessenden XML-Suitezeiten summierten sich auf 1.844 s.
+  Ein Zwischenstand öffnete den Reader vor der Syntaxprüfung. Neun
+  bestehende Validierungstests erkannten die Abweichung. Der Compiler
+  prüft die Optionen wieder vor dem Öffnen und bindet das Raster
+  anschliessend an den geöffneten LAS-Header.
+- Die unabhängige Produktsuite mit PDAL 2.10.2 verglich 496'586
+  LAS-Records ohne Unterschied. SIGTERM ergab Exit 143 nach 0.23 s
+  ohne temporäre oder veröffentlichte Ausgabe.
+- `tools/check-ground-grid.py --release` bestätigte die bisherige
+  Rasterausgabe nach der Anpassung der CRS-Auflösung. Je 40'000
+  Zellen stimmten mit PDAL überein, bis auf höchstens
+  4.55 × 10⁻¹³ bei Z und 5.09 × 10⁻¹¹ bei Intensity.
+- Das Stadtbeispiel erzeugte mit `writers.dtm` ein vollständiges
+  200 × 200-Raster und wählte mit `filters.hag_dem` anschliessend
+  254'465 Vegetationspunkte über 5 m aus der ursprünglichen LAZ.
+  Die LAS-Datei enthält 8'652'319 Bytes und die Statistik eine mittlere
+  Höhe über Grund von 9.5689 m.
+- Gegen PDAL wurden zwei vollständige Solothurn-LAZs auf identischen
+  DEMs geprüft. Java mit 1 und 4 Readern lieferte bitgleiche LAS-Dateien
+  und identische Metadaten. In der Stadt stimmten 3'512'369 ausgewählte
+  Rohrecords, im Wald 10'262'303 jeweils in Dateireihenfolge überein.
+  Die Statistik für `Z,HeightAboveGround` erfüllte die Produkttoleranz.
+  Getaggtes NoData und Abbruchpfade sind direkt analytisch geprüft.
+- `tools/check-hag-dem.py` endete mit Exit 0. Die 104 Wandzeitmessungen
+  auf dem M1 und die sechs separaten JFR-Läufe sind dokumentiert.
+  Mit vier Readern brauchte Java in der Stadt 2.041 s und im Wald
+  2.243 s, PDAL 3.595 s und 4.611 s. Rasteraufbau samt CRS-Prüfung
+  und GeoTools-Initialisierung brauchte rund 0.52 s pro Prozess.
+  [Messprotokoll](experiments.md#höhe-über-grund-gegen-pdal-2102)
+
+Die Einfachheitsprüfung belässt die Transformation im vorhandenen
+Filterdurchlauf. Die Stichprobe greift auf ein begrenztes Array zu, die
+Rasterdaten und die abgeleiteten Batchwerte benötigen keine eigenen
+Reader-Worker. Der LAS-Writer behält den bestehenden Recordpfad.

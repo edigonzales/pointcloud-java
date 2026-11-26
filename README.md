@@ -107,6 +107,16 @@ nächstgelegenen Bodenpunkts.
 "$cli" pipeline examples/dtm-solothurn-forest-complete.json --laz-workers 4 --metadata build/results/dtm-solothurn-forest-complete.json
 ```
 
+[`filters.hag_dem`](docs/architecture.md#höhe-über-grund) berechnet aus
+einem vorhandenen DTM die Punktdimension `HeightAboveGround`. Nach dem
+Stadt-DTM oben liest dieses Beispiel erneut die ursprüngliche LAZ,
+wählt Vegetationspunkte über 5 m und schreibt deren Originalrecords.
+Die Metadaten enthalten die Statistik der relativen Höhen.
+
+```sh
+"$cli" pipeline examples/hag-dem-solothurn-urban.json --laz-workers 4 --metadata build/results/hag-dem-solothurn-urban.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 

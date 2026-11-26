@@ -1,5 +1,6 @@
 package pointcloud;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.regex.Pattern;
@@ -11,7 +12,7 @@ final class Expression {
 
     @FunctionalInterface
     interface Selection {
-        boolean keep(PointBatch batch, int point);
+        boolean keep(PointBatch batch, int point) throws IOException;
     }
 
     private final String source;
