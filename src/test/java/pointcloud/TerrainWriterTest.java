@@ -42,6 +42,86 @@ class TerrainWriterTest {
     }
 
     @Test
+    void preservesPixelBitsAndMetadataWithDirectLv95Keys() throws Exception {
+        var fast = temp.resolve("direct-lv95.tif");
+        var fallback = temp.resolve("fallback-lv95.tif");
+        // GeoTIFF 1.1 directories are handled by the existing fallback.
+        var directKeys = new int[]{1, 1, 0, 3, 1024, 0, 1, 1, 3072, 0, 1, 2056, 3076, 0, 1, 9001};
+        var fallbackKeys = directKeys.clone();
+        fallbackKeys[2] = 1;
+        assertEquals(pipeline(fixture(TRIANGLE, directKeys, null), fast, "").run(2, false),
+                pipeline(fixture(TRIANGLE, fallbackKeys, null), fallback, "").run(2, false));
+        assertArrayEquals(samples(fast), samples(fallback));
+        assertEquals(-1, Files.mismatch(fast, fallback));
+    }
+
+    @Test
+    void preservesOutputWithCantonalGeoKeyReferencesAndTheirFallback() throws Exception {
+        int[] keys = {1, 1, 0, 8, 1024, 0, 1, 1, 1025, 0, 1, 1, 1026, 34737, 15, 0,
+                2049, 34737, 8, 15, 2054, 0, 1, 9102, 2062, 34736, 3, 0, 3072, 0, 1, 2056,
+                3076, 0, 1, 9001};
+        var citation = projectionRecord(34737, "CH1903+ / LV95|CH1903+|\0".getBytes(StandardCharsets.US_ASCII));
+        var parameters = projectionRecord(34736, new byte[3 * Double.BYTES]);
+        var valid = temp.resolve("cantonal-geokeys.tif");
+        var missing = temp.resolve("missing-geokey-parameter-record.tif");
+        var outOfRange = temp.resolve("invalid-geokey-parameter-range.tif");
+        var expected = pipeline(fixture(TRIANGLE, keys, null, parameters, citation), valid, "").run(2, false);
+        assertEquals(expected, pipeline(fixture(TRIANGLE, keys, null, citation), missing, "").run(2, false));
+        keys[27] = 1; // The datum shift can no longer read three doubles starting at index 1.
+        assertEquals(expected, pipeline(fixture(TRIANGLE, keys, null, parameters, citation), outOfRange, "")
+                .run(2, false));
+        assertEquals(-1, Files.mismatch(valid, missing));
+        assertEquals(-1, Files.mismatch(valid, outOfRange));
+    }
+
+    @Test
+    void wktStillTakesPriorityOverDirectKeys() throws Exception {
+        var wkt = CRS.decode("EPSG:4326", true).toWKT();
+        var target = temp.resolve("wkt-first.tif");
+        var source = fixture(TRIANGLE, new int[]{1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 2056}, wkt);
+        var error = assertThrows(IOException.class, () -> pipeline(source, target, "").run(2, false));
+        assertTrue(error.getMessage().contains("requires a projected horizontal LAS CRS"));
+        assertNoPartialOutput(target);
+    }
+
+    @Test
+    void resolvesOtherProjectedCrsThroughGeoTools() throws Exception {
+        var target = temp.resolve("other-projection.tif");
+        var source = fixture(TRIANGLE,
+                new int[]{1, 1, 0, 3, 1024, 0, 1, 1, 3072, 0, 1, 2056, 3072, 0, 1, 32632}, null);
+        assertEquals(3, pipeline(source, target, "").run(2, false).dtm().cellsCovered());
+        assertEquals(3, java.util.Arrays.stream(samples(target, 32632)).filter(z -> z != -9999).count());
+    }
+
+    @Test
+    void geographicKeysStillFailForTerrain() throws Exception {
+        var target = temp.resolve("unprojected.tif");
+        var source = fixture(TRIANGLE, new int[]{1, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326}, null);
+        var error = assertThrows(IOException.class, () -> pipeline(source, target, "").run(2, false));
+        assertTrue(error.getMessage().contains("requires a projected horizontal LAS CRS"));
+        assertNoPartialOutput(target);
+    }
+
+    @Test
+    void rejectsUnsupportedAndTruncatedProjectionKeys() throws Exception {
+        var target = temp.resolve("invalid-projection.tif");
+        int[] keys = {1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32767};
+        var unsupported = fixture(TRIANGLE, keys, null);
+        var error = assertThrows(IOException.class, () -> pipeline(unsupported, target, "").run(2, false));
+        assertTrue(error.getMessage().contains("no supported horizontal EPSG code"));
+        keys[3] = 3;
+        var truncated = fixture(TRIANGLE, keys, null);
+        error = assertThrows(IOException.class, () -> pipeline(truncated, target, "").run(2, false));
+        assertTrue(error.getMessage().contains("Invalid LAS GeoKey directory"));
+        keys[3] = 2;
+        keys[11] = 1024; // EPSG operation method ID, not a CRS.
+        var unknown = fixture(TRIANGLE, keys, null);
+        error = assertThrows(IOException.class, () -> pipeline(unknown, target, "").run(2, false));
+        assertTrue(error.getMessage().contains("Cannot resolve LAS CRS"));
+        assertNoPartialOutput(target);
+    }
+
+    @Test
     void resolvesCocircularAndSharedEdgesIndependentlyOfBatchSize() throws Exception {
         var source = fixture(new int[][]{{0, 0, 0}, {8, 0, 0}, {0, 8, 0}, {8, 8, 80}, {8, 8, 7}});
         var single = temp.resolve("single.tif");
@@ -55,6 +135,43 @@ class TerrainWriterTest {
         for (int cell : new int[]{3, 4, 6, 7}) {
             assertTrue(heights[cell] >= 700 && heights[cell] <= z(80));
         }
+    }
+
+    @Test
+    void keepsFirstZeroKeyAcrossBatchesWithSignedCoordinates() throws Exception {
+        var source = fixture(new int[][]{{-8, 0, 10}, {16, 0, 20}, {0, 0, 40}, {0, 16, 30}, {0, 0, 99}});
+        var target = temp.resolve("signed-xy.tif");
+        var result = pipeline(source, target, "").run(2, false);
+        assertEquals(5, result.pointsSelected());
+        assertEquals(4, result.dtm().supportPoints());
+        assertEquals(z(36.25), samples(target)[6], 1e-12);
+    }
+
+    @Test
+    void primitiveKeysDistinguishCollisionsAndKeepEntriesAcrossResizes() {
+        var keys = new TerrainWriter.LongKeys();
+        assertTrue(keys.add(0));
+        assertFalse(keys.add(0));
+        // All these mixed keys begin in slot 1, even after the first several resizes.
+        for (long i = -4096; i <= 4096; i++) {
+            assertTrue(keys.add((i << 16) | 1), "insert " + i);
+        }
+        for (long i = 4096; i >= -4096; i--) {
+            assertFalse(keys.add((i << 16) | 1), "duplicate " + i);
+        }
+        assertFalse(keys.add(0));
+        assertTrue(keys.add(Long.MIN_VALUE));
+        assertTrue(keys.add(Long.MAX_VALUE));
+    }
+
+    @Test
+    void retainsSupportEvenWhenEveryTriangleIsOutsideTheRaster() throws Exception {
+        var source = fixture(new int[][]{{20, 20, 10}, {28, 20, 20}, {20, 28, 30}, {20, 20, 90}, {28, 20, 99}});
+        var target = temp.resolve("outside.tif");
+        var result = pipeline(source, target, "").run(2, false);
+        assertEquals(new Pipeline.TerrainStatistics(3, 0, 9), result.dtm());
+        assertArrayEquals(new double[]{-9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999},
+                samples(target));
     }
 
     @Test
@@ -151,11 +268,15 @@ class TerrainWriterTest {
     }
 
     private static double[] samples(Path target) throws Exception {
+        return samples(target, 2056);
+    }
+
+    private static double[] samples(Path target, int epsg) throws Exception {
         var reader = new GeoTiffReader(target.toFile());
         try {
             var coverage = reader.read();
             var raster = coverage.getRenderedImage().getData();
-            assertEquals(2056, CRS.lookupEpsgCode(coverage.getCoordinateReferenceSystem2D(), true));
+            assertEquals(epsg, CRS.lookupEpsgCode(coverage.getCoordinateReferenceSystem2D(), true));
             assertEquals(DataBuffer.TYPE_DOUBLE, raster.getDataBuffer().getDataType());
             assertEquals(1, raster.getNumBands());
             return raster.getSamples(0, 0, 3, 3, 0, (double[]) null);
@@ -175,6 +296,10 @@ class TerrainWriterTest {
     }
 
     private Path fixture(int[][] coordinates) throws IOException {
+        return fixture(coordinates, new int[]{1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 2056}, null);
+    }
+
+    private Path fixture(int[][] coordinates, int[] keys, String wkt, byte[]... auxiliaryRecords) throws IOException {
         var las = LasIoTest.bytes(LasIoTest.fixture(3, "las"));
         las.putDouble(131, .25).putDouble(139, .25).putDouble(147, Z_SCALE);
         las.putDouble(155, 2606740).putDouble(163, 1229150).putDouble(171, 700);
@@ -184,15 +309,31 @@ class TerrainWriterTest {
             int offset = start + i * stride;
             las.putInt(offset, coordinates[i][0]).putInt(offset + 4, coordinates[i][1]).putInt(offset + 8, coordinates[i][2]);
         }
-        var geokeys = ByteBuffer.allocate(54 + 24).order(ByteOrder.LITTLE_ENDIAN);
-        geokeys.position(2).put("LASF_Projection".getBytes(StandardCharsets.US_ASCII));
-        geokeys.putChar(18, (char) 34735).putChar(20, (char) 24).position(54);
-        for (int value : new int[]{1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 2056}) {
-            geokeys.putChar((char) value);
+        var keyBytes = ByteBuffer.allocate(keys.length * 2).order(ByteOrder.LITTLE_ENDIAN);
+        for (int value : keys) {
+            keyBytes.putChar((char) value);
         }
-        las.putInt(96, start + geokeys.capacity()).putInt(100, las.getInt(100) + 1);
-        return Files.write(Files.createTempFile(temp, "points-", ".las"),
-                ByteBuffer.allocate(las.capacity() + geokeys.capacity()).put(las.array(), 0, start)
-                        .put(geokeys.array()).put(las.array(), start, las.capacity() - start).array());
+        var geokeys = projectionRecord(34735, keyBytes.array());
+        var wktRecord = wkt == null ? new byte[0] : projectionRecord(2112, (wkt + "\0").getBytes(StandardCharsets.UTF_8));
+        int metadataLength = geokeys.length + wktRecord.length;
+        for (byte[] auxiliary : auxiliaryRecords) {
+            metadataLength += auxiliary.length;
+        }
+        las.putInt(96, start + metadataLength)
+                .putInt(100, las.getInt(100) + (wkt == null ? 1 : 2) + auxiliaryRecords.length);
+        var result = ByteBuffer.allocate(las.capacity() + metadataLength).put(las.array(), 0, start)
+                .put(geokeys).put(wktRecord);
+        for (byte[] auxiliary : auxiliaryRecords) {
+            result.put(auxiliary);
+        }
+        result.put(las.array(), start, las.capacity() - start);
+        return Files.write(Files.createTempFile(temp, "points-", ".las"), result.array());
+    }
+
+    private static byte[] projectionRecord(int recordId, byte[] content) {
+        var record = ByteBuffer.allocate(54 + content.length).order(ByteOrder.LITTLE_ENDIAN);
+        record.position(2).put("LASF_Projection".getBytes(StandardCharsets.US_ASCII));
+        record.putChar(18, (char) recordId).putChar(20, (char) content.length).position(54);
+        return record.put(content).array();
     }
 }

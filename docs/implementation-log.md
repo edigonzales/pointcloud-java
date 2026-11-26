@@ -1327,3 +1327,43 @@ mit LazPerf und GDAL 3.13.3.
   bei 2.651 s und 2.998 s. Der Delaunator-Prototyp bleibt als Patch
   zur fachlichen und betrieblichen Bewertung verfügbar.
   [Messaufbau, Ergebnisse und Reproduktion](experiments.md#tin-optimierungsversuche)
+
+## Bitgleiche DTM-Optimierungen
+
+Basis `8021112`, Apple M1, macOS 15.8.1, Temurin 25.0.3+9,
+Gradle 9.9.1, PDAL 2.10.2 und GDAL 3.13.3. Die primitive
+XY-Tabelle erhält den ersten ausgewählten Z-Wert in
+Dateireihenfolge. Der Rasterdurchlauf prüft die ursprünglichen
+Vertex-Indizes vor dem Clip und dem Kantenlimit. Das kompakte
+SemiVirtual-Netz bleibt der TIN-Kern. Eindeutige LV95-GeoKeys
+werden nach Prüfung des Modelltyps und der VLR-Verweise direkt
+geschrieben. WKT behält Vorrang. Der sonstige CRS-Pfad läuft
+über GeoTools.
+
+- `tools/check-real-data.py` verglich 496'586 vollständige
+  LAS-Records mit PDAL. Alle Records und geprüften Attribute
+  stimmten überein. SIGTERM ergab Exit 143 ohne Teilausgabe.
+- `tools/check-ground-grid.py --release` bestätigte die
+  Höhen-, Intensitäts-, NoData- und Deflate-Regressionsfälle.
+  Die höchsten Abweichungen zu PDAL lagen bei 4.55 × 10⁻¹³ m
+  für Z und 5.09 × 10⁻¹¹ für Intensity.
+- Die Million-Punkte-Probe unter `-Xmx512m` ergab in beiden
+  Builds 40'000 analytisch geprüfte Höhen. Das Spitzen-RSS
+  sank in der Probe von 453 auf 320 MiB.
+- `./gradlew --offline clean check installDist` endete in 4 s mit
+  Exit 0. Alle 131 JUnit-Fälle bestanden, ohne Fehler, Fehlschläge
+  oder übersprungene Fälle. XML unter `build/test-results/test/`.
+- Stadt und Wald waren für Boden-LAS und vollständige LAZ mit
+  1/4 Readern in sämtlichen Profilen mit und ohne Kantenlimit
+  bitgleich. Die 96 Einzelmessungen umfassen acht gepaarte Runden.
+
+| Gebiet | Eingabe | Reader | Median Basis / Produkt (s) | Gepaarter Gewinn | Peak-RSS Max (MiB) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Stadt | ground-las | 1 | 1.895 / 1.211 | 36.15% | 386 / 283 |
+| Stadt | laz | 1 | 5.489 / 4.807 | 12.20% | 441 / 339 |
+| Stadt | laz | 4 | 2.844 / 2.331 | 19.06% | 458 / 356 |
+| Wald | ground-las | 1 | 1.367 / 0.866 | 36.48% | 341 / 244 |
+| Wald | laz | 1 | 6.201 / 5.646 | 8.90% | 431 / 325 |
+| Wald | laz | 4 | 2.837 / 2.325 | 17.19% | 447 / 344 |
+
+[Einzelmessungen mit Wandzeit, CPU und RSS](measurements/tin-product-exact.csv)

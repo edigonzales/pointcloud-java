@@ -1,6 +1,5 @@
 package pointcloud;
 
-import org.geotools.api.referencing.crs.ProjectedCRS;
 import org.tinfour.common.GeometricOperations;
 import org.tinfour.common.IMonitorWithCancellation;
 import org.tinfour.common.Thresholds;
@@ -11,7 +10,7 @@ import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
+import java.util.BitSet;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 
@@ -35,14 +34,14 @@ final class TerrainWriter {
     private final Grid grid;
     private final LasHeader header;
     private final List<Vertex> vertices = new ArrayList<>();
-    private HashSet<Long> seen = new HashSet<>();
+    private LongKeys seen = new LongKeys();
     private double[] heights = new double[1024];
     private int selected;
     private int anchorX;
     private int anchorY;
 
     TerrainWriter(GeoTiffOutput output, Grid grid, LasHeader header) throws IOException {
-        if (!(output.crs instanceof ProjectedCRS)) {
+        if (!output.isProjected()) {
             throw new IOException("DTM requires a projected horizontal LAS CRS");
         }
         this.output = output;
@@ -64,7 +63,7 @@ final class TerrainWriter {
             anchorY = rawY;
         }
         long xy = ((long) rawX << 32) | Integer.toUnsignedLong(rawY);
-        if (seen.add(xy)) {
+        if (seen.add(mixXY(xy))) {
             int index = vertices.size();
             if (index == heights.length) {
                 heights = Arrays.copyOf(heights, Math.min(MAX_POINTS, index * 2));
@@ -78,6 +77,13 @@ final class TerrainWriter {
             vertices.add(new Vertex(x, y, 0, index));
             heights[index] = batch.z(point);
         }
+    }
+
+    // SplitMix64's bijective finalizer mixes both packed coordinate halves before hashing.
+    private static long mixXY(long value) {
+        value = (value ^ (value >>> 30)) * 0xbf58476d1ce4e5b9L;
+        value = (value ^ (value >>> 27)) * 0x94d049bb133111ebL;
+        return value ^ (value >>> 31);
     }
 
     Pipeline.TerrainStatistics prepare(boolean sourceFinished) throws IOException {
@@ -100,7 +106,7 @@ final class TerrainWriter {
     }
 
     private void rasterize(double[] samples) throws IOException {
-        var tin = triangulate();
+        var tin = triangulate(false);
         try {
             double centerX = localX(grid.originX) + grid.resolution / 2;
             double centerY = localY(grid.originY) + grid.resolution / 2;
@@ -108,20 +114,41 @@ final class TerrainWriter {
                 throw new IOException("Nonfinite local DTM raster origin");
             }
             var geometry = new GeometricOperations(tin.getThresholds());
+            var visited = new BitSet(vertices.size());
             int faces = 0;
             for (var triangle : tin.triangles()) {
                 if ((++faces & 4095) == 0) {
                     checkInterrupted();
                 }
-                sampleTriangle(triangle.getVertexA(), triangle.getVertexB(), triangle.getVertexC(),
-                        centerX, centerY, geometry, samples);
+                Vertex a = triangle.getVertexA();
+                Vertex b = triangle.getVertexB();
+                Vertex c = triangle.getVertexC();
+                markSupport(visited, a);
+                markSupport(visited, b);
+                markSupport(visited, c);
+                sampleTriangle(a, b, c, centerX, centerY, geometry, samples);
+            }
+            if (visited.cardinality() != vertices.size()) {
+                throw new IOException("Triangulation merged distinct LAS XY coordinates");
             }
         } finally {
             tin.dispose();
         }
     }
 
+    private void markSupport(BitSet visited, Vertex vertex) throws IOException {
+        int index = vertex.getIndex();
+        if (index < 0 || index >= vertices.size() || vertices.get(index) != vertex) {
+            throw new IOException("Triangulation merged distinct LAS XY coordinates");
+        }
+        visited.set(index);
+    }
+
     SemiVirtualIncrementalTin triangulate() throws IOException {
+        return triangulate(true);
+    }
+
+    private SemiVirtualIncrementalTin triangulate(boolean validateVertices) throws IOException {
         seen = null;
         checkInterrupted();
         double minScale = Math.min(header.scale(0), header.scale(1));
@@ -132,14 +159,16 @@ final class TerrainWriter {
                 throw new IOException("DTM requires at least three non-collinear support points");
             }
             checkInterrupted();
-            int vertexCount = 0;
-            for (var vertex : tin.vertices()) {
-                if ((++vertexCount & 4095) == 0) {
-                    checkInterrupted();
+            if (validateVertices) {
+                int vertexCount = 0;
+                for (var vertex : tin.vertices()) {
+                    if ((++vertexCount & 4095) == 0) {
+                        checkInterrupted();
+                    }
                 }
-            }
-            if (vertexCount != vertices.size()) {
-                throw new IOException("Triangulation merged distinct LAS XY coordinates");
+                if (vertexCount != vertices.size()) {
+                    throw new IOException("Triangulation merged distinct LAS XY coordinates");
+                }
             }
             return tin;
         } catch (CancellationException e) {
@@ -253,7 +282,7 @@ final class TerrainWriter {
         @Override public int getReportingIntervalInPercent() { return 1; }
         @Override public boolean isCanceled() { return Thread.currentThread().isInterrupted(); }
         @Override public void reportProgress(int progress) {
-            // The semi-virtual bulk insert reports progress but does not poll isCanceled().
+            // The bulk insert reports progress but does not poll isCanceled().
             if (isCanceled()) {
                 throw new CancellationException();
             }
@@ -261,4 +290,48 @@ final class TerrainWriter {
         @Override public void reportDone() {}
         @Override public void postMessage(String message) {}
     };
+
+    /** Stores the mixed key itself so resizing can reuse its bucket hash. */
+    static final class LongKeys {
+        private long[] table = new long[16];
+        private int count;
+        private boolean hasZero;
+
+        boolean add(long key) {
+            // The mix is bijective and maps zero to zero. Only the original zero needs a separate slot.
+            if (key == 0) {
+                if (hasZero) {
+                    return false;
+                }
+                hasZero = true;
+                return true;
+            }
+            int slot = findSlot(table, key);
+            if (table[slot] == key) {
+                return false;
+            }
+            if (count == table.length / 2) {
+                var expanded = new long[table.length * 2];
+                for (long existing : table) {
+                    if (existing != 0) {
+                        expanded[findSlot(expanded, existing)] = existing;
+                    }
+                }
+                table = expanded;
+                slot = findSlot(table, key);
+            }
+            table[slot] = key;
+            count++;
+            return true;
+        }
+
+        private static int findSlot(long[] slots, long key) {
+            int mask = slots.length - 1;
+            int slot = (int) key & mask;
+            while (slots[slot] != 0 && slots[slot] != key) {
+                slot = (slot + 1) & mask;
+            }
+            return slot;
+        }
+    }
 }
