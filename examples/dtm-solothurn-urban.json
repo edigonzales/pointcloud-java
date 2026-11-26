@@ -1,0 +1,29 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": ".cache/test-data/so-2019-urban.laz"
+    },
+    {
+      "type": "filters.crop",
+      "bounds": "([2606690,2606990],[1229100,1229400])"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "Classification == 2 && Withheld == 0"
+    },
+    {
+      "type": "filters.stats",
+      "dimensions": "Z"
+    },
+    {
+      "type": "writers.dtm",
+      "filename": "build/results/dtm-solothurn-urban.tif",
+      "resolution": 1,
+      "origin_x": 2606740,
+      "origin_y": 1229150,
+      "width": 200,
+      "height": 200
+    }
+  ]
+}

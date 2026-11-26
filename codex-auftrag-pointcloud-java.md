@@ -101,7 +101,7 @@ Implementiere einen überschaubaren produktiven Kern. Der Umfang dieses Auftrags
 - vollständiger PDAL-Kompatibilität, Pipelinegraphen mit mehreren Ein-/Ausgängen und Plugins;
 - COPC-/EPT-Raumsuche, einem HTTP-Range-Reader für die Engine und einem Cloudkatalog;
 - CRS-Reprojektion, PROJ, eine GDAL-Laufzeitabhängigkeit und Rasterverfahren ausserhalb des in Abschnitt 6.2 definierten Gitters;
-- Bodenklassifikation, Normalen, k-NN, Octrees, Triangulation und räumlichen Datenbanken;
+- Bodenklassifikation, Normalen, k-NN, Octrees, allgemeine Mesh-Verarbeitung und räumlichen Datenbanken;
 - GUI, Webserver, Spring Boot, REST-API und verteiltem Rechnen;
 - vollständiger Neuentwicklung eines LAZ-Encoders;
 - einem allgemeinen Backend-/Accelerator-Framework und automatischer Hardwareoptimierung.
@@ -299,6 +299,7 @@ Relative Dateipfade werden wie beim Referenzlauf relativ zum Arbeitsverzeichnis 
 | `writers.las` | `filename`, ausdrücklich `forward: "all"`, `compression: false` und `extra_dims: "all"`. Für diese erste Teilmenge sind diese Einstellungen verbindlich; andere Header-/Quantisierungseinstellungen klar zurückweisen |
 | `writers.null` | Terminierung ohne Punktdatei; für Statistik- und Dekodiermessungen |
 | `writers.raster` | Lokales Float64-GeoTIFF für `Z` oder `Intensity` mit `binmode: true` und explizitem Gitter. Wählbare Bänder `min,max,mean,count,stdev`, nichtnegatives `window_size`, endliches `nodata` und optionale Deflate-Kompression. |
+| `writers.dtm` | Lokales Float64-GeoTIFF aus einem XY-Delaunay-Netz über den ausgewählten LAS-Punkten. Explizites Gitter im projizierten Eingabe-CRS, höchstens eine Million ausgewählte Stützpunkte vor Deduplizierung, lineare Z-Interpolation und optionales XY-Kantenlimit. |
 
 Die Rastererweiterung verarbeitet höchstens eine Million Zellen. Das Gitter
 verwendet die skalierten XY-Koordinaten und das horizontale CRS der LAS-Eingabe.
@@ -491,7 +492,7 @@ Eine nicht verfügbare notwendige Referenzinstallation ist ein **offener Abnahme
 
 Die Pflichtkachel muss im normalen sequenziellen JVM-Produktpfad mit **`-Xmx512m`** vollständig durch die Beispielpipeline laufen. Das ist ein Ziel für den Java-Heap, keine Behauptung, dass der gesamte Prozess nur 512 MiB braucht.
 
-Maximales RSS, gemappte/off-heap Bereiche und Zahl offener Batches beobachten. Die Engine darf die vollständige Punktwolke nicht zur Verarbeitung im Heap halten. Den grösseren Eingabefall durch Wiederholung oder kontrollierte synthetische Batches prüfen, ohne eine riesige zusätzliche Datei zu erzeugen. Sehr grosse Zähler-/Offsetgrenzen gezielt mit kleinen Tests prüfen.
+Maximales RSS, gemappte/off-heap Bereiche und Zahl offener Batches beobachten. Die Engine darf die vollständige Punktwolke nicht zur Verarbeitung im Heap halten. `writers.dtm` hält bis zu einer Million ausgewählte Punkte zur Triangulation. Den grösseren Eingabefall durch Wiederholung oder kontrollierte synthetische Batches prüfen, ohne eine riesige zusätzliche Datei zu erzeugen. Sehr grosse Zähler-/Offsetgrenzen gezielt mit kleinen Tests prüfen.
 
 ### 8.4 Verbindliche Dokumentation und Testmetriken je Etappe
 

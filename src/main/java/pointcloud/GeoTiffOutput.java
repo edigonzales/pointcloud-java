@@ -25,22 +25,97 @@ import java.awt.image.DataBuffer;
 import java.awt.image.DataBufferDouble;
 import java.awt.image.Raster;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 
-final class GeoTiffOutput {
+final class GeoTiffOutput implements AutoCloseable {
     static final double NODATA = -9999;
+    static final int MAX_CELLS = 1_000_000;
     private static final int COORDINATE_SYSTEM_WKT = 2112;
     private static final int GEO_KEY_DIRECTORY = 34735;
     private static final int MAX_PROJECTION_BYTES = 65_535;
     private static final int PENDING_EXTRA_SAMPLES = BaselineTIFFTagSet.TAG_EXTRA_SAMPLES - 1;
 
-    private GeoTiffOutput() {}
+    private final Path input;
+    private final Path target;
+    private final boolean overwrite;
+    final CoordinateReferenceSystem crs;
+    private Path temporary;
 
-    static CoordinateReferenceSystem resolveCrs(LasHeader header, FileChannel source) throws IOException {
+    GeoTiffOutput(Path input, Path target, boolean overwrite, LasHeader header, FileChannel source)
+            throws IOException {
+        this.input = input;
+        this.target = target.toAbsolutePath();
+        this.overwrite = overwrite;
+        checkTarget();
+        crs = resolveCrs(header, source);
+    }
+
+    static void validateGrid(double originX, double originY, double resolution, int width, int height) {
+        if (resolution <= 0 || width <= 0 || height <= 0 || (long) width * height > MAX_CELLS) {
+            throw new IllegalArgumentException("grid requires positive resolution and dimensions, with at most "
+                    + MAX_CELLS + " cells");
+        }
+        if (!Double.isFinite(originX + width * resolution) || !Double.isFinite(originY + height * resolution)
+                || originX + resolution <= originX || originY + resolution <= originY) {
+            throw new IllegalArgumentException("grid extent and cell size must be representable");
+        }
+    }
+
+    void prepare(double originX, double originY, double resolution, int width, int height,
+                 double[][] bands, List<String> names, double nodata, boolean deflate) throws IOException {
+        checkInterrupted();
+        Files.createDirectories(target.getParent());
+        temporary = Files.createTempFile(target.getParent(), ".pointcloud-", ".tif.part");
+        write(temporary, crs, originX, originY, resolution, width, height, bands, names, nodata, deflate);
+        checkInterrupted();
+    }
+
+    void finish() throws IOException {
+        checkInterrupted();
+        checkTarget();
+        if (overwrite) {
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } else {
+            Files.createLink(target, temporary);
+            Files.delete(temporary);
+        }
+        temporary = null;
+    }
+
+    private void checkTarget() throws IOException {
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.exists(target) && Files.isSameFile(input, target)) {
+                throw new IOException("Point input and GeoTIFF output refer to the same file");
+            }
+            if (!overwrite) {
+                throw new FileAlreadyExistsException(target.toString());
+            }
+        }
+    }
+
+    static void checkInterrupted() throws InterruptedIOException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedIOException("GeoTIFF output cancelled");
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        if (temporary != null) {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static CoordinateReferenceSystem resolveCrs(LasHeader header, FileChannel source) throws IOException {
         var records = new LasHeader.VariableRecord[2];
         LasHeader.RecordVisitor findProjection = record -> {
             if (!record.userId().equals("LASF_Projection")) {

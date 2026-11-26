@@ -1218,3 +1218,63 @@ Kollisionen mit gültigen Werten werden vor dem Schreiben erkannt.
   20 dauerten die Einzelläufe 3.773 s in Java und 1.741 s in PDAL.
   Beide füllten 500'000 Zellen und stimmten innerhalb (6.03 × 10⁻¹² m)
   überein.
+
+## TIN-Terrainmodell aus Bodenpunkten
+
+26. November 2026, Basis `9617f6b`, Apple M1 mit macOS 15.8.1,
+Temurin 25.0.3+9, Gradle 9.9.1, PDAL 2.10.2/LazPerf und GDAL 3.13.3.
+`writers.dtm` verwendet Tinfour 2.1.9 für das Delaunay-Netz, Rasterung
+über begrenzte Zeilenabschnitte und die gemeinsame GeoTIFF-Ausgabe.
+Die separate Double-Höhe vermeidet die Float-Konvertierung in Tinfour.
+Eine einzige GeoTIFF-Transaktion bedient beide Raster-Writer. Das TIN
+hält den selektierten Punktbestand im Speicher.
+Die Diagnose der Stützflächen läuft als separates Abnahmewerkzeug.
+
+- `./gradlew downloadTestData -Ptile=2019-urban` lud 52'116'409 Bytes
+  der amtlichen Kachel. Der Waldtest verwendet die vorhandene
+  Kachel `so-2019.laz` mit 83'247'722 Bytes.
+- `./gradlew clean check installDist distZip` endete in 4 s mit Exit 0.
+  Alle 122 JUnit-Fälle bestanden, davon 12 im neuen `TerrainWriterTest`.
+  Der native XML-Report unter `build/test-results/test/` weist 0 Fehler,
+  0 Fehlschläge, 0 übersprungene Fälle und 1.535 s aufsummierte
+  Klassenlaufzeit aus. Die HTML-Ausgabe steht in
+  `build/reports/tests/test/index.html`. Ein kollidierender lokaler
+  Variablenname beim Umstellen des bisherigen Writers wurde vor dem
+  vollständigen Lauf korrigiert.
+- `unzip -tq build/distributions/pointcloud.zip` bestand.
+  Die entpackte CLI verarbeitete beide LAZ-Dateien mit `-Xmx512m`
+  und vier Workern. Beide Läufe endeten mit 40'000 gültigen Zellen.
+  Die Einzelläufe der Paketprüfung dauerten 3.60 s für Stadt und
+  3.37 s für Wald. Das ZIP umfasst 25'820'421 Bytes samt Tinfour und
+  Lizenztexten.
+- `python3 tools/check-real-data.py /pfad/zu/pdal` verglich 496'586
+  vollständige LAS-Records in Ground-Crop, Polygon-Crop, Decimation und
+  dem Solothurn-2014-Crop mit 0 Abweichungen. Die bestehenden Toleranzen
+  für Statistik und CRS bestanden. Die Abbruchprobe endete mit
+  Exit 143 nach 0.18 s ohne Ziel- oder temporäre Ausgabe.
+- `python3 tools/check-ground-grid.py /pfad/zu/pdal --release`
+  bestätigte die unveränderte Ausgabe für Z, Intensity, die Release-
+  Füllfenster sowie Deflate. Die maximale Z-Abweichung lag bei
+  4.55 × 10⁻¹³ m, die maximale Intensity-Abweichung bei 5.09 × 10⁻¹¹.
+- `python3 tools/check-dtm.py /pfad/zu/pdal` bestätigte die gleichen
+  NoData-Masken für Java und PDAL in vier Fällen mit je 40'000 Zellen.
+  Die 728'768 selektierten Stadt- und 428'321 Waldpunkte ergeben
+  728'751 beziehungsweise 428'313 eindeutige XY. Alle sechs Zellen
+  mit einer Höhendifferenz über 1 µm wurden anhand der tatsächlichen
+  TIN-Dreiecke beider Engines erklärt. Die Java-Metadaten und
+  Float64-Werte bei einem und vier LAZ-Workern waren bitgleich.
+  [Realdatenergebnisse und Schummerungen](experiments.md#tin-terrainmodell-gegen-pdal)
+- Die CLI-Abbruchprobe beobachtete mit `jcmd Thread.print` den
+  Tinfour-Masseneinbau der städtischen Bodenpunkte. SIGTERM beendete
+  den Prozess nach 1.20 s mit Exit 143 ohne GeoTIFF, Metadaten oder
+  temporäre Ausgabe.
+- `tools/check-dtm.py --benchmark-csv .cache/dtm-pdal.csv` schloss
+  alle 84 Prozessmessungen ab. Die 64 vollständigen LAZ-Läufe und
+  20 Läufe auf vorbereiteter Boden-LAS wurden gegen die Abnahme geprüft.
+  Bei vier Readern lagen die Wandzeitmediane bei 2.937 s / 2.646 s
+  (Java / PDAL) in der Stadt und 2.916 s / 3.040 s im Wald.
+  [Messaufbau, Streuung, CPU-Zeit, RSS und Durchsatz](experiments.md#tin-terrainmodell-gegen-pdal)
+
+Die Produkt- und Referenzprüfungen sind abgeschlossen. Die
+Einfachheitsprüfung bestätigte die direkte Stage samt gemeinsamem
+GeoTIFF-Pfad. Der Referenzvergleich bleibt ausserhalb der Produkt-CLI.

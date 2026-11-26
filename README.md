@@ -87,6 +87,17 @@ fünf Bänder für die Intensität, einschliesslich der Zellstreuung `stdev`.
 "$cli" pipeline examples/ground-grid-intensity.json --metadata build/results/ground-grid-intensity.json
 ```
 
+[`writers.dtm`](docs/architecture.md#tin-terrainmodell) interpoliert die
+Geländehöhe aus einem Delaunay-Dreiecksnetz der selektierten Bodenpunkte.
+Zwei Beispiele rechnen ein Höhenraster für ein bebautes Gebiet und
+einen Wald in Solothurn.
+
+```sh
+./gradlew downloadTestData -Ptile=2019-urban
+"$cli" pipeline examples/dtm-solothurn-urban.json --laz-workers 4 --metadata build/results/dtm-solothurn-urban.json
+"$cli" pipeline examples/dtm-solothurn-forest.json --laz-workers 4 --metadata build/results/dtm-solothurn-forest.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 
@@ -122,6 +133,7 @@ verfügbar sein.
 ```sh
 python3 tools/check-ground-grid.py /pfad/zu/pdal
 python3 tools/check-ground-grid.py /pfad/zu/pdal --release
+python3 tools/check-dtm.py /pfad/zu/pdal
 ```
 
 Der Parallelvergleich auf macOS prüft Solothurn 2014 und Autzen mit

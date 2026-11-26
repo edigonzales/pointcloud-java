@@ -106,6 +106,7 @@ Punktformat geprüft.
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
 | `writers.raster` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width` und `height`. Optionen für Bandwahl, Dimension, Füllfenster, NoData und Kompression stehen unter [Rasterausgabe](#rasterausgabe). |
+| `writers.dtm` | Float64-GeoTIFF aus einem Delaunay-Netz. `filename` mit `.tif` oder `.tiff`, `resolution`, `origin_x`, `origin_y`, `width` und `height`. Weitere Optionen unter [TIN-Terrainmodell](#tin-terrainmodell). |
 
 `polygon` verwendet die XY-Koordinaten im CRS der Eingabedatei.
 JTS liest und validiert das Polygon beim Aufbau der Filterstage. Punkte
@@ -208,8 +209,45 @@ Für bestehende Java-Pipelines mit `"type": "writers.gdal"` reicht es,
 den Typ der letzten Stage auf `"type": "writers.raster"` zu setzen.
 Die Stage-Optionen sind direkt übertragbar.
 
+## TIN-Terrainmodell
+
+`writers.dtm` interpoliert Z linear in der Mitte jeder Zelle. Die
+Zellgeometrie ist nordorientiert (`PixelIsArea`), mit Ursprung an der
+linken unteren Ecke. Das GeoTIFF enthält das Float64-Band `elevation`
+und das projizierte horizontale CRS der LAS-Datei. Die Z-Werte behalten
+Einheit und Höhenbezug der Eingabe. Für Bodenmodelle wählt ein
+vorgelagerter Filter die Bodenpunkte. Ein Rand um das Zielgitter kann
+zusätzliche Stützpunkte beisteuern.
+
+Die erste ausgewählte Höhe je rohem LAS-XY gewinnt. Tinfour 2.1.9 baut
+das Delaunay-Netz in XY auf. Die Höhen werden separat als Double geführt.
+Bis zu 1'000'000 ausgewählte Punkte vor der Deduplizierung und 1'000'000
+Rasterzellen sind zulässig. Mindestens drei unterschiedliche, nicht
+kollineare Stützpunkte sind erforderlich.
+
+`max_triangle_edge_length` begrenzt optional alle drei XY-Kanten eines
+Dreiecks in den horizontalen CRS-Einheiten. Das Limit ist positiv und
+inklusiv. Ist die Option weggelassen, kann das Netz auch weit auseinander
+liegende Bodenpunkte verbinden. Ausserhalb der Hülle und bei verworfenen
+Dreiecken bleibt `nodata` (endlicher Wert, Standard `-9999`). Ein
+gültiger interpolierter Wert, der mit der NoData-Kennung kollidiert,
+führt vor Veröffentlichung zu einem Fehler. `compression` akzeptiert
+`none` (Standard) und `deflate`.
+
+Die JSON-Metadaten zählen unter `dtm` die eindeutigen Stützpunkte
+(`supportPoints`) und die gültigen beziehungsweise unbelegten Zellen
+(`cellsCovered` und `cellsNoData`). `pointsSelected` zählt alle
+selektierten Punkte vor der Deduplizierung, `pointsWritten` ist 0.
+
 ## Kompatibilität mit PDAL 2.10.2
 
+- Das Gegenstück zu `writers.dtm` ist die PDAL-Stagefolge
+  `filters.delaunay`, `filters.faceraster`, `writers.raster`.
+  Kozyklische Stützpunkte können verschiedene Delaunay-Diagonalen und daher
+  verschiedene interpolierte Höhen ergeben. Java führt die XY-Geometrie
+  lokal auf Basis der LAS-Rohkoordinaten. PDAL trianguliert die skalierten
+  Weltkoordinaten. Für doppelte XY dokumentiert Java die Auswahl in
+  Dateireihenfolge. [TIN-Realdatenabnahme](../tools/check-dtm.py)
 - Der GeoTIFF-Writer heisst in PointCloud Java `writers.raster`. Für den
   PDAL-Referenzlauf setzt das Abnahmeskript den Typ auf `writers.gdal`.
   Deflate entspricht beim Referenzlauf `gdalopts: "COMPRESS=DEFLATE"`.

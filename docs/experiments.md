@@ -1381,3 +1381,103 @@ Alle Rasterwerte wurden geprüft. Beide Fenster füllten die 500'000 Lücken,
 die Punktzahlen blieben exakt und die grösste Höhenabweichung bei Fenster 20
 betrug 6.03 × 10⁻¹² m. Die Messung zeigt die Mehrarbeit eines breiten
 Suchfensters auf einem Gitter mit vielen Lücken.
+
+## TIN-Terrainmodell gegen PDAL
+
+26. November 2026, MacBook Air M1 arm64, macOS 15.8.1, 16 GiB RAM,
+Netzbetrieb. Temurin 25.0.3+9 mit `-Xmx512m`, Java-Batches mit
+32'768 Records. PDAL 2.10.2/LazPerf aus conda-forge
+(`libpdal-core h151f718_4`) und GDAL 3.13.3.
+
+Die beiden [TIN-Beispielpipelines](../examples/dtm-solothurn-urban.json)
+rechnen je ein Raster mit 200 × 200 Zellen bei 1 m im LV95-Gitter.
+Der Crop reicht 50 m über das Ziel hinaus. Danach bleiben
+`Classification == 2 && Withheld == 0`. Die Stadtkachel liefert
+728'768 von 11'963'266 Punkten, die Waldkachel 428'321 von 14'566'627.
+Nach dem Entfernen doppelter Roh-XY verwendet Java 728'751 respektive
+428'313 Stützpunkte. Die vorherige Bibliotheksprobe mit den städtischen
+Bodenpunkten benötigte für Aufbau und Iteration mit Tinfour rund 1.9 s
+bei 512 MiB Heap. JTS erreichte unter derselben Grenze das Heap-Limit.
+
+### Fachlicher Vergleich
+
+Geprüft wurden das nordorientierte Gitter, EPSG:2056, das einzelne
+Float64-Band, NoData, Punktzahlen und Z-Statistik. Die Java-Läufe mit
+einem und vier Reader-Workern ergaben bitgleiche Höhen und gleiche
+Metadaten. Die NoData-Masken von Java und PDAL waren in allen vier
+Fällen identisch.
+
+| Gebiet | Maximale Kante | Gültige Zellen | Höhenfehler über 1 µm | MAE (m) | RMSE (m) | Maximum (m) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stadt | offen | 40'000 | 2 | 1.65 × 10⁻⁸ | 2.90 × 10⁻⁶ | 0.000574 |
+| Stadt | 20 m | 32'773 | 2 | 2.01 × 10⁻⁸ | 3.21 × 10⁻⁶ | 0.000574 |
+| Wald | offen | 40'000 | 4 | 1.01 × 10⁻⁶ | 1.12 × 10⁻⁴ | 0.016385 |
+| Wald | 5 m | 39'751 | 4 | 1.01 × 10⁻⁶ | 1.13 × 10⁻⁴ | 0.016385 |
+
+Bei allen sechs abweichenden Zellmitten haben die beiden Stützdreiecke
+eine andere Diagonale über denselben vier XY-Stützpunkten. Jeweils
+vier Punkte liegen exakt auf einem Kreis in der LAS-Zentimeterquantisierung.
+Die Höhe aus den tatsächlichen Java- und PDAL-Dreiecken reproduzierte die
+jeweilige Ausgabe innerhalb 1 µm. Das 95. Perzentil des absoluten
+Zellfehlers lag in allen Fällen unter 5.4 × 10⁻¹¹ m.
+[Koordinaten und Höhen der Stützdreiecke](measurements/tin-support-faces.json)
+
+Die Schummerungen verwenden 315° Azimut und 45° Sonnenhöhe. Im bebauten
+Ausschnitt überbrückt das offene TIN den grossen Gebäudegrundriss sichtbar
+mit Dreiecksflächen. Das 20-m-Limit legt dort NoData frei. Die Java- und
+PDAL-Stadtschummerungen sind für beide Varianten bytegleich.
+[Gebäudedetail ohne Limit](measurements/tin-urban-buildings.png) ·
+[Gebäudedetail mit 20 m](measurements/tin-urban-buildings-cap20.png) ·
+[Waldschummerung](measurements/tin-forest-hillshade.png)
+
+### Laufzeit
+
+```sh
+./gradlew installDist downloadTestData
+./gradlew downloadTestData -Ptile=2019-urban
+python3 tools/check-dtm.py /pfad/zu/pdal --benchmark-csv .cache/dtm-pdal.csv
+```
+
+Der vollständige Vergleich misst LAZ-Eingabe, Crop, Bodenpunktauswahl,
+Statistik, TIN und Ausgabe eines unkomprimierten GeoTIFFs mit
+JSON-Metadaten. PDAL läuft mit `--nostream` und
+`filters.delaunay`, `filters.faceraster`, `writers.raster`. Je Gebiet
+laufen acht rotierende Runden mit je einem und vier Reader-Workern.
+Dateicache und Varianten sind vor der Messung aufgewärmt. Jeder
+Messlauf startet einen neuen Prozess. Zellwerte und Mengenstatistik
+werden ausserhalb der Zeitmessung gegen die jeweilige Abnahme geprüft.
+
+Der zweite Vergleich liest dieselbe vorbereitete, unkomprimierte
+Boden-LAS in beiden Engines. Er misst LAS-Lesen, Statistik, TIN,
+Rasterisierung und Ausgabe mit einem Reader in fünf frischen Prozessen je
+Engine und Gebiet. Die vollständige LAZ-Dekodierung und Filterung entfallen
+hier. Das Peak-RSS von PDAL im vollständigen Lauf enthält die materialisierten
+Punktansichten des nicht streamenden Pfads.
+
+| Gebiet | Eingabe | Engine | Reader | Median (s) | Min–Max (s) | Median CPU (s) | Peak-RSS Median / Max (MiB) | Mio. Punkte/s |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stadt | LAZ | Java | 1 | 5.512 | 5.429–5.613 | 7.96 | 441 / 444 | 2.17 |
+| Stadt | LAZ | PDAL | 1 | 4.482 | 4.464–4.538 | 5.93 | 850 / 938 | 2.67 |
+| Stadt | LAZ | Java | 4 | 2.937 | 2.848–3.281 | 9.79 | 446 / 466 | 4.07 |
+| Stadt | LAZ | PDAL | 4 | 2.646 | 2.577–2.740 | 7.07 | 880 / 968 | 4.52 |
+| Stadt | Boden-LAS | Java | 1 | 1.936 | 1.890–1.937 | 4.02 | 383 / 385 | 0.38 |
+| Stadt | Boden-LAS | PDAL | 1 | 0.560 | 0.557–0.571 | 0.55 | 240 / 241 | 1.30 |
+| Wald | LAZ | Java | 1 | 6.179 | 6.135–6.493 | 8.31 | 425 / 429 | 2.36 |
+| Wald | LAZ | PDAL | 1 | 5.644 | 5.571–5.767 | 7.37 | 728 / 939 | 2.58 |
+| Wald | LAZ | Java | 4 | 2.916 | 2.818–3.641 | 10.68 | 442 / 447 | 4.99 |
+| Wald | LAZ | PDAL | 4 | 3.040 | 2.937–3.400 | 9.19 | 851 / 990 | 4.79 |
+| Wald | Boden-LAS | Java | 1 | 1.770 | 1.496–2.212 | 3.74 | 337 / 343 | 0.24 |
+| Wald | Boden-LAS | PDAL | 1 | 0.380 | 0.359–0.715 | 0.36 | 159 / 163 | 1.13 |
+
+In der vollständigen Pipeline mit vier Readern benötigt Java in der
+Stadt 11 % mehr Wandzeit. Im Wald liegt der Java-Median 4 % tiefer.
+Dort überlappen die gemessenen Laufzeitspannen. Auf der gemeinsamen
+Boden-LAS beträgt die Wandzeit von Java das 3.5-Fache in der Stadt und
+das 4.7-Fache im Wald. Der Vergleich lokalisiert den grösseren Abstand
+im Teil der Pipeline ab der gefilterten Punktmenge. Bei der
+vollständigen LAZ-Eingabe hat Java in beiden Gebieten das tiefere
+Spitzen-RSS.
+
+Die GeoTIFFs umfassen 320'668 Bytes bei Java und 320'732 Bytes bei PDAL.
+Die Grösse der JSON-Metadaten ist pro Variante in den Rohmessungen
+festgehalten. [84 verifizierte Einzelmessungen](measurements/tin-dtm-pdal.csv)

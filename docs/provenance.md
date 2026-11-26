@@ -76,6 +76,13 @@ die Eclipse Distribution License 1.0 und die Lizenzhinweise von JTS
 unter `licenses/jts/`.
 [JTS 1.20.0](https://central.sonatype.com/artifact/org.locationtech.jts/jts-core/1.20.0)
 
+## Dreiecksnetz
+
+`writers.dtm` verwendet `org.tinfour:TinfourCore:2.1.9` mit Apache-2.0-Lizenz.
+Das Artefakt enthält die von Tinfour angepasste Double-Double-Arithmetik
+aus JTS unter EDL 1.0. Die mitgelieferten Lizenztexte und Hinweise liegen
+unter `licenses/tinfour/`. [Tinfour 2.1.9](https://github.com/gwlucastrig/Tinfour/tree/2.1.9)
+
 ## Realdaten
 
 Die Solothurner Kacheln stammen vom Amt für Geoinformation des Kantons.
@@ -85,6 +92,7 @@ PDAL-Datenbestand. Die Dateien für die lokale Abnahme liegen im ignorierten Cac
 | Alias in `.cache/test-data` | Originaldatei | Bytes | Abruf |
 | --- | --- | ---: | --- |
 | `so-2019.laz` | [2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz) | 83'247'722 | 23.11.2026 |
+| `so-2019-urban.laz` | [2606500_1229000.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2606500_1229000.ch.so.agi.lidar_2019.pointcloud.laz) | 52'116'409 | 26.11.2026 |
 | `so-2014.laz` | [2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2014.pointcloud/aktuell/2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz) | 74'261'841 | 23.11.2026 |
 | `autzen-classified.copc.laz` | [Autzen Stadium](https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz) | 81'123'042 | 24.11.2026 |
 
