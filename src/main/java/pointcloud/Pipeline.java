@@ -41,6 +41,7 @@ import java.util.regex.Pattern;
 /** A linear PDAL-subset pipeline. Execution state is created afresh for each run. */
 public final class Pipeline {
     private static final String RASTER_WRITER = "writers.raster";
+    private static final String DTM_WRITER = "writers.dtm";
     private static final String BOUND = "\\s*\\[\\s*(" + Expression.NUMBER + ")\\s*,\\s*("
             + Expression.NUMBER + ")\\s*]\\s*";
     private static final Pattern BOX = Pattern.compile("\\s*\\(" + BOUND + "," + BOUND
@@ -50,9 +51,22 @@ public final class Pipeline {
 
     public record Result(long pointsRead, long pointsSelected, long pointsWritten,
                          List<StageStatistics> statistics,
-                         @JsonAdapter(value = OmitNull.class, nullSafe = false) Long pointsBinned) {
+                         @JsonAdapter(value = OmitNull.class, nullSafe = false) Long pointsBinned,
+                         @JsonAdapter(value = OmitNull.class, nullSafe = false) TerrainStatistics dtm) {
         public Result(long pointsRead, long pointsSelected, long pointsWritten, List<StageStatistics> statistics) {
             this(pointsRead, pointsSelected, pointsWritten, statistics, null);
+        }
+
+        public Result(long pointsRead, long pointsSelected, long pointsWritten,
+                      List<StageStatistics> statistics, Long pointsBinned) {
+            this(pointsRead, pointsSelected, pointsWritten, statistics, pointsBinned, null);
+        }
+    }
+
+    public record TerrainStatistics(int supportPoints, int cellsCovered, int cellsNoData,
+                                    @JsonAdapter(value = OmitNull.class, nullSafe = false) Integer cellsFilledNearest) {
+        public TerrainStatistics(int supportPoints, int cellsCovered, int cellsNoData) {
+            this(supportPoints, cellsCovered, cellsNoData, null);
         }
     }
 
@@ -99,6 +113,7 @@ public final class Pipeline {
     private final Path input;
     private final Path output;
     private final GroundGridWriter.Grid rasterGrid;
+    private final TerrainWriter.Grid terrainGrid;
     private final JsonArray stages;
 
     private Pipeline(JsonArray stages) {
@@ -127,6 +142,7 @@ public final class Pipeline {
         String type = type(writer, position);
         try {
             rasterGrid = type.equals(RASTER_WRITER) ? parseRasterGrid(writer) : null;
+            terrainGrid = type.equals(DTM_WRITER) ? parseTerrainGrid(writer) : null;
             output = switch (type) {
                 case "writers.las" -> {
                     options(writer, "filename", "forward", "compression", "extra_dims");
@@ -137,7 +153,7 @@ public final class Pipeline {
                     }
                     yield filename(string(writer, "filename"), false);
                 }
-                case RASTER_WRITER -> {
+                case RASTER_WRITER, DTM_WRITER -> {
                     String name = string(writer, "filename");
                     String lower = name.toLowerCase(Locale.ROOT);
                     if (!lower.endsWith(".tif") && !lower.endsWith(".tiff")) {
@@ -150,7 +166,8 @@ public final class Pipeline {
                     yield null;
                 }
                 case "writers.gdal" -> throw new IllegalArgumentException("change the stage type to " + RASTER_WRITER);
-                default -> throw new IllegalArgumentException("expected writers.las, " + RASTER_WRITER + " or writers.null");
+                default -> throw new IllegalArgumentException(
+                        "expected writers.las, " + RASTER_WRITER + ", " + DTM_WRITER + " or writers.null");
             };
         } catch (IllegalArgumentException e) {
             throw atStage(position, type, e.getMessage());
@@ -225,14 +242,15 @@ public final class Pipeline {
         }
     }
 
-    private GroundGridWriter openRaster(BatchInput reader, boolean overwrite) throws IOException {
-        if (rasterGrid == null) {
+    private GeoTiffOutput openTiff(BatchInput reader, boolean overwrite) throws IOException {
+        if (rasterGrid == null && terrainGrid == null) {
             return null;
         }
+        String type = terrainGrid == null ? RASTER_WRITER : DTM_WRITER;
         try {
-            return new GroundGridWriter(input, output, overwrite, rasterGrid, reader.header(), reader.channel());
+            return new GeoTiffOutput(input, output, overwrite, reader.header(), reader.channel());
         } catch (IOException e) {
-            throw new IOException("Stage " + stages.size() + " (" + RASTER_WRITER + "): " + e.getMessage(), e);
+            throw new IOException("Stage " + stages.size() + " (" + type + "): " + e.getMessage(), e);
         }
     }
 
@@ -250,9 +268,11 @@ public final class Pipeline {
                     }
                 }
             }
-            try (var writer = output == null || rasterGrid != null ? null
-                    : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output, overwrite);
-                 var raster = openRaster(reader, overwrite)) {
+            try (var tiff = openTiff(reader, overwrite);
+                 var writer = output == null || tiff != null ? null
+                         : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output, overwrite)) {
+                var raster = rasterGrid == null ? null : new GroundGridWriter(tiff, rasterGrid);
+                var terrain = terrainGrid == null ? null : new TerrainWriter(tiff, terrainGrid, reader.header());
                 long selected = 0;
                 for (var batch = reader.reader().readBatch(); batch != null; batch = reader.reader().readBatch()) {
                     points:
@@ -267,6 +287,8 @@ public final class Pipeline {
                             writer.write(batch, point);
                         } else if (raster != null) {
                             raster.add(batch, point);
+                        } else if (terrain != null) {
+                            terrain.add(batch, point);
                         }
                     }
                 }
@@ -277,15 +299,15 @@ public final class Pipeline {
                                 filter.stats.stream().map(Accumulator::result).toList()));
                     }
                 }
-                OutputFinish finish = writer == null ? null : writer::finish;
                 Long pointsBinned = null;
                 if (raster != null) {
                     raster.prepare(reader.finished().getAsBoolean());
                     pointsBinned = raster.pointsBinned();
-                    finish = raster::finish;
                 }
+                var dtm = terrain == null ? null : terrain.prepare(reader.finished().getAsBoolean());
+                OutputFinish finish = tiff != null ? tiff::finish : writer != null ? writer::finish : null;
                 var result = new Result(reader.header().pointCount(), selected, writer == null ? 0 : writer.pointCount(),
-                        List.copyOf(results), pointsBinned);
+                        List.copyOf(results), pointsBinned, dtm);
                 resultOutput.publish(result, finish);
                 return result;
             }
@@ -508,25 +530,50 @@ public final class Pipeline {
         if (stage.has("data_type")) {
             exact(stage, "data_type", "double");
         }
-        double nodata = stage.has("nodata") ? number(stage, "nodata") : GeoTiffOutput.NODATA;
+        double nodata = nodata(stage);
         if (nodata == 0 && bands.contains(GroundGridWriter.Band.COUNT)) {
             throw new IllegalArgumentException("nodata must be nonzero when count is selected");
         }
-        boolean deflate = switch (stage.has("compression") ? string(stage, "compression") : "none") {
+        long windowSize = integer(stage, "window_size", 0);
+        int width = gridDimension(stage, "width");
+        int height = gridDimension(stage, "height");
+        int effectiveWindow = (int) Math.min(windowSize, Math.max(width, height) - 1);
+        return new GroundGridWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
+                number(stage, "resolution"), width, height, effectiveWindow, bands, dimension, nodata,
+                deflate(stage));
+    }
+
+    private static TerrainWriter.Grid parseTerrainGrid(JsonObject stage) {
+        options(stage, "filename", "resolution", "origin_x", "origin_y", "width", "height",
+                "max_triangle_edge_length", "nodata", "compression", "fill_nodata");
+        if (stage.has("fill_nodata")) {
+            exact(stage, "fill_nodata", "nearest");
+        }
+        double maxEdge = stage.has("max_triangle_edge_length") ? number(stage, "max_triangle_edge_length")
+                : Double.POSITIVE_INFINITY;
+        return new TerrainWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
+                number(stage, "resolution"), gridDimension(stage, "width"), gridDimension(stage, "height"),
+                maxEdge, nodata(stage), deflate(stage), stage.has("fill_nodata"));
+    }
+
+    private static int gridDimension(JsonObject stage, String key) {
+        long value = integer(stage, key, 0);
+        if (value > GeoTiffOutput.MAX_CELLS) {
+            throw new IllegalArgumentException("grid may have at most " + GeoTiffOutput.MAX_CELLS + " cells");
+        }
+        return (int) value;
+    }
+
+    private static double nodata(JsonObject stage) {
+        return stage.has("nodata") ? number(stage, "nodata") : GeoTiffOutput.NODATA;
+    }
+
+    private static boolean deflate(JsonObject stage) {
+        return switch (stage.has("compression") ? string(stage, "compression") : "none") {
             case "none" -> false;
             case "deflate" -> true;
             default -> throw new IllegalArgumentException("compression must be 'none' or 'deflate'");
         };
-        long windowSize = integer(stage, "window_size", 0);
-        long width = integer(stage, "width", 0);
-        long height = integer(stage, "height", 0);
-        if (width > GroundGridWriter.Grid.MAX_CELLS || height > GroundGridWriter.Grid.MAX_CELLS) {
-            throw new IllegalArgumentException("grid may have at most " + GroundGridWriter.Grid.MAX_CELLS + " cells");
-        }
-        int effectiveWindow = (int) Math.min(windowSize, Math.max(width, height) - 1);
-        return new GroundGridWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
-                number(stage, "resolution"), (int) width, (int) height, effectiveWindow, bands, dimension, nodata,
-                deflate);
     }
 
     private static double number(JsonObject stage, String key) {

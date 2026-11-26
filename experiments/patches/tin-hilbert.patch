@@ -1,0 +1,56 @@
+diff --git a/src/main/java/pointcloud/TerrainWriter.java b/src/main/java/pointcloud/TerrainWriter.java
+index 630f539..f7abd35 100644
+--- a/src/main/java/pointcloud/TerrainWriter.java
++++ b/src/main/java/pointcloud/TerrainWriter.java
+@@ -127,2 +127,5 @@ final class TerrainWriter {
+         double minScale = Math.min(header.scale(0), header.scale(1));
++        // The sorter restores the vertex indices used to retrieve the original double heights.
++        new org.tinfour.utils.HilbertSort().sort(vertices);
++        checkInterrupted();
+         double spacing = Math.min(0.35, minScale * (Thresholds.VERTEX_TOLERANCE_FACTOR_DEFAULT / 4));
+diff --git a/src/test/java/pointcloud/TerrainWriterTest.java b/src/test/java/pointcloud/TerrainWriterTest.java
+index fbf5c0d..53592c6 100644
+--- a/src/test/java/pointcloud/TerrainWriterTest.java
++++ b/src/test/java/pointcloud/TerrainWriterTest.java
+@@ -72,2 +72,22 @@ class TerrainWriterTest {
+
++    @Test
++    void hilbertReorderingRetainsTheOriginalHeightIndex() throws Exception {
++        // The Hilbert sorter processes at least 24 points.
++        int[][] points = new int[25][];
++        for (int i = 0; i < points.length; i++) {
++            int position = (i * 13) % points.length;
++            int x = (position % 5) * 2;
++            int y = (position / 5) * 2;
++            points[i] = new int[]{x, y, x + 7 * y};
++        }
++        var target = temp.resolve("hilbert.tif");
++        var result = pipeline(fixture(points), target, "").run(4, false);
++        assertEquals(new Pipeline.TerrainStatistics(25, 4, 5), result.dtm());
++        assertArrayEquals(new double[]{
++                -9999, -9999, -9999,
++                z(44), z(48), -9999,
++                z(16), z(20), -9999
++        }, samples(target), 1e-12);
++    }
++
+     @ParameterizedTest
+@@ -182,5 +202,8 @@ class TerrainWriterTest {
+         int stride = las.getChar(105);
+-        for (int i = 0; i < coordinates.length; i++) {
+-            int offset = start + i * stride;
+-            las.putInt(offset, coordinates[i][0]).putInt(offset + 4, coordinates[i][1]).putInt(offset + 8, coordinates[i][2]);
++        las.putInt(107, coordinates.length).putInt(111, coordinates.length);
++        var points = ByteBuffer.allocate(coordinates.length * stride).order(ByteOrder.LITTLE_ENDIAN);
++        for (int[] coordinate : coordinates) {
++            int offset = points.position();
++            points.put(las.array(), start, stride);
++            points.putInt(offset, coordinate[0]).putInt(offset + 4, coordinate[1]).putInt(offset + 8, coordinate[2]);
+         }
+@@ -194,4 +217,4 @@ class TerrainWriterTest {
+         return Files.write(Files.createTempFile(temp, "points-", ".las"),
+-                ByteBuffer.allocate(las.capacity() + geokeys.capacity()).put(las.array(), 0, start)
+-                        .put(geokeys.array()).put(las.array(), start, las.capacity() - start).array());
++                ByteBuffer.allocate(start + geokeys.capacity() + points.capacity()).put(las.array(), 0, start)
++                        .put(geokeys.array()).put(points.array()).array());
+     }

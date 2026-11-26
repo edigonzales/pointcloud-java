@@ -1,0 +1,131 @@
+diff --git a/src/main/java/pointcloud/TerrainWriter.java b/src/main/java/pointcloud/TerrainWriter.java
+index 630f539..237d983 100644
+--- a/src/main/java/pointcloud/TerrainWriter.java
++++ b/src/main/java/pointcloud/TerrainWriter.java
+@@ -11,7 +11,6 @@ import java.io.IOException;
+ import java.io.InterruptedIOException;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+-import java.util.HashSet;
+ import java.util.List;
+ import java.util.concurrent.CancellationException;
+
+@@ -35,7 +34,7 @@ final class TerrainWriter {
+     private final Grid grid;
+     private final LasHeader header;
+     private final List<Vertex> vertices = new ArrayList<>();
+-    private HashSet<Long> seen = new HashSet<>();
++    private LongKeys seen = new LongKeys();
+     private double[] heights = new double[1024];
+     private int selected;
+     private int anchorX;
+@@ -64,7 +63,7 @@ final class TerrainWriter {
+             anchorY = rawY;
+         }
+         long xy = ((long) rawX << 32) | Integer.toUnsignedLong(rawY);
+-        if (seen.add(xy)) {
++        if (seen.add(mixXY(xy))) {
+             int index = vertices.size();
+             if (index == heights.length) {
+                 heights = Arrays.copyOf(heights, Math.min(MAX_POINTS, index * 2));
+@@ -80,6 +79,13 @@ final class TerrainWriter {
+         }
+     }
+
++    // SplitMix64's bijective finalizer mixes both packed coordinate halves before hashing.
++    private static long mixXY(long value) {
++        value = (value ^ (value >>> 30)) * 0xbf58476d1ce4e5b9L;
++        value = (value ^ (value >>> 27)) * 0x94d049bb133111ebL;
++        return value ^ (value >>> 31);
++    }
++
+     Pipeline.TerrainStatistics prepare(boolean sourceFinished) throws IOException {
+         if (!sourceFinished) {
+             throw new IOException("GeoTIFF output requires a complete source scan");
+@@ -261,4 +267,48 @@ final class TerrainWriter {
+         @Override public void reportDone() {}
+         @Override public void postMessage(String message) {}
+     };
++
++    /** Stores the mixed key itself so resizing can reuse its bucket hash. */
++    static final class LongKeys {
++        private long[] table = new long[16];
++        private int count;
++        private boolean hasZero;
++
++        boolean add(long key) {
++            // The mix is bijective and maps zero to zero. Only the original zero needs a separate slot.
++            if (key == 0) {
++                if (hasZero) {
++                    return false;
++                }
++                hasZero = true;
++                return true;
++            }
++            int slot = findSlot(table, key);
++            if (table[slot] == key) {
++                return false;
++            }
++            if (count == table.length / 2) {
++                var expanded = new long[table.length * 2];
++                for (long existing : table) {
++                    if (existing != 0) {
++                        expanded[findSlot(expanded, existing)] = existing;
++                    }
++                }
++                table = expanded;
++                slot = findSlot(table, key);
++            }
++            table[slot] = key;
++            count++;
++            return true;
++        }
++
++        private static int findSlot(long[] slots, long key) {
++            int mask = slots.length - 1;
++            int slot = (int) key & mask;
++            while (slots[slot] != 0 && slots[slot] != key) {
++                slot = (slot + 1) & mask;
++            }
++            return slot;
++        }
++    }
+ }
+diff --git a/src/test/java/pointcloud/TerrainWriterTest.java b/src/test/java/pointcloud/TerrainWriterTest.java
+index fbf5c0d..1c87206 100644
+--- a/src/test/java/pointcloud/TerrainWriterTest.java
++++ b/src/test/java/pointcloud/TerrainWriterTest.java
+@@ -57,6 +57,33 @@ class TerrainWriterTest {
+         }
+     }
+
++    @Test
++    void keepsFirstZeroKeyAcrossBatchesWithSignedCoordinates() throws Exception {
++        var source = fixture(new int[][]{{-8, 0, 10}, {16, 0, 20}, {0, 0, 40}, {0, 16, 30}, {0, 0, 99}});
++        var target = temp.resolve("signed-xy.tif");
++        var result = pipeline(source, target, "").run(2, false);
++        assertEquals(5, result.pointsSelected());
++        assertEquals(4, result.dtm().supportPoints());
++        assertEquals(z(36.25), samples(target)[6], 1e-12);
++    }
++
++    @Test
++    void primitiveKeysDistinguishCollisionsAndKeepEntriesAcrossResizes() {
++        var keys = new TerrainWriter.LongKeys();
++        assertTrue(keys.add(0));
++        assertFalse(keys.add(0));
++        // All these mixed keys begin in slot 1, even after the first several resizes.
++        for (long i = -4096; i <= 4096; i++) {
++            assertTrue(keys.add((i << 16) | 1), "insert " + i);
++        }
++        for (long i = 4096; i >= -4096; i--) {
++            assertFalse(keys.add((i << 16) | 1), "duplicate " + i);
++        }
++        assertFalse(keys.add(0));
++        assertTrue(keys.add(Long.MIN_VALUE));
++        assertTrue(keys.add(Long.MAX_VALUE));
++    }
++
+     @Test
+     void acceptsEdgesEqualToLimitAndRejectsLongerEdges() throws Exception {
+         var source = fixture(TRIANGLE);

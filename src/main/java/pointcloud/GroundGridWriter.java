@@ -1,22 +1,15 @@
 package pointcloud;
 
-import org.geotools.api.referencing.crs.CoordinateReferenceSystem;
-
 import java.io.IOException;
-import java.io.InterruptedIOException;
-import java.nio.channels.FileChannel;
-import java.nio.file.FileAlreadyExistsException;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Locale;
 
+import static pointcloud.GeoTiffOutput.checkInterrupted;
+
 /** Accumulates point statistics by pixel and stages a north-up GeoTIFF for publication. */
-final class GroundGridWriter implements AutoCloseable {
+final class GroundGridWriter {
     enum Band {
         MIN, MAX, MEAN, COUNT, STDEV;
 
@@ -27,26 +20,14 @@ final class GroundGridWriter implements AutoCloseable {
 
     record Grid(double originX, double originY, double resolution, int width, int height, int windowSize,
                 EnumSet<Band> bands, Dimension dimension, double nodata, boolean deflate) {
-        static final int MAX_CELLS = 1_000_000;
-
         Grid {
-            if (resolution <= 0 || width <= 0 || height <= 0 || (long) width * height > MAX_CELLS) {
-                throw new IllegalArgumentException("grid requires positive resolution and dimensions, with at most "
-                        + MAX_CELLS + " cells");
-            }
-            if (!Double.isFinite(originX + width * resolution) || !Double.isFinite(originY + height * resolution)
-                    || originX + resolution <= originX || originY + resolution <= originY) {
-                throw new IllegalArgumentException("grid extent and cell size must be representable");
-            }
+            GeoTiffOutput.validateGrid(originX, originY, resolution, width, height);
             bands = bands.clone();
         }
     }
 
-    private final Path input;
-    private final Path target;
-    private final boolean overwrite;
+    private final GeoTiffOutput output;
     private final Grid grid;
-    private final CoordinateReferenceSystem crs;
     private final long[] counts;
     private final double[] minima;
     private final double[] maxima;
@@ -58,16 +39,10 @@ final class GroundGridWriter implements AutoCloseable {
     private final double east;
     private final double north;
     private long pointsBinned;
-    private Path temporary;
 
-    GroundGridWriter(Path input, Path target, boolean overwrite, Grid grid, LasHeader header, FileChannel source)
-            throws IOException {
-        this.input = input;
-        this.target = target.toAbsolutePath();
-        this.overwrite = overwrite;
+    GroundGridWriter(GeoTiffOutput output, Grid grid) {
         this.grid = grid;
-        checkTarget();
-        crs = GeoTiffOutput.resolveCrs(header, source);
+        this.output = output;
         int cells = grid.width * grid.height;
         counts = new long[cells];
         minima = grid.bands.contains(Band.MIN) ? new double[cells] : null;
@@ -76,7 +51,7 @@ final class GroundGridWriter implements AutoCloseable {
         means = grid.bands.contains(Band.MEAN) || deviations != null ? new double[cells] : null;
         countBand = grid.bands.contains(Band.COUNT) ? new double[cells] : null;
 
-        var output = new ArrayList<double[]>(grid.bands.size());
+        var bands = new ArrayList<double[]>(grid.bands.size());
         var statistics = new ArrayList<double[]>(grid.bands.size());
         for (Band band : grid.bands) {
             double[] values = switch (band) {
@@ -86,12 +61,12 @@ final class GroundGridWriter implements AutoCloseable {
                 case COUNT -> countBand;
                 case STDEV -> deviations;
             };
-            output.add(values);
+            bands.add(values);
             if (band != Band.COUNT) {
                 statistics.add(values);
             }
         }
-        outputBands = output.toArray(double[][]::new);
+        outputBands = bands.toArray(double[][]::new);
         statisticBands = statistics.toArray(double[][]::new);
         east = grid.originX + grid.width * grid.resolution;
         north = grid.originY + grid.height * grid.resolution;
@@ -138,13 +113,9 @@ final class GroundGridWriter implements AutoCloseable {
         }
         checkInterrupted();
         finishBands();
-        checkInterrupted();
-        Files.createDirectories(target.getParent());
-        temporary = Files.createTempFile(target.getParent(), ".pointcloud-", ".tif.part");
         var names = grid.bands.stream().map(Band::label).toList();
-        GeoTiffOutput.write(temporary, crs, grid.originX, grid.originY, grid.resolution, grid.width, grid.height,
+        output.prepare(grid.originX, grid.originY, grid.resolution, grid.width, grid.height,
                 outputBands, names, grid.nodata, grid.deflate);
-        checkInterrupted();
     }
 
     private void finishBands() throws IOException {
@@ -250,41 +221,5 @@ final class GroundGridWriter implements AutoCloseable {
     private static double updatedMean(double mean, double value, double count) {
         double delta = value - mean;
         return Double.isFinite(delta) ? mean + delta / count : (mean - mean / count) + value / count;
-    }
-
-    void finish() throws IOException {
-        checkInterrupted();
-        checkTarget();
-        if (overwrite) {
-            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } else {
-            Files.createLink(target, temporary);
-            Files.delete(temporary);
-        }
-        temporary = null;
-    }
-
-    private void checkTarget() throws IOException {
-        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-            if (Files.exists(target) && Files.isSameFile(input, target)) {
-                throw new IOException("Point input and GeoTIFF output refer to the same file");
-            }
-            if (!overwrite) {
-                throw new FileAlreadyExistsException(target.toString());
-            }
-        }
-    }
-
-    private static void checkInterrupted() throws InterruptedIOException {
-        if (Thread.currentThread().isInterrupted()) {
-            throw new InterruptedIOException("GeoTIFF output cancelled");
-        }
-    }
-
-    @Override
-    public void close() throws IOException {
-        if (temporary != null) {
-            Files.deleteIfExists(temporary);
-        }
     }
 }

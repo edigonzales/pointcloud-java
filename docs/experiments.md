@@ -1381,3 +1381,437 @@ Alle Rasterwerte wurden geprüft. Beide Fenster füllten die 500'000 Lücken,
 die Punktzahlen blieben exakt und die grösste Höhenabweichung bei Fenster 20
 betrug 6.03 × 10⁻¹² m. Die Messung zeigt die Mehrarbeit eines breiten
 Suchfensters auf einem Gitter mit vielen Lücken.
+
+## TIN-Terrainmodell gegen PDAL
+
+26. November 2026, MacBook Air M1 arm64, macOS 15.8.1, 16 GiB RAM,
+Netzbetrieb. Temurin 25.0.3+9 mit `-Xmx512m`, Java-Batches mit
+32'768 Records. PDAL 2.10.2/LazPerf aus conda-forge
+(`libpdal-core h151f718_4`) und GDAL 3.13.3.
+
+Die beiden [TIN-Beispielpipelines](../examples/dtm-solothurn-urban.json)
+rechnen je ein Raster mit 200 × 200 Zellen bei 1 m im LV95-Gitter.
+Der Crop reicht 50 m über das Ziel hinaus. Danach bleiben
+`Classification == 2 && Withheld == 0`. Die Stadtkachel liefert
+728'768 von 11'963'266 Punkten, die Waldkachel 428'321 von 14'566'627.
+Nach dem Entfernen doppelter Roh-XY verwendet Java 728'751 respektive
+428'313 Stützpunkte. Die vorherige Bibliotheksprobe mit den städtischen
+Bodenpunkten benötigte für Aufbau und Iteration mit Tinfour rund 1.9 s
+bei 512 MiB Heap. JTS erreichte unter derselben Grenze das Heap-Limit.
+
+### Fachlicher Vergleich
+
+Geprüft wurden das nordorientierte Gitter, EPSG:2056, das einzelne
+Float64-Band, NoData, Punktzahlen und Z-Statistik. Die Java-Läufe mit
+einem und vier Reader-Workern ergaben bitgleiche Höhen und gleiche
+Metadaten. Die NoData-Masken von Java und PDAL waren in allen vier
+Fällen identisch.
+
+| Gebiet | Maximale Kante | Gültige Zellen | Höhenfehler über 1 µm | MAE (m) | RMSE (m) | Maximum (m) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stadt | offen | 40'000 | 2 | 1.65 × 10⁻⁸ | 2.90 × 10⁻⁶ | 0.000574 |
+| Stadt | 20 m | 32'773 | 2 | 2.01 × 10⁻⁸ | 3.21 × 10⁻⁶ | 0.000574 |
+| Wald | offen | 40'000 | 4 | 1.01 × 10⁻⁶ | 1.12 × 10⁻⁴ | 0.016385 |
+| Wald | 5 m | 39'751 | 4 | 1.01 × 10⁻⁶ | 1.13 × 10⁻⁴ | 0.016385 |
+
+Bei allen sechs abweichenden Zellmitten haben die beiden Stützdreiecke
+eine andere Diagonale über denselben vier XY-Stützpunkten. Jeweils
+vier Punkte liegen exakt auf einem Kreis in der LAS-Zentimeterquantisierung.
+Die Höhe aus den tatsächlichen Java- und PDAL-Dreiecken reproduzierte die
+jeweilige Ausgabe innerhalb 1 µm. Das 95. Perzentil des absoluten
+Zellfehlers lag in allen Fällen unter 5.4 × 10⁻¹¹ m.
+[Koordinaten und Höhen der Stützdreiecke](measurements/tin-support-faces.json)
+
+Die Schummerungen verwenden 315° Azimut und 45° Sonnenhöhe. Im bebauten
+Ausschnitt überbrückt das offene TIN den grossen Gebäudegrundriss sichtbar
+mit Dreiecksflächen. Das 20-m-Limit legt dort NoData frei. Die Java- und
+PDAL-Stadtschummerungen sind für beide Varianten bytegleich.
+[Gebäudedetail ohne Limit](measurements/tin-urban-buildings.png) ·
+[Gebäudedetail mit 20 m](measurements/tin-urban-buildings-cap20.png) ·
+[Waldschummerung](measurements/tin-forest-hillshade.png)
+
+### Laufzeit
+
+```sh
+./gradlew installDist downloadTestData
+./gradlew downloadTestData -Ptile=2019-urban
+python3 tools/check-dtm.py /pfad/zu/pdal --benchmark-csv .cache/dtm-pdal.csv
+```
+
+Der vollständige Vergleich misst LAZ-Eingabe, Crop, Bodenpunktauswahl,
+Statistik, TIN und Ausgabe eines unkomprimierten GeoTIFFs mit
+JSON-Metadaten. PDAL läuft mit `--nostream` und
+`filters.delaunay`, `filters.faceraster`, `writers.raster`. Je Gebiet
+laufen acht rotierende Runden mit je einem und vier Reader-Workern.
+Dateicache und Varianten sind vor der Messung aufgewärmt. Jeder
+Messlauf startet einen neuen Prozess. Zellwerte und Mengenstatistik
+werden ausserhalb der Zeitmessung gegen die jeweilige Abnahme geprüft.
+
+Der zweite Vergleich liest dieselbe vorbereitete, unkomprimierte
+Boden-LAS in beiden Engines. Er misst LAS-Lesen, Statistik, TIN,
+Rasterisierung und Ausgabe mit einem Reader in fünf frischen Prozessen je
+Engine und Gebiet. Die vollständige LAZ-Dekodierung und Filterung entfallen
+hier. Das Peak-RSS von PDAL im vollständigen Lauf enthält die materialisierten
+Punktansichten des nicht streamenden Pfads.
+
+| Gebiet | Eingabe | Engine | Reader | Median (s) | Min–Max (s) | Median CPU (s) | Peak-RSS Median / Max (MiB) | Mio. Punkte/s |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stadt | LAZ | Java | 1 | 5.512 | 5.429–5.613 | 7.96 | 441 / 444 | 2.17 |
+| Stadt | LAZ | PDAL | 1 | 4.482 | 4.464–4.538 | 5.93 | 850 / 938 | 2.67 |
+| Stadt | LAZ | Java | 4 | 2.937 | 2.848–3.281 | 9.79 | 446 / 466 | 4.07 |
+| Stadt | LAZ | PDAL | 4 | 2.646 | 2.577–2.740 | 7.07 | 880 / 968 | 4.52 |
+| Stadt | Boden-LAS | Java | 1 | 1.936 | 1.890–1.937 | 4.02 | 383 / 385 | 0.38 |
+| Stadt | Boden-LAS | PDAL | 1 | 0.560 | 0.557–0.571 | 0.55 | 240 / 241 | 1.30 |
+| Wald | LAZ | Java | 1 | 6.179 | 6.135–6.493 | 8.31 | 425 / 429 | 2.36 |
+| Wald | LAZ | PDAL | 1 | 5.644 | 5.571–5.767 | 7.37 | 728 / 939 | 2.58 |
+| Wald | LAZ | Java | 4 | 2.916 | 2.818–3.641 | 10.68 | 442 / 447 | 4.99 |
+| Wald | LAZ | PDAL | 4 | 3.040 | 2.937–3.400 | 9.19 | 851 / 990 | 4.79 |
+| Wald | Boden-LAS | Java | 1 | 1.770 | 1.496–2.212 | 3.74 | 337 / 343 | 0.24 |
+| Wald | Boden-LAS | PDAL | 1 | 0.380 | 0.359–0.715 | 0.36 | 159 / 163 | 1.13 |
+
+In der vollständigen Pipeline mit vier Readern benötigt Java in der
+Stadt 11 % mehr Wandzeit. Im Wald liegt der Java-Median 4 % tiefer.
+Dort überlappen die gemessenen Laufzeitspannen. Auf der gemeinsamen
+Boden-LAS beträgt die Wandzeit von Java das 3.5-Fache in der Stadt und
+das 4.7-Fache im Wald. Der Vergleich lokalisiert den grösseren Abstand
+im Teil der Pipeline ab der gefilterten Punktmenge. Bei der
+vollständigen LAZ-Eingabe hat Java in beiden Gebieten das tiefere
+Spitzen-RSS.
+
+Die GeoTIFFs umfassen 320'668 Bytes bei Java und 320'732 Bytes bei PDAL.
+Die Grösse der JSON-Metadaten ist pro Variante in den Rohmessungen
+festgehalten. [84 verifizierte Einzelmessungen](measurements/tin-dtm-pdal.csv)
+
+## TIN-Optimierungsversuche
+
+Basis `8021112`, Solothurn Stadt und Wald, Apple M1, Temurin 25.0.3+9
+mit `-Xmx512m`, PDAL 2.10.2/LazPerf und GDAL 3.13.3. Die
+Versuchs-Patches liegen unter `experiments/patches/tin-*.patch`. Sie
+werden in separaten Worktrees auf die Basis angewendet. Die im
+vorherigen Abschnitt beschriebene CLI dient als Produktreferenz.
+
+### Messaufbau
+
+`experiments/check-tin.py` vergleicht zwei installierte CLIs mit
+demselben Raster und denselben Eingabedateien. Beim ersten Aufruf
+erzeugt der Referenz-Build die beiden gemeinsamen Boden-LAS-Dateien.
+Beide Formate werden in getrennten Messreihen verwendet. Die
+Boden-LAS enthält die vorher ausgewählten Punkte. Der vollständige
+LAZ-Lauf enthält auch Dekodierung, Crop und Bodenauswahl.
+
+Acht gepaarte Runden, je ein frischer Prozess, rotierende Reihenfolge,
+warmer Dateicache. Zeitmessung und Ausgabekontrolle erfolgen getrennt.
+Die Kontrollläufe verwenden offenes TIN und Kantenlimits von 20 m
+in der Stadt beziehungsweise 5 m im Wald. Verglichen werden
+Georeferenzierung, Float64-Zellbits, NoData und Metadaten.
+Für alternative Triangulationen werden Abweichungen über 1 µm und
+veränderte Masken anhand der tatsächlichen Stützdreiecke nachgerechnet.
+
+Die zum Vergleich gepaarte Verbesserung ist der Median aus
+`1 - Kandidatenzeit / Referenzzeit` je Runde. Als belastbarer
+Einzelgewinn gelten mindestens 5 % bei mindestens sechs Siegen
+auf einem Gebiet und höchstens 2 % Verlust auf dem anderen. Ein
+Anstieg des Spitzen-RSS um mehr als 10 % wird als Speicherkompromiss
+ausgewiesen.
+
+```sh
+export JAVA_HOME=/pfad/zu/temurin-25
+pdal=/pfad/zu/pdal
+work="$PWD/.cache/experiments/tin-performance"
+patches="$PWD/experiments/patches"
+mkdir -p "$work"
+for name in baseline mixed; do
+  git worktree add --detach "$work/$name" 8021112
+  if [ "$name" = mixed ]; then git -C "$work/$name" apply "$patches/tin-mixed.patch"; fi
+  (cd "$work/$name" && ./gradlew test installDist)
+done
+python3 experiments/check-tin.py "$pdal" --work "$work" \
+  --baseline-cli "$work/baseline/build/install/pointcloud/bin/pointcloud" \
+  --cli "$work/mixed/build/install/pointcloud/bin/pointcloud" \
+  --name mixed --csv "$work/mixed.csv"
+```
+
+### Einzelvarianten auf vorbereiteter Boden-LAS
+
+| Variante / Vergleich | Gebiet | Wandzeit Median (s) | Gepaarter Gewinn | Siege | CPU Median (s) | Peak-RSS Max (MiB) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Gemischtes HashSet / Basis | Stadt | 1.912 / 1.789 | 7.71% | 8/8 | 3.96 / 3.73 | 387 / 365 |
+| Gemischtes HashSet / Basis | Wald | 1.374 / 1.311 | 4.58% | 8/8 | 3.07 / 2.94 | 342 / 332 |
+| Primitive Tabelle / gemischtes Set | Stadt | 1.796 / 1.699 | 5.21% | 8/8 | 3.74 / 3.33 | 366 / 371 |
+| Primitive Tabelle / gemischtes Set | Wald | 1.339 / 1.300 | 2.99% | 6/8 | 2.99 / 2.89 | 334 / 313 |
+| Standard-TIN / SemiVirtual | Stadt | 1.924 / 1.805 | 6.70% | 7/8 | 4.00 / 3.80 | 385 / 441 |
+| Standard-TIN / SemiVirtual | Wald | 1.382 / 1.302 | 4.18% | 7/8 | 3.12 / 2.96 | 341 / 354 |
+| Hilbert / Standard mit Dateireihenfolge | Stadt | 1.847 / 1.811 | 3.45% | 5/8 | 3.87 / 3.92 | 442 / 445 |
+| Hilbert / Standard mit Dateireihenfolge | Wald | 1.291 / 1.247 | 3.49% | 8/8 | 2.98 / 2.93 | 351 / 349 |
+| Gemeinsamer Prüfdurchlauf / Basis | Stadt | 1.943 / 1.867 | 4.73% | 7/8 | 4.08 / 3.90 | 387 / 385 |
+| Gemeinsamer Prüfdurchlauf / Basis | Wald | 1.414 / 1.318 | 7.25% | 8/8 | 3.13 / 3.06 | 341 / 340 |
+| Direkte LV95-GeoKeys / Basis | Stadt | 1.950 / 1.583 | 18.74% | 8/8 | 4.04 / 3.03 | 386 / 357 |
+| Direkte LV95-GeoKeys / Basis | Wald | 1.408 / 1.016 | 27.38% | 8/8 | 3.16 / 2.01 | 340 / 280 |
+
+Hashes, gemeinsame Stützpunktprüfung und direkte GeoKeys bestanden
+alle vier Profile mit bitgleichen Float64-Zellen und identischen
+Metadaten. Standard-TIN und Hilbert lieferten dieselben NoData-Masken.
+Die Höhenabweichungen gegenüber ihren Java-Referenzen blieben bei
+höchstens 1.14 × 10⁻¹³ m. Hilbert blieb beim Gesamtgewinn inklusive
+Sortieren unter der 5-%-Schwelle.
+
+Bei einer Million synthetischen Stützpunkten lieferten beide
+TIN-Varianten alle 40'000 analytisch geprüften Rasterhöhen unter
+`-Xmx512m`. Die Einzelprobe ergab 4.716 s und 448 MiB Spitzen-RSS
+für SemiVirtual sowie 3.237 s und 516 MiB für Standard. Der Stadtlauf
+der Standardvariante erhöht das maximale RSS um rund 15 %.
+
+Der kombinierte Kandidat verwendet die primitive XY-Tabelle,
+Standard-TIN, die Stützpunktprüfung beim Rasterdurchlauf und
+direkte LV95-GeoKeys.
+
+Hilbert reduzierte die mittlere Zahl der Lawson-Suchschritte in
+der Stadt von 17.10 auf 3.05 und im Wald von 16.52 auf 3.22. Die
+gemessenen Zeitgewinne von rund 3.5 % enthalten den Sortieraufwand.
+
+### CRS-Initialisierung und AOT
+
+| Eingabe | Frischer Standardprozess (s) | AOT (s) | Direkte LV95-GeoKeys (s) |
+| --- | ---: | ---: | ---: |
+| DTM mit fünf Punkten | 0.609 | 0.340 | 0.228 |
+| Boden-LAS Stadt | 1.968 | 1.625 | siehe Einzelvariante |
+| Boden-LAS Wald | 1.551 | 1.123 | siehe Einzelvariante |
+
+Acht frische Prozesse je Variante. Die ersten Läufe in drei
+JVMs mit je vier kleinen DTMs dauerten 0.519–0.530 s. Die
+anschliessenden neun Läufe im selben Prozess dauerten
+0.0030–0.0039 s. Das enthält neben dem bereits initialisierten
+CRS auch die aufgewärmten JVM-Klassen.
+
+Der JFR-Einzellauf für den kleinen DTM misst im GeoTIFF-Konstruktor
+460 ms und beim anschliessenden Schreiben 21 ms. Mit direkten
+GeoKeys sind es 0.28 ms und 108 ms. Ein Teil der übrigen
+Initialisierung fällt damit erst bei der Ausgabe an. Der AOT-Cache
+wurde auf allen drei DTM-Eingaben trainiert. Aufnahme und Erstellung
+dauerten 3.668 s und 0.704 s. Die Datei umfasst 36'356'096 Bytes.
+`AOTMode=on` und das JVM-Log bestätigten das Öffnen und Mappen
+des Archivs. GeoTIFF und JSON waren in den Laufzeitversuchen
+bytegleich.
+
+```sh
+python3 experiments/tin-runtime.py --work "$work" --ground-dir "$work/input" \
+  --baseline-cli "$work/baseline/build/install/pointcloud/bin/pointcloud" \
+  --geokey-cli "$work/geokey/build/install/pointcloud/bin/pointcloud" \
+  --csv "$work/runtime.csv"
+```
+
+[AOT-Einzelmessungen](measurements/tin-optimization-runtime.csv)
+
+### Kombinierter Tinfour-Kandidat
+
+Auf Boden-LAS gewinnt die Kombination in beiden Gebieten alle
+acht Zeitpaare. Der identische kombinierte Java-Build war in
+einem getrennten JFR-Lauf mit 0.794 s in der Stadt und 0.318 s
+im Wald am längsten mit dem TIN-Einfügen beschäftigt. Der
+GeoTIFF-Konstruktor liegt dort unter 1 ms. Der weiterhin
+über 20 % liegende Abstand zu PDAL erfüllt die Bedingung
+für den zusätzlichen Delaunator-Prototyp.
+
+| Gebiet | Engine | Median / Min–Max (s) | Median CPU (s) | Peak-RSS Max (MiB) |
+| --- | --- | ---: | ---: | ---: |
+| Stadt | Java-Basis | 1.888 / 1.847–1.921 | 3.95 | 386 |
+| Stadt | kombiniert | 1.355 / 1.341–1.377 | 2.35 | 351 |
+| Stadt | PDAL 2.10.2 | 0.557 / 0.554–0.568 | 0.54 | 247 |
+| Wald | Java-Basis | 1.403 / 1.362–1.595 | 3.10 | 341 |
+| Wald | kombiniert | 0.812 / 0.774–0.834 | 1.58 | 270 |
+| Wald | PDAL 2.10.2 | 0.345 / 0.343–0.578 | 0.33 | 163 |
+
+Vollständige LAZ-Pipelines mit Crop, Statistik und GeoTIFF. Die
+Kombination lieferte bei einem und vier Readern bitgleiche
+Ausgaben und behielt gegenüber der bisherigen Java-CLI dieselben
+NoData-Masken. Die Höhen unterschieden sich höchstens um
+1.14 × 10⁻¹³ m. Die aus der Erstabnahme bekannten sechs
+PDAL-Abweichungen wurden anhand der Dreiecke erneut bestätigt.
+
+| Gebiet | Reader | Engine | Median / Min–Max (s) | Median CPU (s) | Peak-RSS Max (MiB) |
+| --- | ---: | --- | ---: | ---: | ---: |
+| Stadt | 1 | Java-Basis | 5.461 / 5.413–5.787 | 7.83 | 442 |
+| Stadt | 1 | kombiniert | 4.920 / 4.898–5.596 | 6.21 | 406 |
+| Stadt | 1 | PDAL 2.10.2 | 4.453 / 4.422–4.484 | 5.88 | 943 |
+| Stadt | 4 | Java-Basis | 2.959 / 2.868–3.080 | 9.85 | 460 |
+| Stadt | 4 | kombiniert | 2.477 / 2.432–2.586 | 8.04 | 419 |
+| Stadt | 4 | PDAL 2.10.2 | 2.618 / 2.555–2.657 | 7.09 | 980 |
+| Wald | 1 | Java-Basis | 6.166 / 6.116–6.343 | 8.21 | 428 |
+| Wald | 1 | kombiniert | 5.570 / 5.523–5.643 | 6.69 | 362 |
+| Wald | 1 | PDAL 2.10.2 | 5.590 / 5.545–5.738 | 7.33 | 1056 |
+| Wald | 4 | Java-Basis | 2.967 / 2.893–3.078 | 10.93 | 445 |
+| Wald | 4 | kombiniert | 2.388 / 2.310–2.468 | 9.11 | 375 |
+| Wald | 4 | PDAL 2.10.2 | 3.035 / 2.948–3.340 | 9.38 | 1093 |
+
+### Delaunator-Prototyp
+
+Der zusätzliche Patch baut auf `tin-combined.patch` auf.
+Er verwendet radiale Ordnung, flache Integer-Arrays für das
+Dreiecksnetz und exakte Orientierungs- und InCircle-Prädikate
+für gleich skalierte Rohkoordinaten mit höchstens 35'000
+Einheiten Spannweite je Achse. Die radiale Reihenfolge wird
+ebenfalls exakt verglichen. Andere Eingaben verwenden den
+Tinfour-Pfad. Der Mapbox-Lizenzhinweis steht im Prototyp.
+[Algorithmusgrundlage](https://github.com/mapbox/delaunator/tree/v5.0.1)
+
+| Gebiet | Engine | Boden-LAS Median / Min–Max (s) | Median CPU (s) | Peak-RSS Max (MiB) |
+| --- | --- | ---: | ---: | ---: |
+| Stadt | kombiniert | 1.371 / 1.351–1.394 | 2.38 | 353 |
+| Stadt | Delaunator | 0.862 / 0.847–0.880 | 1.50 | 247 |
+| Stadt | PDAL 2.10.2 | 0.559 / 0.557–0.572 | 0.54 | 245 |
+| Wald | kombiniert | 0.788 / 0.776–0.864 | 1.54 | 270 |
+| Wald | Delaunator | 0.644 / 0.637–0.672 | 1.23 | 185 |
+| Wald | PDAL 2.10.2 | 0.345 / 0.342–0.522 | 0.33 | 164 |
+
+Der gepaarte Gewinn gegenüber der Tinfour-Kombination beträgt
+37.16 % in der Stadt und 18.01 % im Wald, je acht Siege.
+PDAL bleibt auf vorbereiteter Boden-LAS in beiden Gebieten
+schneller.
+
+Bei allen Kantenlimits waren die NoData-Masken gleich. Gegen
+die Tinfour-Kombination wichen fünf Stadt- und zwei Waldzellen
+um mehr als 1 µm ab, bei maximal 3.00 mm und 11.54 mm.
+Gegen PDAL waren es vier Stadt- und zwei Waldzellen,
+bei maximal 3.00 mm und 16.38 mm. Jede Differenz wurde aus
+den tatsächlich verwendeten Dreiecken reproduziert.
+Die jeweiligen Roh-XY liegen exakt auf demselben Kreis.
+[Stützdreiecke](measurements/tin-optimization-flat-faces.json)
+
+```sh
+git worktree add --detach "$work/delaunator" 8021112
+git -C "$work/delaunator" apply "$patches/tin-combined.patch"
+git -C "$work/delaunator" apply "$patches/tin-delaunator.patch"
+(cd "$work/delaunator" && ./gradlew clean check installDist)
+python3 experiments/check-tin.py "$pdal" --work "$work" \
+  --baseline-cli "$work/baseline/build/install/pointcloud/bin/pointcloud" \
+  --cli "$work/delaunator/build/install/pointcloud/bin/pointcloud" \
+  --candidate-faces "$work/delaunator/tools/TerrainFaces.java" \
+  --allow-mesh-differences --include-pdal --mode laz \
+  --name flat-laz --csv "$work/flat-laz.csv"
+```
+
+Die vollständigen LAZ-Läufe enthalten ebenfalls Bodenauswahl,
+Statistik und GeoTIFF. Der Delaunator-Build liefert mit einem und
+vier Readern jeweils bitgleiche Zellwerte und Metadaten je Gebiet
+und Kantenlimit.
+
+| Gebiet | Reader | Engine | Median / Min–Max (s) | Median CPU (s) | Peak-RSS Max (MiB) |
+| --- | ---: | --- | ---: | ---: | ---: |
+| Stadt | 1 | Java-Basis | 5.488 / 5.454–5.549 | 7.82 | 444 |
+| Stadt | 1 | Delaunator | 4.468 / 4.420–4.662 | 5.38 | 305 |
+| Stadt | 1 | PDAL 2.10.2 | 4.486 / 4.459–4.567 | 5.92 | 948 |
+| Stadt | 4 | Java-Basis | 2.928 / 2.880–3.115 | 9.89 | 455 |
+| Stadt | 4 | Delaunator | 1.967 / 1.932–2.013 | 7.05 | 318 |
+| Stadt | 4 | PDAL 2.10.2 | 2.651 / 2.582–2.704 | 7.11 | 981 |
+| Wald | 1 | Java-Basis | 6.205 / 6.128–6.555 | 8.22 | 429 |
+| Wald | 1 | Delaunator | 5.467 / 5.417–5.798 | 6.40 | 275 |
+| Wald | 1 | PDAL 2.10.2 | 5.650 / 5.574–5.808 | 7.37 | 1049 |
+| Wald | 4 | Java-Basis | 2.957 / 2.821–3.091 | 10.86 | 451 |
+| Wald | 4 | Delaunator | 2.202 / 2.126–2.694 | 8.49 | 297 |
+| Wald | 4 | PDAL 2.10.2 | 2.998 / 2.955–3.044 | 9.18 | 1079 |
+
+[480 A/B-Einzelmessungen](measurements/tin-optimization-ab.csv)
+
+## Delaunator-Kandidat für vollständige DTM-Raster
+
+Der separate Branch `codex/tin-delaunator-candidate` vergleicht
+Delaunator mit der vollständigen Tinfour-Produktpipeline aus `aad5f70`.
+Der Ganzzahlpfad verwendet den radialen Aufbau aus Delaunator 5.0.1.
+Bei gleichen positiven X- und Y-Skalen darf der Abstand zwischen
+kleinster und grösster deduplizierter Rohkoordinate je Achse
+35'000 Einheiten betragen. Innerhalb dieses Bereichs passt der
+InCircle-Determinant in ein Java-`long`. Die radiale Ordnung verwendet
+eine exakte 128-Bit-Summe. Beide Kerne teilen sich die Rasterisierung
+und die Nächste-Nachbar-Suche für Restzellen.
+
+Die Messung verwendet macOS 15.8.1 auf dem Apple M1 mit 16 GiB RAM,
+Temurin 25.0.3+9, `-Xmx512m`, PDAL 2.10.2 und GDAL 3.13.3.
+Die Prozesse starten frisch mit warmem Dateicache. Gemessen
+wird das offene Netz mit unkomprimiertem GeoTIFF und
+JSON-Metadaten. Java läuft mit vollständiger Ausgabe, PDAL
+berechnet das reine TIN. Stadt und Wald erhalten acht rotierende
+Runden je Eingabe- und Worker-Konfiguration. Autzen, der breite
+Waldzuschnitt und die Höhenkachel erhalten fünf Runden mit
+vier LAZ-Readern. Die Abnahme prüft jedes Profil zusätzlich
+mit Kantenlimit und Java mit einem und vier LAZ-Workern.
+
+### Abnahme der Rasterhöhen
+
+Alle vollständigen Raster enthalten ausschliesslich endliche Höhen und
+keinen NoData-Tag. Die Java-Rasterwerte und Metadaten stimmen pro Kern
+mit einem und vier LAZ-Workern bitweise überein. Die nächstgelegenen
+Stützpunkte wurden pro Gebiet mit Restzellen an je 13 Zellen durch
+eine direkte Distanzsuche nachvollzogen.
+
+| Gebiet | TIN-Kern | Eindeutige Stützpunkte | Kantenlimit | Ergänzte Zellen, offen / mit Limit | TIN-Höhenabweichungen zum Produkt über 1 µm / Maximum |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Stadt | Delaunator | 728'751 | 20 m | 0 / 7'227 | 5 / 3.00 mm |
+| Wald | Delaunator | 428'313 | 5 m | 0 / 249 | 2 / 11.54 mm |
+| Autzen | Delaunator | 62'290 | 20 ft | 0 / 0 | 0 / <1 µm |
+| Breiter Wald | Tinfour | 712'642 | 5 m | 0 / 648 | 0 / bitgleich |
+| Höhenkachel | Delaunator | 787'920 | 5 m | 0 / 272 | 3 / 6.06 mm |
+
+Kein Wechsel zwischen TIN-Höhe und Ersatzhöhe in beiden Richtungen.
+Die zehn Höhenabweichungen zum Produkt oberhalb von 1 µm wurden aus
+den tatsächlich verwendeten Dreiecken nachgerechnet. Gegen PDAL
+waren es 4, 2, 6, 5 und 2 Zellen in der Reihenfolge der Tabelle.
+PDAL und Java ergaben in allen Profilen dieselben TIN-NoData-Masken.
+Die Rastergeometrie von Autzen ist in internationalen Fuss,
+die Höhentoleranz ist in US-Vermessungsfuss umgerechnet. PDAL
+führt für Autzen zusätzlich das vertikale CRS EPSG:6360.
+[Stützdreiecke und Zellhöhen](measurements/tin-complete-delaunator-faces.json)
+
+### Laufzeit und Speicher
+
+Die drei Werte je Messspalte stehen in der Reihenfolge Java-Produkt,
+Java-Kandidat und PDAL 2.10.2. Die Java-Varianten erzeugen das vollständige
+Raster. Das offene TIN von PDAL liefert bei diesem Vergleich bereits
+einen Wert je Zelle. CPU ist die Summe aus User- und Systemzeit.
+Spitzen-RSS ist der höchste gemessene Prozesswert. Der gepaarte
+Gewinn ist der Median der Zeitersparnis je Runde gegenüber dem
+Java-Produktstand.
+
+| Gebiet | Eingabe | Reader | Wandzeit Median (s) | CPU Median (s) | Spitzen-RSS (MiB) | Gepaarter Gewinn |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Stadt | Boden-LAS | 1 | 1.205 / 0.892 / 0.559 | 2.05 / 1.54 / 0.55 | 285 / 246 / 246 | 27.14 % |
+| Stadt | LAZ | 1 | 4.784 / 4.480 / 4.479 | 5.90 / 5.45 / 5.90 | 338 / 304 / 941 | 6.64 % |
+| Stadt | LAZ | 4 | 2.310 / 1.993 / 2.622 | 7.69 / 7.17 / 7.08 | 350 / 314 / 977 | 14.16 % |
+| Wald | Boden-LAS | 1 | 0.887 / 0.669 / 0.346 | 1.71 / 1.27 / 0.33 | 243 / 184 / 164 | 24.50 % |
+| Wald | LAZ | 1 | 5.611 / 5.414 / 5.590 | 6.75 / 6.35 / 7.33 | 326 / 275 / 1042 | 3.73 % |
+| Wald | LAZ | 4 | 2.416 / 2.197 / 2.973 | 8.94 / 8.59 / 9.12 | 349 / 295 / 1081 | 9.10 % |
+| Autzen | LAZ | 4 | 2.510 / 2.450 / 2.343 | 10.37 / 10.13 / 7.57 | 481 / 480 / 807 | 2.01 % |
+| Breiter Wald | LAZ | 4 | 2.858 / 2.889 / 3.420 | 9.87 / 9.99 / 9.88 | 380 / 380 / 993 | −0.46 % |
+| Höhenkachel | LAZ | 4 | 2.974 / 2.589 / 3.414 | 10.21 / 9.44 / 10.00 | 392 / 383 / 1177 | 12.94 % |
+
+Der Kandidat erfüllt die Übernahmekriterien. In Stadt und Wald gewann
+er alle acht LAZ-Runden mit vier Readern. Das Spitzen-RSS sank dort um
+36 bzw. 54 MiB. Der bitgleiche Tinfour-Fallback verlor im gepaarten
+Median 0.46 %. Seine Laufzeiten lagen zwischen 2.783 und 3.128 s,
+bei 2.801 bis 2.876 s für den Produktstand. Die Zahl der von
+anderen Diagonalen zusätzlich gefüllten Zellen beträgt null.
+[189 Einzelmessungen](measurements/tin-complete-delaunator.csv)
+
+Die Restzellensuche wurde separat auf der vorbereiteten Boden-LAS mit
+Kantenlimit gemessen. Je Profil liefen drei frische Prozesse. Das JFR-Ereignis
+`jdk.MethodTrace` erfasst `TerrainWriter.fillNearest` einschliesslich
+des Indexaufbaus. Die Mediane lagen bei 470 ms in der Stadt, 256 ms im Wald,
+1.9 ms in Autzen, 470 ms im breiten Wald und 478 ms auf der Höhenkachel.
+In Autzen genügte der Durchlauf über die 40'000 vorhandenen Höhen.
+
+### Reproduktion
+
+```sh
+# Gradle-Distributionen für aad5f70 und den Kandidaten bauen.
+# Die folgenden Befehle laufen im Kandidaten-Worktree.
+for tile in 2019 2019-urban 2019-height autzen
+do
+  ./gradlew downloadTestData -Ptile="$tile"
+done
+python3 experiments/check-tin.py "$pdal" \
+  --baseline-cli "$product/build/install/pointcloud/bin/pointcloud" \
+  --baseline-faces "$product/tools/TerrainFaces.java" \
+  --cli "$PWD/build/install/pointcloud/bin/pointcloud" \
+  --data "$PWD/.cache/test-data" --work "$work" \
+  --mode both --complete --extended --allow-mesh-differences --include-pdal \
+  --name delaunator --csv "$work/delaunator.csv"
+```

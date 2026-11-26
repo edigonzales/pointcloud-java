@@ -1218,3 +1218,248 @@ Kollisionen mit gültigen Werten werden vor dem Schreiben erkannt.
   20 dauerten die Einzelläufe 3.773 s in Java und 1.741 s in PDAL.
   Beide füllten 500'000 Zellen und stimmten innerhalb (6.03 × 10⁻¹² m)
   überein.
+
+## TIN-Terrainmodell aus Bodenpunkten
+
+26. November 2026, Basis `9617f6b`, Apple M1 mit macOS 15.8.1,
+Temurin 25.0.3+9, Gradle 9.9.1, PDAL 2.10.2/LazPerf und GDAL 3.13.3.
+`writers.dtm` verwendet Tinfour 2.1.9 für das Delaunay-Netz, Rasterung
+über begrenzte Zeilenabschnitte und die gemeinsame GeoTIFF-Ausgabe.
+Die separate Double-Höhe vermeidet die Float-Konvertierung in Tinfour.
+Eine einzige GeoTIFF-Transaktion bedient beide Raster-Writer. Das TIN
+hält den selektierten Punktbestand im Speicher.
+Die Diagnose der Stützflächen läuft als separates Abnahmewerkzeug.
+
+- `./gradlew downloadTestData -Ptile=2019-urban` lud 52'116'409 Bytes
+  der amtlichen Kachel. Der Waldtest verwendet die vorhandene
+  Kachel `so-2019.laz` mit 83'247'722 Bytes.
+- `./gradlew clean check installDist distZip` endete in 4 s mit Exit 0.
+  Alle 122 JUnit-Fälle bestanden, davon 12 im neuen `TerrainWriterTest`.
+  Der native XML-Report unter `build/test-results/test/` weist 0 Fehler,
+  0 Fehlschläge, 0 übersprungene Fälle und 1.535 s aufsummierte
+  Klassenlaufzeit aus. Die HTML-Ausgabe steht in
+  `build/reports/tests/test/index.html`. Ein kollidierender lokaler
+  Variablenname beim Umstellen des bisherigen Writers wurde vor dem
+  vollständigen Lauf korrigiert.
+- `unzip -tq build/distributions/pointcloud.zip` bestand.
+  Die entpackte CLI verarbeitete beide LAZ-Dateien mit `-Xmx512m`
+  und vier Workern. Beide Läufe endeten mit 40'000 gültigen Zellen.
+  Die Einzelläufe der Paketprüfung dauerten 3.60 s für Stadt und
+  3.37 s für Wald. Das ZIP umfasst 25'820'421 Bytes samt Tinfour und
+  Lizenztexten.
+- `python3 tools/check-real-data.py /pfad/zu/pdal` verglich 496'586
+  vollständige LAS-Records in Ground-Crop, Polygon-Crop, Decimation und
+  dem Solothurn-2014-Crop mit 0 Abweichungen. Die bestehenden Toleranzen
+  für Statistik und CRS bestanden. Die Abbruchprobe endete mit
+  Exit 143 nach 0.18 s ohne Ziel- oder temporäre Ausgabe.
+- `python3 tools/check-ground-grid.py /pfad/zu/pdal --release`
+  bestätigte die unveränderte Ausgabe für Z, Intensity, die Release-
+  Füllfenster sowie Deflate. Die maximale Z-Abweichung lag bei
+  4.55 × 10⁻¹³ m, die maximale Intensity-Abweichung bei 5.09 × 10⁻¹¹.
+- `python3 tools/check-dtm.py /pfad/zu/pdal` bestätigte die gleichen
+  NoData-Masken für Java und PDAL in vier Fällen mit je 40'000 Zellen.
+  Die 728'768 selektierten Stadt- und 428'321 Waldpunkte ergeben
+  728'751 beziehungsweise 428'313 eindeutige XY. Alle sechs Zellen
+  mit einer Höhendifferenz über 1 µm wurden anhand der tatsächlichen
+  TIN-Dreiecke beider Engines erklärt. Die Java-Metadaten und
+  Float64-Werte bei einem und vier LAZ-Workern waren bitgleich.
+  [Realdatenergebnisse und Schummerungen](experiments.md#tin-terrainmodell-gegen-pdal)
+- Die CLI-Abbruchprobe beobachtete mit `jcmd Thread.print` den
+  Tinfour-Masseneinbau der städtischen Bodenpunkte. SIGTERM beendete
+  den Prozess nach 1.20 s mit Exit 143 ohne GeoTIFF, Metadaten oder
+  temporäre Ausgabe.
+- `tools/check-dtm.py --benchmark-csv .cache/dtm-pdal.csv` schloss
+  alle 84 Prozessmessungen ab. Die 64 vollständigen LAZ-Läufe und
+  20 Läufe auf vorbereiteter Boden-LAS wurden gegen die Abnahme geprüft.
+  Bei vier Readern lagen die Wandzeitmediane bei 2.937 s / 2.646 s
+  (Java / PDAL) in der Stadt und 2.916 s / 3.040 s im Wald.
+  [Messaufbau, Streuung, CPU-Zeit, RSS und Durchsatz](experiments.md#tin-terrainmodell-gegen-pdal)
+
+Die Produkt- und Referenzprüfungen sind abgeschlossen. Die
+Einfachheitsprüfung bestätigte die direkte Stage samt gemeinsamem
+GeoTIFF-Pfad. Der Referenzvergleich bleibt ausserhalb der Produkt-CLI.
+
+## TIN-Performance-Experimente
+
+26. November 2026, Basis `8021112`, MacBook Air M1, macOS 15.8.1,
+Temurin 25.0.3+9, Gradle 9.9.1. Patches und Messskripte bleiben
+in der Versuchsumgebung. Beide Solothurn-Pipelines verwenden je
+40'000 Rasterzellen. Die kanonischen Boden-LAS-Dateien umfassen
+728'768 und 428'321 selektierte Punkte. Referenz ist PDAL 2.10.2
+mit LazPerf und GDAL 3.13.3.
+
+- `./gradlew --offline clean check installDist` bestand für Basis,
+  Kombination und Delaunator mit 122, 122 und 128 JUnit-Fällen.
+  Die fokussierten Testläufe für Hash-Mischung, primitive Tabelle,
+  Standard-TIN, Hilbert, gemeinsame Prüfung und GeoKeys bestanden mit
+  13, 14, 12, 13, 13 und 48 Fällen. Keine Fehler, Fehlschläge oder
+  übersprungenen Fälle. Die nativen
+  Reports liegen je Worktree unter `build/test-results/test/`.
+- Die zwei Tinfour-Varianten verarbeiteten bei `-Xmx512m` alle
+  eine Million Stützpunkte und erzeugten 40'000 gegen eine
+  analytische Ebene geprüfte Rasterwerte. SemiVirtual erreichte
+  448 MiB, Standard 516 MiB Spitzen-RSS. Die Einzelprobe dauerte
+  4.716 beziehungsweise 3.237 s.
+- `experiments/check-tin.py` prüfte die Raster ohne Kantenlimit
+  und mit 20 m in der Stadt sowie 5 m im Wald vor dem Zeitvergleich.
+  Hashing, gemeinsame Stützpunktprüfung und direkte GeoKeys waren
+  bitgleich. Standard-TIN und Hilbert blieben bei 1.14 × 10⁻¹³ m.
+  Delaunator hat dieselben NoData-Masken und nachgewiesene alternative
+  Diagonalen über kozyklischen XY für alle Differenzen über 1 µm.
+- `experiments/tin-runtime.py` verglich frischen JVM-Start,
+  weitere Pipeline-Läufe im selben Prozess und AOT. Die AOT-Nutzung
+  ist mit `AOTMode=on` und dem Mapping im Startlog belegt.
+- Das Kombinieren von primitiver Tabelle und gemeinsamem Rasterdurchlauf
+  erforderte eine Auflösung im Importblock. Der kombinierte Build und
+  der volle Rastervergleich gegen Basis und PDAL bestanden danach.
+  Die Einfachheitsprüfung bestätigte den gemeinsamen Raster- und TIFF-Pfad
+  sowie getrennt anwendbare Patches.
+- Das Delaunator-Experiment bestand die vollständige LAZ-Abnahme
+  mit je einem und vier Readern. Die unabhängige Prüfung
+  `tools/check-real-data.py` im Delaunator-Worktree verglich
+  496'586 LAS-Records ohne Abweichung, einschliesslich der Polygon-
+  und Decimation-Pfade. In der DTM-Abbruchprobe während `RawDelaunay`
+  ergab SIGTERM nach 0.38 s Exit 143 ohne GeoTIFF, JSON oder Part-Datei.
+- Die Arbeit umfasst 480 A/B- und 56 Laufzeit-Einzelmessungen.
+  Alle Messreihen und Prüfungen sind abgeschlossen. Auf originaler
+  LAZ mit vier Readern liegen die Delaunator-Mediane bei 1.967 s
+  und 2.202 s für Stadt und Wald. Die gepaarten PDAL-Mediane liegen
+  bei 2.651 s und 2.998 s. Der Delaunator-Prototyp bleibt als Patch
+  zur fachlichen und betrieblichen Bewertung verfügbar.
+  [Messaufbau, Ergebnisse und Reproduktion](experiments.md#tin-optimierungsversuche)
+
+## Bitgleiche DTM-Optimierungen
+
+Basis `8021112`, Apple M1, macOS 15.8.1, Temurin 25.0.3+9,
+Gradle 9.9.1, PDAL 2.10.2 und GDAL 3.13.3. Die primitive
+XY-Tabelle erhält den ersten ausgewählten Z-Wert in
+Dateireihenfolge. Der Rasterdurchlauf prüft die ursprünglichen
+Vertex-Indizes vor dem Clip und dem Kantenlimit. Das kompakte
+SemiVirtual-Netz bleibt der TIN-Kern. Eindeutige LV95-GeoKeys
+werden nach Prüfung des Modelltyps und der VLR-Verweise direkt
+geschrieben. WKT behält Vorrang. Der sonstige CRS-Pfad läuft
+über GeoTools.
+
+- `tools/check-real-data.py` verglich 496'586 vollständige
+  LAS-Records mit PDAL. Alle Records und geprüften Attribute
+  stimmten überein. SIGTERM ergab Exit 143 ohne Teilausgabe.
+- `tools/check-ground-grid.py --release` bestätigte die
+  Höhen-, Intensitäts-, NoData- und Deflate-Regressionsfälle.
+  Die höchsten Abweichungen zu PDAL lagen bei 4.55 × 10⁻¹³ m
+  für Z und 5.09 × 10⁻¹¹ für Intensity.
+- Die Million-Punkte-Probe unter `-Xmx512m` ergab in beiden
+  Builds 40'000 analytisch geprüfte Höhen. Das Spitzen-RSS
+  sank in der Probe von 453 auf 320 MiB.
+- `./gradlew --offline clean check installDist` endete in 4 s mit
+  Exit 0. Alle 131 JUnit-Fälle bestanden, ohne Fehler, Fehlschläge
+  oder übersprungene Fälle. XML unter `build/test-results/test/`.
+- Stadt und Wald waren für Boden-LAS und vollständige LAZ mit
+  1/4 Readern in sämtlichen Profilen mit und ohne Kantenlimit
+  bitgleich. Die 96 Einzelmessungen umfassen acht gepaarte Runden.
+
+| Gebiet | Eingabe | Reader | Median Basis / Produkt (s) | Gepaarter Gewinn | Peak-RSS Max (MiB) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Stadt | ground-las | 1 | 1.895 / 1.211 | 36.15% | 386 / 283 |
+| Stadt | laz | 1 | 5.489 / 4.807 | 12.20% | 441 / 339 |
+| Stadt | laz | 4 | 2.844 / 2.331 | 19.06% | 458 / 356 |
+| Wald | ground-las | 1 | 1.367 / 0.866 | 36.48% | 341 / 244 |
+| Wald | laz | 1 | 6.201 / 5.646 | 8.90% | 431 / 325 |
+| Wald | laz | 4 | 2.837 / 2.325 | 17.19% | 447 / 344 |
+
+[Einzelmessungen mit Wandzeit, CPU und RSS](measurements/tin-product-exact.csv)
+
+## Vollständige DTM-Raster mit dem nächsten Bodenpunkt
+
+`writers.dtm` unterstützt `fill_nodata: "nearest"`. Der JTS-Index
+entsteht erst für Restzellen nach Freigabe des TIN. Er verwendet die
+ersten Roh-XY-Vorkommen und die ursprünglichen Double-Höhen. Bestehende
+TIN-Werte bleiben erhalten. Im vollständigen Modus wird kein NoData-Tag
+geschrieben. Die JSON-Metadaten zählen die Ergänzungen separat.
+
+- `./gradlew --offline clean check installDist` endete in 4 s mit
+  Exit 0. Alle 142 JUnit-Fälle bestanden ohne Fehler, Fehlschlag oder
+  übersprungenen Fall. Die native XML-Summe beträgt 1.747 s.
+- `tools/check-dtm.py --complete` verglich Stadt und Wald auf dem M1
+  mit PDAL 2.10.2 für das reine TIN. Die vollständigen Java-Ausgaben
+  mit einem und vier LAZ-Workern waren bitgleich. Beide offenen Raster
+  benötigten 0 Ergänzungen. Die Kantenlimits 20 m und 5 m ergaben
+  7'227 Ergänzungen in der Stadt und 249 im Wald. Sämtliche Raster
+  enthielten 40'000 endliche Höhen ohne NoData-Tag. Je 13 ergänzte
+  Stadt- und Waldzellen stimmten mit der unabhängigen Distanzsuche
+  überein. Alle vom TIN abgedeckten Werte blieben bitgleich.
+- JFR mass die Restzellensuche einschliesslich Indexaufbau auf der
+  vorbereiteten Boden-LAS mit Kantenlimit. Drei frische Durchläufe
+  je Gebiet ergaben Mediane von 471 ms in der Stadt und 250 ms im
+  Wald. Messung mit `experiments/tin-runtime.py --phase-cli ... --fill-nearest`.
+- Die zusätzliche Speicherprobe mit einer Million Stützpunkten und
+  einem Kantenlimit von 0.1 m ergänzte alle 40'000 Zellen. Der
+  Einzellauf unter `-Xmx512m` benötigte 4.216 s und 393 MiB
+  Spitzen-RSS. `tools/check-real-data.py` bestätigte erneut die
+  496'586 vollständigen LAS-Records und den Abbruch ohne Teilausgabe.
+
+## Delaunator als Kandidat für vollständige DTM-Raster
+
+26. November 2026, Apple M1 mit 16 GiB, macOS 15.8.1 arm64,
+Temurin 25.0.3+9, PDAL 2.10.2 und GDAL 3.13.3. Der Kandidat
+auf `codex/tin-delaunator-candidate` baut auf `aad5f70` auf.
+Der Ganzzahlpfad ist auf gleiche positive XY-Skalen und je
+35'000 rohe Koordinateneinheiten Spannweite begrenzt. Der
+Orientierungs- und der Umkreistest arbeiten in diesem Bereich
+exakt mit Ganzzahlen. Für übrige Eingaben übernimmt SemiVirtual-Tinfour.
+
+- `./gradlew --offline clean check installDist` endete in 3 s
+  mit Exit 0. 149 JUnit-Fälle bestanden. Keine Fehler,
+  Fehlschläge oder übersprungenen Fälle. Summe der XML-Suitezeiten
+  1.679 s, Berichte unter `build/test-results/test/`.
+- Die JVM-Distribution enthält den ISC-Lizenztext. Der Download
+  mit `./gradlew --offline downloadTestData -Ptile=2019-height`
+  bestätigte die 79'958'069 Bytes der amtlichen Höhenkachel.
+- `tools/check-real-data.py` bestätigte erneut 496'586 vollständige
+  LAS-Records und SIGTERM mit Exit 143 ohne Teilausgabe.
+- Die erste Prüfung der vorbereiteten Boden-LAS verglich dieselben
+  Statistikwerte an verschiedenen Stage-Positionen. Der Prüfer
+  berücksichtigt die ausgelagerten Crop- und Expression-Stages.
+  Für den Autzen-Referenzlauf liest der Prüfer EPSG:2992 aus der
+  horizontalen Komponente des zusammengesetzten PDAL-CRS.
+- Der Realdatenlauf mit `--mode both --complete --extended
+  --allow-mesh-differences --include-pdal` endete mit Exit 0.
+  30 Ergebnisse aus der vorherigen, ungemessenen Abnahme wurden bei
+  gleichen CLIs und Eingaben erneut geprüft. Die Zeitmessungen
+  starteten 189 frische Prozesse und prüften deren Resultate.
+- Alle fünf Profile lieferten in beiden Java-Versionen und bei beiden
+  Kantenlimit-Einstellungen vollständige Raster. Der Tinfour-Fallback im
+  breiten Wald war bitgleich. Je 13 Stichproben pro Profil mit Restzellen
+  bestätigten die Ersatzhöhen für beide Java-Versionen. Die abweichenden
+  Höhen zum Produkt und zu PDAL wurden aus den Stützdreiecken reproduziert.
+- Bei vier LAZ-Readern gewann der Kandidat gepaart 14.16 % in der Stadt
+  und 9.10 % im Wald. Der Fallback verlor 0.46 % und blieb innerhalb der
+  2-%-Grenze. Die ergänzten Zellen blieben in allen Profilen gleich.
+  [Vollständige Messwerte und separate Restzellensuche](experiments.md#delaunator-kandidat-für-vollständige-dtm-raster)
+
+Einfachheitsprüfung mit `simplify-change`. Die Engine-Grenze
+liegt direkt im Terrain-Writer. Deduplizierung, Rasterisierung,
+Restzellensuche und GeoTIFF-Ausgabe bleiben gemeinsam. Die
+Backend- und Dreiecksdiagnose liegt im vorhandenen Abnahmewerkzeug.
+
+## Übernahme von Delaunator in `codex/tin-complete`
+
+26. November 2026. Der Produktbranch wurde auf den abgenommenen Commit
+`41acc87` vorgezogen. Die Produktdokumentation nennt Delaunator und
+seinen SemiVirtual-Tinfour-Fallback als Bestandteile von `writers.dtm`.
+
+- `./gradlew --offline clean check installDist` bestand auf dem M1
+  mit Temurin 25.0.3+9 in 5 s. Alle 149 JUnit-Fälle bestanden,
+  ohne Fehler, Fehlschläge oder übersprungene Fälle.
+- Die installierte CLI wiederholte Stadt mit 20 m und breiten Wald mit
+  5 m Kantenlimit und je vier LAZ-Workern. Beide GeoTIFFs und ihre
+  JSON-Metadaten stimmten byteweise mit der Kandidatenabnahme überein.
+  Die Stadt lieferte 40'000 gültige Zellen, davon 7'227 ergänzt.
+  Der breite Wald lieferte 78'400 gültige Zellen, davon 648 ergänzt.
+  `TerrainFaces` bestätigte auf den jeweiligen Boden-LAS die Kernwahl
+  Delaunator und Tinfour.
+- `tools/check-real-data.py` verglich mit PDAL 2.10.2 erneut
+  496'586 LAS-Records ohne Abweichung. SIGTERM ergab Exit 143
+  ohne veröffentlichte oder temporäre Ausgabe.
+- Die 108 Klassendateien in den Produkt- und Codec-JARs sind bytegleich
+  zur abgenommenen Distribution. Die vollständig gemessenen Läufe
+  bleiben damit als Leistungsnachweis gültig.

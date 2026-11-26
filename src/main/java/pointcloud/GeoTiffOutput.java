@@ -8,8 +8,10 @@ import it.geosolutions.imageioimpl.plugins.tiff.TIFFImageWriterSpi;
 import org.eclipse.imagen.NotAColorSpace;
 import org.geotools.api.referencing.FactoryException;
 import org.geotools.api.referencing.crs.CoordinateReferenceSystem;
+import org.geotools.api.referencing.crs.ProjectedCRS;
 import org.geotools.coverage.grid.io.imageio.geotiff.CRS2GeoTiffMetadataAdapter;
 import org.geotools.coverage.grid.io.imageio.geotiff.GeoTiffConstants;
+import org.geotools.coverage.grid.io.imageio.geotiff.GeoTiffIIOMetadataEncoder;
 import org.geotools.gce.geotiff.GeoTiffWriter;
 import org.geotools.referencing.CRS;
 
@@ -25,25 +27,117 @@ import java.awt.image.DataBuffer;
 import java.awt.image.DataBufferDouble;
 import java.awt.image.Raster;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 
-final class GeoTiffOutput {
+final class GeoTiffOutput implements AutoCloseable {
     static final double NODATA = -9999;
+    static final int MAX_CELLS = 1_000_000;
     private static final int COORDINATE_SYSTEM_WKT = 2112;
     private static final int GEO_KEY_DIRECTORY = 34735;
+    private static final int GEO_DOUBLE_PARAMS = 34736;
+    private static final int GEO_ASCII_PARAMS = 34737;
+    private static final int PROJECTED_TYPE_KEY = 3072;
+    private static final int LV95_EPSG = 2056;
     private static final int MAX_PROJECTION_BYTES = 65_535;
     private static final int PENDING_EXTRA_SAMPLES = BaselineTIFFTagSet.TAG_EXTRA_SAMPLES - 1;
 
-    private GeoTiffOutput() {}
+    private final Path input;
+    private final Path target;
+    private final boolean overwrite;
+    // The validated direct LV95 path does not need a GeoTools CRS object.
+    private final CoordinateReferenceSystem crs;
+    private Path temporary;
 
-    static CoordinateReferenceSystem resolveCrs(LasHeader header, FileChannel source) throws IOException {
+    GeoTiffOutput(Path input, Path target, boolean overwrite, LasHeader header, FileChannel source)
+            throws IOException {
+        this.input = input;
+        this.target = target.toAbsolutePath();
+        this.overwrite = overwrite;
+        checkTarget();
+        crs = resolveCrs(header, source);
+    }
+
+    boolean isProjected() {
+        return crs == null || crs instanceof ProjectedCRS;
+    }
+
+    static void validateGrid(double originX, double originY, double resolution, int width, int height) {
+        if (resolution <= 0 || width <= 0 || height <= 0 || (long) width * height > MAX_CELLS) {
+            throw new IllegalArgumentException("grid requires positive resolution and dimensions, with at most "
+                    + MAX_CELLS + " cells");
+        }
+        if (!Double.isFinite(originX + width * resolution) || !Double.isFinite(originY + height * resolution)
+                || originX + resolution <= originX || originY + resolution <= originY) {
+            throw new IllegalArgumentException("grid extent and cell size must be representable");
+        }
+    }
+
+    void prepare(double originX, double originY, double resolution, int width, int height,
+                 double[][] bands, List<String> names, double nodata, boolean deflate) throws IOException {
+        checkInterrupted();
+        Files.createDirectories(target.getParent());
+        temporary = Files.createTempFile(target.getParent(), ".pointcloud-", ".tif.part");
+        write(temporary, crs, originX, originY, resolution, width, height, bands, names, nodata, deflate);
+        checkInterrupted();
+    }
+
+    void finish() throws IOException {
+        checkInterrupted();
+        checkTarget();
+        if (overwrite) {
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } else {
+            Files.createLink(target, temporary);
+            Files.delete(temporary);
+        }
+        temporary = null;
+    }
+
+    private void checkTarget() throws IOException {
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.exists(target) && Files.isSameFile(input, target)) {
+                throw new IOException("Point input and GeoTIFF output refer to the same file");
+            }
+            if (!overwrite) {
+                throw new FileAlreadyExistsException(target.toString());
+            }
+        }
+    }
+
+    static void checkInterrupted() throws InterruptedIOException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedIOException("GeoTIFF output cancelled");
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        if (temporary != null) {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static CoordinateReferenceSystem resolveCrs(LasHeader header, FileChannel source) throws IOException {
         var records = new LasHeader.VariableRecord[2];
+        long[] auxiliaryLengths = {-1, -1};
         LasHeader.RecordVisitor findProjection = record -> {
             if (!record.userId().equals("LASF_Projection")) {
+                return;
+            }
+            if (record.recordId() == GEO_DOUBLE_PARAMS || record.recordId() == GEO_ASCII_PARAMS) {
+                int index = record.recordId() == GEO_DOUBLE_PARAMS ? 0 : 1;
+                // Missing and ambiguous references both disqualify the direct path.
+                auxiliaryLengths[index] = auxiliaryLengths[index] == -1 ? record.length() : -2;
                 return;
             }
             int slot = switch (record.recordId()) {
@@ -71,7 +165,11 @@ final class GeoTiffOutput {
                 }
                 crs = CRS.parseWKT(new String(bytes, 0, end, StandardCharsets.UTF_8));
             } else if (records[1] != null) {
-                crs = CRS.decode("EPSG:" + epsgCode(source, records[1]), true);
+                var directory = geoKeyDirectory(source, records[1]);
+                if (isDirectLv95(directory, auxiliaryLengths[0], auxiliaryLengths[1])) {
+                    return null;
+                }
+                crs = CRS.decode("EPSG:" + epsgCode(directory), true);
             } else {
                 throw new IOException("Missing LAS CRS for GeoTIFF output");
             }
@@ -92,22 +190,68 @@ final class GeoTiffOutput {
         return (int) record.length();
     }
 
-    private static int epsgCode(FileChannel source, LasHeader.VariableRecord record) throws IOException {
+    private static ByteBuffer geoKeyDirectory(FileChannel source, LasHeader.VariableRecord record) throws IOException {
         int size = projectionSize(record);
         var directory = LasHeader.read(source, record.payload(), size);
         if (size < 8 || directory.getChar(0) != 1 || directory.getChar(6) > (size - 8) / 8) {
             throw new IOException("Invalid LAS GeoKey directory");
         }
+        return directory;
+    }
 
+    private static boolean isDirectLv95(ByteBuffer directory, long doubleBytes, long asciiBytes) {
+        int count = directory.getChar(6);
+        if (directory.getChar(2) != 1 || directory.getChar(4) != 0 || directory.capacity() != 8 + count * 8) {
+            return false;
+        }
+        boolean model = false;
+        boolean projection = false;
+        int previous = 0;
+        for (int i = 0; i < count; i++) {
+            int offset = 8 + i * 8;
+            int key = directory.getChar(offset);
+            int location = directory.getChar(offset + 2);
+            int length = directory.getChar(offset + 4);
+            int value = directory.getChar(offset + 6);
+            if (key <= previous) {
+                return false;
+            }
+            previous = key;
+            boolean direct = location == 0 && length == 1;
+            switch (key) {
+                case GeoTiffConstants.GTModelTypeGeoKey -> model = direct && value == 1;
+                case PROJECTED_TYPE_KEY -> projection = direct && value == LV95_EPSG;
+                default -> {
+                    // The cantonal headers also carry citation, angular unit and datum shift keys.
+                    boolean supported = switch (key) {
+                        case 1025 -> direct && value == GeoTiffConstants.RasterPixelIsArea;
+                        case 1026, 2049 -> location == GEO_ASCII_PARAMS && length > 0
+                                && value + length <= asciiBytes;
+                        case 2054 -> direct && value == 9102;
+                        case 2062 -> location == GEO_DOUBLE_PARAMS && length == 3
+                                && doubleBytes % Double.BYTES == 0 && value + length <= doubleBytes / Double.BYTES;
+                        case 3076 -> direct && value == 9001;
+                        default -> false;
+                    };
+                    if (!supported) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return model && projection;
+    }
+
+    private static int epsgCode(ByteBuffer directory) throws IOException {
         int geodetic = 0;
         int projected = 0;
         for (int i = 0; i < directory.getChar(6); i++) {
             int offset = 8 + 8 * i;
             int key = directory.getChar(offset);
-            if (key == 2048 || key == 3072) {
+            if (key == 2048 || key == PROJECTED_TYPE_KEY) {
                 int value = directory.getChar(offset + 2) == 0 && directory.getChar(offset + 4) == 1
                         ? directory.getChar(offset + 6) : -1;
-                if (key == 3072) {
+                if (key == PROJECTED_TYPE_KEY) {
                     projected = value;
                 } else {
                     geodetic = value;
@@ -122,9 +266,9 @@ final class GeoTiffOutput {
     }
 
     /** Encode a north-up raster without copying the sample arrays. */
-    static void write(Path target, CoordinateReferenceSystem crs, double originX, double originY,
-                      double resolution, int width, int height, double[][] bands,
-                      List<String> bandNames, double nodata, boolean deflate) throws IOException {
+    private static void write(Path target, CoordinateReferenceSystem crs, double originX, double originY,
+                              double resolution, int width, int height, double[][] bands,
+                              List<String> bandNames, double nodata, boolean deflate) throws IOException {
         var sampleModel = new BandedSampleModel(DataBuffer.TYPE_DOUBLE, width, height, bands.length);
         var data = new DataBufferDouble(bands, width * height);
         var raster = Raster.createWritableRaster(sampleModel, data, null);
@@ -132,11 +276,20 @@ final class GeoTiffOutput {
                 Transparency.OPAQUE, DataBuffer.TYPE_DOUBLE);
         var image = new BufferedImage(colors, raster, false, null);
 
-        var encoder = new CRS2GeoTiffMetadataAdapter(crs).parseCoordinateReferenceSystem();
+        GeoTiffIIOMetadataEncoder encoder;
+        if (crs == null) {
+            encoder = new GeoTiffIIOMetadataEncoder();
+            encoder.addGeoShortParam(GeoTiffConstants.GTModelTypeGeoKey, 1);
+            encoder.addGeoShortParam(PROJECTED_TYPE_KEY, LV95_EPSG);
+        } else {
+            encoder = new CRS2GeoTiffMetadataAdapter(crs).parseCoordinateReferenceSystem();
+        }
         encoder.addGeoShortParam(GeoTiffConstants.GTRasterTypeGeoKey, GeoTiffConstants.RasterPixelIsArea);
         encoder.setModelPixelScale(resolution, resolution);
         encoder.setModelTiePoint(0, 0, originX, originY + height * resolution);
-        encoder.setNoData(nodata);
+        if (!Double.isNaN(nodata)) {
+            encoder.setNoData(nodata);
+        }
 
         // The GeoTools metadata plus explicit numeric extra-sample tags follow Hop's GeoTiffOutput.
         var writer = new TIFFImageWriterSpi().createWriterInstance();
