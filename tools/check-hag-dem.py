@@ -1,4 +1,4 @@
-"""Verify HAG over the two full Solothurn point clouds against PDAL 2.10.2."""
+"""Verify Solothurn HAG and LAS interoperability against PDAL 2.10.2."""
 
 import argparse
 import csv
@@ -209,6 +209,90 @@ def acceptance(args, area, work, source, dem):
     return dimensions, stages["filters.stats"]["statistic"]
 
 
+def lv95_wkt_acceptance(args, work):
+    dem = prepare_dem(args, AREAS[0], work)
+    points = work / "points.csv"
+    source, java, pdal = (work / f"{name}.las" for name in ("source", "java", "pdal"))
+    with points.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("X", "Y", "Z", "Classification", "Intensity", "GpsTime", "Red", "Green",
+                         "Blue", "Infrared", "Confidence"))
+        writer.writerows(((2606740, 1229150, 440, 1, 125, 1, 101, 201, 301, 401, 127),
+                          (2606741, 1229151, 450, 5, 126, 2, 102, 202, 302, 402, 1024),
+                          (2606742, 1229152, 460, 6, 127, 3, 103, 203, 303, 403, 65535)))
+    las_options = {"type": "writers.las", "minor_version": 4, "dataformat_id": 8, "compression": False}
+    generate = work / "source.json"
+    generate.write_text(json.dumps([{"type": "readers.text", "filename": str(points), "override_srs": "EPSG:2056"},
+                                    {**las_options, "filename": str(source), "extra_dims": "Confidence=uint16",
+                                     "scale_x": .01, "scale_y": .01, "scale_z": .01}]))
+    run([args.pdal, "pipeline", generate, "--stream"])
+    sampler = {"type": "filters.hag_dem", "raster": str(dem), "zero_ground": False}
+    java_config, pdal_config = (work / f"{name}.json" for name in ("java", "pdal"))
+    java_config.write_text(json.dumps([str(source), sampler, {"type": "writers.las", "filename": str(java),
+                                                             "forward": "all", "extra_dims": HAG_EXTRA}]))
+    pdal_config.write_text(json.dumps([str(source), {**sampler, "min_clamp": -1e100},
+                                       {**las_options, "filename": str(pdal), "forward": "all",
+                                        "extra_dims": f"Confidence=uint16,{HAG_EXTRA}"}]))
+    run([args.cli, "pipeline", java_config, "--metadata", work / "metadata.json"])
+    run([args.pdal, "pipeline", pdal_config, "--stream"])
+    original = format8_records(source, 40)
+    java_values = format8_records(java, 48)
+    pdal_values = format8_records(pdal, 48)
+    require([record[:40] for record in java_values] == original == [record[:40] for record in pdal_values],
+            "Original LAS 1.4 records or their order differ")
+    java_hag, pdal_hag = ([struct.unpack_from("<d", record, 40)[0] for record in records]
+                          for records in (java_values, pdal_values))
+    errors = [abs(a - b) for a, b in zip(java_hag, pdal_hag)]
+    require(all(error <= 1e-9 for error in errors) and min(java_hag) < 0 < max(java_hag),
+            f"Signed LV95 HAG values differ: {java_hag} / {pdal_hag}")
+
+    vlrs = REFERENCE["projection_and_other_vlrs"]
+    key = (b"LASF_Spec", 4)
+    source_vlrs = vlrs(source)
+    source_extra = [payload for user, code, payload in source_vlrs if (user, code) == key]
+    require(len(source_extra) == 1 and len(source_extra[0]) == 192
+            and source_extra[0][2:4] == b"\x03\x00" and source_extra[0][4:36].rstrip(b"\0") == b"Confidence"
+            and any(record[:2] == (b"LASF_Projection", 2112) for record in source_vlrs),
+            "PDAL source fixture is missing its WKT or UInt16 confidence descriptor")
+    java_vlrs = vlrs(java)
+    require([v for v in java_vlrs if v[:2] != key] == [v for v in source_vlrs if v[:2] != key],
+            "Java changed the LAS 1.4 projection or other VLRs")
+    for output in (java, pdal):
+        extra = [payload for user, code, payload in vlrs(output) if (user, code) == key]
+        require(len(extra) == 1 and len(extra[0]) == 384 and extra[0][:192] == source_extra[0]
+                and extra[0][194:196] == b"\x0a\x00"
+                and extra[0][196:228].rstrip(b"\0") == b"HeightAboveGround",
+                f"{output}: expected the original Confidence descriptor followed by Float64 HAG")
+    schema = run([args.pdal, "info", "--schema", java], capture=True)["schema"]["dimensions"]
+    extra = [dim for dim in schema if dim["name"] in ("Confidence", "HeightAboveGround")]
+    require(extra == [{"name": "Confidence", "size": 2, "type": "unsigned"},
+                      {"name": "HeightAboveGround", "size": 8, "type": "floating"}],
+            "Default PDAL LAS 1.4 reader did not recognize both Extra Bytes dimensions")
+    read, values = work / "read.json", work / "values.csv"
+    read.write_text(json.dumps([str(java), {"type": "writers.text", "filename": str(values),
+                                          "order": "Confidence,HeightAboveGround",
+                                          "keep_unspecified": False, "precision": 17}]))
+    run([args.pdal, "pipeline", read, "--stream"])
+    with values.open(newline="") as stream:
+        observed = [(float(row["Confidence"]), float(row["HeightAboveGround"])) for row in csv.DictReader(stream)]
+    require(observed == list(zip((127, 1024, 65535), java_hag)), f"PDAL default reading differs: {observed}")
+    print(f"LAS 1.4/PDRF8 LV95 WKT: 3 original 40-byte prefixes, 48-byte output records, "
+          f"default PDAL Extra Bytes {observed}, maximum Float64 HAG difference {max(errors):.3g} m", flush=True)
+
+
+def format8_records(path, size):
+    with path.open("rb") as stream:
+        header = REFERENCE["read_las_header"](stream)
+        require(header[24:26] == b"\x01\x04" and struct.unpack_from("<BH", header, 104) == (8, size)
+                and struct.unpack_from("<Q", header, 247)[0] == 3,
+                f"{path}: expected three uncompressed LAS 1.4 format 8 records of {size} bytes")
+        stream.seek(struct.unpack_from("<I", header, 96)[0])
+        records = [stream.read(size) for _ in range(3)]
+        require(all(len(record) == size for record in records) and not stream.read(1),
+                f"{path}: unexpected point data size")
+        return records
+
+
 def benchmark(args, profiles):
     execute, timing = GRID["timing_functions"]()
     env = dict(os.environ, JAVA_OPTS="-Xmx512m")
@@ -294,13 +378,18 @@ def main():
     parser.add_argument("--data", type=Path, default=Path(".cache/test-data"))
     parser.add_argument("--dem-dir", type=Path, default=Path(".cache/hag-dem/dem"))
     parser.add_argument("--work", type=Path, default=Path(".cache/hag-dem"))
-    parser.add_argument("--las-extra-bytes", action="store_true",
-                        help="verify persisted Float64 HAG for the urban LAS output")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--las-extra-bytes", action="store_true",
+                       help="verify persisted Float64 HAG for the urban LAS output")
+    modes.add_argument("--lv95-wkt", action="store_true",
+                       help="verify HAG with PDAL-generated LAS 1.4 LV95 WKT and Extra Bytes")
     parser.add_argument("--benchmark-csv", type=Path, help="also time full-tile HAG and Java Z control pipelines")
     parser.add_argument("--setup-csv", type=Path, help="also trace DEM load separately after any benchmark")
     args = parser.parse_args()
     if args.las_extra_bytes and (args.benchmark_csv or args.setup_csv):
         parser.error("--las-extra-bytes is only for LAS acceptance; run timing options separately")
+    if args.lv95_wkt and (args.benchmark_csv or args.setup_csv):
+        parser.error("--lv95-wkt is only for LAS acceptance; run timing options separately")
     args.pdal, args.cli, args.data, args.dem_dir, args.work = (
         path.resolve() for path in (args.pdal, args.cli, args.data, args.dem_dir, args.work))
     args.gdal = args.gdal.resolve() if args.gdal else args.pdal.parent
@@ -309,6 +398,9 @@ def main():
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="run-", dir=args.work))
     print(f"HAG DEM outputs: {work}", flush=True)
+    if args.lv95_wkt:
+        lv95_wkt_acceptance(args, work)
+        return
     profiles = []
     for area in AREAS[:1] if args.las_extra_bytes else AREAS:
         section = work / area.name

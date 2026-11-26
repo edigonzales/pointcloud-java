@@ -278,6 +278,17 @@ haben. Der Höhenbezug und die Z-Einheit müssen ebenfalls übereinstimmen.
 Deklarierte Konflikte meldet die Stage als Fehler. Wenn Quellen den
 Höhenbezug offenlassen, stellt der Aufrufer dessen Übereinstimmung sicher.
 
+Deklarieren LAS und DEM horizontal EPSG:2056, prüft die Stage beide
+Definitionen beim Öffnen gegen das kanonische LV95 aus GeoTools. Nur
+die Breite und Länge des Projektionszentrums dürfen um bis zu acht
+Double-Rundungseinheiten (ULP) abweichen. So funktioniert das gerundete
+PDAL-WKT auch mit dem amtlichen Solothurner DTM. Achsen, Einheiten,
+Basis-CRS, Datum und die übrigen Projektionsparameter müssen
+übereinstimmen. Deklarierte EPSG-Kennungen von Basis-CRS und Datum sowie
+explizite `TOWGS84`-Parameter müssen zur kanonischen Definition passen.
+Die vertikale CRS-Prüfung folgt separat. Die ungeänderten Punkt-XY gehen
+direkt in die Rasterabfrage ein.
+
 - `zero_ground` hat Standardwert `true` und setzt Bodenpunkte vor der
   Rasterabfrage auf 0. `class` bestimmt die Bodenklasse, Standardwert 2.
 - `min_clamp` und `max_clamp` begrenzen gültige Differenzen optional.
@@ -322,6 +333,10 @@ Dimension weiterhin aus dem angegebenen DEM.
   Die Realdatenprüfung startet mit `tools/check-hag-dem.py --las-extra-bytes`.
   [PDAL LAS-Reader](https://pdal.io/en/stable/stages/readers.las.html#options) ·
   [HAG-Abnahme](../tools/check-hag-dem.py)
+- `tools/check-hag-dem.py <pdal> --lv95-wkt` prüft das von PDAL erzeugte
+  LV95-WKT mit LAS 1.4 im Punktformat 8 und dem amtlichen Solothurner
+  DTM. PDAL liest `Confidence` und den exportierten Float64-HAG-Wert mit
+  den Standardeinstellungen zurück. [HAG-Abnahme](../tools/check-hag-dem.py)
 - Das Gegenstück zu `writers.dtm` ist die PDAL-Stagefolge
   `filters.delaunay`, `filters.faceraster`, `writers.raster`.
   Kozyklische Stützpunkte können verschiedene Delaunay-Diagonalen und daher

@@ -4,7 +4,6 @@ import it.geosolutions.imageioimpl.plugins.tiff.TIFFImageWriterSpi;
 import org.geotools.coverage.grid.io.imageio.geotiff.GeoTiffIIOMetadataEncoder;
 import org.geotools.gce.geotiff.GeoTiffWriter;
 import org.geotools.referencing.CRS;
-import org.geotools.referencing.crs.DefaultCompoundCRS;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -35,6 +34,25 @@ class HagDemTest {
     private static final double NODATA = -77.25;
     private static final String HAG_DOUBLE = "HeightAboveGround=double";
     private static final int DESCRIPTOR_BYTES = 192;
+    // WKT1 emitted by PDAL/GDAL for a_srs=EPSG:2056.
+    private static final String PDAL_LV95 = """
+            PROJCS["CH1903+ / LV95",
+            GEOGCS["CH1903+",
+              DATUM["CH1903+",SPHEROID["Bessel 1841",6377397.155,299.1528128,AUTHORITY["EPSG","7004"]],
+                AUTHORITY["EPSG","6150"]],
+              PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],
+              UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4150"]],
+            PROJECTION["Hotine_Oblique_Mercator_Azimuth_Center"],
+            PARAMETER["latitude_of_center",46.9524055555556],
+            PARAMETER["longitude_of_center",7.43958333333333],
+            PARAMETER["azimuth",90],
+            PARAMETER["rectified_grid_angle",90],
+            PARAMETER["scale_factor",1],
+            PARAMETER["false_easting",2600000],
+            PARAMETER["false_northing",1200000],
+            UNIT["metre",1,AUTHORITY["EPSG","9001"]],
+            AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","2056"]]
+            """;
     private static final String STATISTICS = """
             {"type":"filters.stats","dimensions":"HeightAboveGround"}
             """;
@@ -307,11 +325,80 @@ class HagDemTest {
         assertNoPartFiles();
     }
 
-    @Test
-    void rejectsDifferentDeclaredVerticalReferences() throws Exception {
-        var crs = new DefaultCompoundCRS("LV95 and LN02", CRS.decode("EPSG:2056", true),
-                CRS.decode("EPSG:5728", true));
-        Path input = points(crs.toWKT(), coordinates());
+    @ParameterizedTest
+    @ValueSource(strings = {"pdal", "canonical-datum-shift", "eight-ulps"})
+    void acceptsEquivalentPdalLv95WktAndWritesComputedHeight(String variant) throws Exception {
+        String wkt = switch (variant) {
+            case "pdal" -> PDAL_LV95;
+            case "canonical-datum-shift" -> withTowgs84("674.374,15.056,405.346,0,0,0,0");
+            case "eight-ulps" -> longitudeAtUlps(latitudeAtUlps(PDAL_LV95, 8), -8);
+            default -> throw new AssertionError(variant);
+        };
+        var las = fixtureWithCoordinates(8, coordinates());
+        Path input = addVlr(las, "LASF_Projection", 2112, projectionWkt(wkt));
+        Path dem = dem(legacyPoints(), NODATA, new double[]{701, 710, 702, 703});
+        Path output = temp.resolve("pdal-lv95-hag.las");
+        var result = pipeline(input, hag(dem, ""), STATISTICS, las(output, HAG_DOUBLE)).run(2, false);
+        assertEquals(5, result.pointsWritten());
+        assertStats(result.statistics().getFirst().dimensions().getFirst(), "HeightAboveGround", 5, -2, 9, 1.8);
+        assertHagRecords(LasIoTest.bytes(input), LasIoTest.bytes(output), new double[]{0, -1, 3, -2, 9},
+                0, 1, 2, 3, 4);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"false-easting", "latitude-nine-ulps", "longitude-nine-ulps", "axis-order",
+            "axis-direction", "unit", "method", "base-id", "datum-id", "datum-name", "datum-shift"})
+    void rejectsChangedPdalLv95WktDespiteTheSameProjectedEpsgCode(String change) throws Exception {
+        String changed = switch (change) {
+            case "false-easting" -> PDAL_LV95.replace("2600000]", "2600001]");
+            case "latitude-nine-ulps" -> latitudeAtUlps(PDAL_LV95, 9);
+            case "longitude-nine-ulps" -> longitudeAtUlps(PDAL_LV95, -9);
+            case "axis-order" -> PDAL_LV95.replace(
+                    "AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]", "AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]");
+            case "axis-direction" -> PDAL_LV95.replace("AXIS[\"Easting\",EAST]", "AXIS[\"Westing\",WEST]");
+            case "unit" -> PDAL_LV95.replace("\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]",
+                    "\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]");
+            case "method" -> PDAL_LV95.replace("Hotine_Oblique_Mercator_Azimuth_Center", "Hotine_Oblique_Mercator");
+            case "base-id" -> PDAL_LV95.replace("\"4150\"", "\"4149\"");
+            case "datum-id" -> PDAL_LV95.replace("\"6150\"", "\"6149\"");
+            case "datum-name" -> PDAL_LV95.replace("DATUM[\"CH1903+\"", "DATUM[\"CH1903\"");
+            case "datum-shift" -> withTowgs84("100,200,300,0,0,0,0");
+            default -> throw new AssertionError(change);
+        };
+        assertNotEquals(PDAL_LV95, changed);
+        Path input = points(changed, coordinates());
+        Path dem = dem(legacyPoints(), NODATA, new double[]{701, 710, 702, 703});
+        Path target = temp.resolve("crs-mismatch.las");
+        var error = assertThrows(IOException.class, () -> pipeline(input, hag(dem, ""), las(target)).run(2, false));
+        assertTrue(error.getMessage().contains("Stage 2 (filters.hag_dem)"), error::getMessage);
+        assertTrue(error.getMessage().contains("horizontal CRS differs"), error::getMessage);
+        assertFalse(Files.exists(target));
+        assertNoPartFiles();
+    }
+
+    private static String withTowgs84(String parameters) {
+        String datumAuthority = "AUTHORITY[\"EPSG\",\"6150\"]";
+        return PDAL_LV95.replace(datumAuthority, "TOWGS84[" + parameters + "]," + datumAuthority);
+    }
+
+    private static String latitudeAtUlps(String wkt, int ulps) {
+        double canonical = 46.952405555555565; // GeoTools EPSG:2056 projection centre.
+        return wkt.replace("46.9524055555556", Double.toString(canonical + ulps * Math.ulp(canonical)));
+    }
+
+    private static String longitudeAtUlps(String wkt, int ulps) {
+        double canonical = 7.439583333333333;
+        return wkt.replace("7.43958333333333", Double.toString(canonical + ulps * Math.ulp(canonical)));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsDifferentDeclaredVerticalReferences(boolean pdalWkt) throws Exception {
+        String horizontal = pdalWkt ? PDAL_LV95 : CRS.decode("EPSG:2056", true).toWKT();
+        String vertical = CRS.decode("EPSG:5728", true).toWKT();
+        Path input = points("""
+                COMPD_CS["LV95 and LN02",%s,%s]
+                """.formatted(horizontal, vertical), coordinates());
         Path compatible = verticalDem(5728);
         Path incompatible = verticalDem(5729);
         var result = pipeline(input, hag(compatible, ""), STATISTICS, SINK).run(2, false);
@@ -453,6 +540,9 @@ class HagDemTest {
         vlr.putChar(18, (char) id).putChar(20, (char) contents.length).position(54).put(contents);
         int start = las.getInt(96);
         las.putInt(96, start + vlr.capacity()).putInt(100, las.getInt(100) + 1);
+        if (las.get(25) == 4 && las.getInt(243) != 0) {
+            las.putLong(235, las.getLong(235) + vlr.capacity());
+        }
         byte[] bytes = ByteBuffer.allocate(las.capacity() + vlr.capacity())
                 .put(las.array(), 0, start).put(vlr.array())
                 .put(las.array(), start, las.capacity() - start).array();
