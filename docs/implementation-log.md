@@ -1396,3 +1396,47 @@ geschrieben. Die JSON-Metadaten zählen die Ergänzungen separat.
   Einzellauf unter `-Xmx512m` benötigte 4.216 s und 393 MiB
   Spitzen-RSS. `tools/check-real-data.py` bestätigte erneut die
   496'586 vollständigen LAS-Records und den Abbruch ohne Teilausgabe.
+
+## Delaunator als Kandidat für vollständige DTM-Raster
+
+26. November 2026, Apple M1 mit 16 GiB, macOS 15.8.1 arm64,
+Temurin 25.0.3+9, PDAL 2.10.2 und GDAL 3.13.3. Der Kandidat
+auf `codex/tin-delaunator-candidate` baut auf `aad5f70` auf.
+Der Ganzzahlpfad ist auf gleiche positive XY-Skalen und je
+35'000 rohe Koordinateneinheiten Spannweite begrenzt. Der
+Orientierungs- und der Umkreistest arbeiten in diesem Bereich
+exakt mit Ganzzahlen. Für übrige Eingaben übernimmt SemiVirtual-Tinfour.
+
+- `./gradlew --offline clean check installDist` endete in 3 s
+  mit Exit 0. 149 JUnit-Fälle bestanden. Keine Fehler,
+  Fehlschläge oder übersprungenen Fälle. Summe der XML-Suitezeiten
+  1.679 s, Berichte unter `build/test-results/test/`.
+- Die JVM-Distribution enthält den ISC-Lizenztext. Der Download
+  mit `./gradlew --offline downloadTestData -Ptile=2019-height`
+  bestätigte die 79'958'069 Bytes der amtlichen Höhenkachel.
+- `tools/check-real-data.py` bestätigte erneut 496'586 vollständige
+  LAS-Records und SIGTERM mit Exit 143 ohne Teilausgabe.
+- Die erste Prüfung der vorbereiteten Boden-LAS verglich dieselben
+  Statistikwerte an verschiedenen Stage-Positionen. Der Prüfer
+  berücksichtigt die ausgelagerten Crop- und Expression-Stages.
+  Für den Autzen-Referenzlauf liest der Prüfer EPSG:2992 aus der
+  horizontalen Komponente des zusammengesetzten PDAL-CRS.
+- Der Realdatenlauf mit `--mode both --complete --extended
+  --allow-mesh-differences --include-pdal` endete mit Exit 0.
+  30 Ergebnisse aus der vorherigen, ungemessenen Abnahme wurden bei
+  gleichen CLIs und Eingaben erneut geprüft. Die Zeitmessungen
+  starteten 189 frische Prozesse und prüften deren Resultate.
+- Alle fünf Profile lieferten in beiden Java-Versionen und bei beiden
+  Kantenlimit-Einstellungen vollständige Raster. Der Tinfour-Fallback im
+  breiten Wald war bitgleich. Je 13 Stichproben pro Profil mit Restzellen
+  bestätigten die Ersatzhöhen für beide Java-Versionen. Die abweichenden
+  Höhen zum Produkt und zu PDAL wurden aus den Stützdreiecken reproduziert.
+- Bei vier LAZ-Readern gewann der Kandidat gepaart 14.16 % in der Stadt
+  und 9.10 % im Wald. Der Fallback verlor 0.46 % und blieb innerhalb der
+  2-%-Grenze. Die ergänzten Zellen blieben in allen Profilen gleich.
+  [Vollständige Messwerte und separate Restzellensuche](experiments.md#delaunator-kandidat-für-vollständige-dtm-raster)
+
+Einfachheitsprüfung mit `simplify-change`. Die Engine-Grenze
+liegt direkt im Terrain-Writer. Deduplizierung, Rasterisierung,
+Restzellensuche und GeoTIFF-Ausgabe bleiben gemeinsam. Die
+Backend- und Dreiecksdiagnose liegt im vorhandenen Abnahmewerkzeug.

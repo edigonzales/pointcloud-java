@@ -189,6 +189,59 @@ class TerrainWriterTest {
                 samples(rejected));
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {35_000, 35_001})
+    void dispatchesAtTheSpanBoundaryOfSelectedLasPoints(int span) throws Exception {
+        var input = fixture(new int[][]{{0, 0, 0}, {0, 8, 8}, {span, 0, span}, {0, 0, 99}, {0, 8, 99}});
+        var target = temp.resolve("span.tif");
+        try (var source = Pipeline.openSequential(input, 2);
+             var output = new GeoTiffOutput(input, target, false, source.header(), source.channel())) {
+            var grid = new TerrainWriter.Grid(2606740, 1229150, 1, 3, 3, Double.POSITIVE_INFINITY,
+                    GeoTiffOutput.NODATA, false);
+            var writer = new TerrainWriter(output, grid, source.header());
+            for (var batch = source.reader().readBatch(); batch != null; batch = source.reader().readBatch()) {
+                for (int point = 0; point < batch.size(); point++) {
+                    writer.add(batch, point);
+                }
+            }
+            if (span == 35_000) {
+                var raw = writer.triangulateRaw();
+                assertNotNull(raw);
+                assertEquals(3, raw.edges);
+            } else {
+                assertNull(writer.triangulateRaw());
+            }
+        }
+
+        var result = pipeline(input, target, "").run(2, false);
+        assertEquals(new Pipeline.TerrainStatistics(3, 6, 3), result.dtm());
+        assertArrayEquals(new double[]{
+                -9999, -9999, -9999,
+                z(8), z(12), z(16),
+                z(4), z(8), z(12)
+        }, samples(target), 1e-12);
+    }
+
+    @Test
+    void fillsTheCappedCocircularMeshWithoutChangingItsRetainedTriangle() throws Exception {
+        // Both diagonals are Delaunay. Only AC is shorter than the edge limit.
+        var source = fixture(new int[][]{{11, 7, 10}, {10, 10, 20}, {3, 11, 30}, {2, 4, 40}});
+        var open = temp.resolve("cocircular.tif");
+        var capped = temp.resolve("cocircular-capped.tif");
+        var filled = temp.resolve("cocircular-filled.tif");
+        String cap = ",\"max_triangle_edge_length\":2.3";
+        assertEquals(new Pipeline.TerrainStatistics(4, 3, 6), pipeline(source, open, "").run(2, false).dtm());
+        assertEquals(new Pipeline.TerrainStatistics(4, 2, 7), pipeline(source, capped, cap).run(2, false).dtm());
+        assertEquals(new Pipeline.TerrainStatistics(4, 9, 0, 7),
+                pipeline(source, filled, cap + FILL_NEAREST).run(2, false).dtm());
+        var original = samples(capped);
+        var complete = samples(filled);
+        assertArrayEquals(new double[]{-9999, z(24), z(20), -9999, -9999, -9999, -9999, -9999, -9999},
+                original, 1e-12);
+        assertArrayEquals(new double[]{z(30), original[1], original[2], z(40), z(40), z(10), z(40), z(40), z(10)},
+                complete);
+    }
+
     @Test
     void fillsOnlyCellsExcludedByTheTriangleEdgeLimit() throws Exception {
         // Three metres tall. The two left faces have shorter diagonals than the two right faces.

@@ -46,6 +46,12 @@ final class TerrainWriter {
     private final List<Vertex> vertices = new ArrayList<>();
     private LongKeys seen = new LongKeys();
     private double[] heights = new double[1024];
+    private int[] rawXs;
+    private int[] rawYs;
+    private int minRawX = Integer.MAX_VALUE;
+    private int maxRawX = Integer.MIN_VALUE;
+    private int minRawY = Integer.MAX_VALUE;
+    private int maxRawY = Integer.MIN_VALUE;
     private int selected;
     private int anchorX;
     private int anchorY;
@@ -57,6 +63,10 @@ final class TerrainWriter {
         this.output = output;
         this.grid = grid;
         this.header = header;
+        if (RawDelaunay.supports(header.scale(0), header.scale(1), 0, 0)) {
+            rawXs = new int[heights.length];
+            rawYs = new int[heights.length];
+        }
     }
 
     void add(PointBatch batch, int point) throws IOException {
@@ -78,6 +88,7 @@ final class TerrainWriter {
             if (index == heights.length) {
                 heights = Arrays.copyOf(heights, Math.min(MAX_POINTS, index * 2));
             }
+            rememberRawCoordinates(index, rawX, rawY);
             double x = ((long) rawX - anchorX) * header.scale(0);
             double y = ((long) rawY - anchorY) * header.scale(1);
             if (!Double.isFinite(x) || !Double.isFinite(y)) {
@@ -87,6 +98,27 @@ final class TerrainWriter {
             vertices.add(new Vertex(x, y, 0, index));
             heights[index] = batch.z(point);
         }
+    }
+
+    private void rememberRawCoordinates(int index, int x, int y) {
+        if (rawXs == null) {
+            return;
+        }
+        minRawX = Math.min(minRawX, x);
+        maxRawX = Math.max(maxRawX, x);
+        minRawY = Math.min(minRawY, y);
+        maxRawY = Math.max(maxRawY, y);
+        if ((long) maxRawX - minRawX > RawDelaunay.MAX_SPAN || (long) maxRawY - minRawY > RawDelaunay.MAX_SPAN) {
+            rawXs = null;
+            rawYs = null;
+            return;
+        }
+        if (index == rawXs.length) {
+            rawXs = Arrays.copyOf(rawXs, heights.length);
+            rawYs = Arrays.copyOf(rawYs, heights.length);
+        }
+        rawXs[index] = x;
+        rawYs[index] = y;
     }
 
     // SplitMix64's bijective finalizer mixes both packed coordinate halves before hashing.
@@ -126,37 +158,66 @@ final class TerrainWriter {
     }
 
     private void rasterize(double[] samples) throws IOException {
-        var tin = triangulate(false);
-        if (tin == null) {
-            return;
+        double centerX = localX(grid.originX) + grid.resolution / 2;
+        double centerY = localY(grid.originY) + grid.resolution / 2;
+        if (!Double.isFinite(centerX) || !Double.isFinite(centerY)) {
+            throw new IOException("Nonfinite local DTM raster origin");
         }
-        try {
-            double centerX = localX(grid.originX) + grid.resolution / 2;
-            double centerY = localY(grid.originY) + grid.resolution / 2;
-            if (!Double.isFinite(centerX) || !Double.isFinite(centerY)) {
-                throw new IOException("Nonfinite local DTM raster origin");
+        var visited = new BitSet(vertices.size());
+        var raw = triangulateRaw();
+        if (raw != null) {
+            rawXs = null;
+            rawYs = null;
+            if (raw.edges == 0) {
+                return;
             }
-            var geometry = new GeometricOperations(tin.getThresholds());
-            var visited = new BitSet(vertices.size());
-            int faces = 0;
-            for (var triangle : tin.triangles()) {
-                if ((++faces & 4095) == 0) {
+            var geometry = new GeometricOperations(new Thresholds(tinSpacing()));
+            for (int edge = 0; edge < raw.edges; edge += 3) {
+                if ((edge & 4095) == 0) {
                     checkInterrupted();
                 }
-                Vertex a = triangle.getVertexA();
-                Vertex b = triangle.getVertexB();
-                Vertex c = triangle.getVertexC();
-                markSupport(visited, a);
-                markSupport(visited, b);
-                markSupport(visited, c);
-                sampleTriangle(a, b, c, centerX, centerY, geometry, samples);
+                rasterizeFace(visited, vertex(raw.triangles[edge]), vertex(raw.triangles[edge + 1]),
+                        vertex(raw.triangles[edge + 2]), centerX, centerY, geometry, samples);
             }
-            if (visited.cardinality() != vertices.size()) {
-                throw new IOException("Triangulation merged distinct LAS XY coordinates");
+        } else {
+            var tin = triangulate(false);
+            if (tin == null) {
+                return;
             }
-        } finally {
-            tin.dispose();
+            try {
+                var geometry = new GeometricOperations(tin.getThresholds());
+                int faces = 0;
+                for (var triangle : tin.triangles()) {
+                    if ((++faces & 4095) == 0) {
+                        checkInterrupted();
+                    }
+                    rasterizeFace(visited, triangle.getVertexA(), triangle.getVertexB(), triangle.getVertexC(),
+                            centerX, centerY, geometry, samples);
+                }
+            } finally {
+                tin.dispose();
+            }
         }
+        if (visited.cardinality() != vertices.size()) {
+            throw new IOException("Triangulation merged distinct LAS XY coordinates");
+        }
+    }
+
+    private void rasterizeFace(BitSet visited, Vertex a, Vertex b, Vertex c, double centerX, double centerY,
+                               GeometricOperations geometry, double[] samples) throws IOException {
+        markSupport(visited, a);
+        markSupport(visited, b);
+        markSupport(visited, c);
+        sampleTriangle(a, b, c, centerX, centerY, geometry, samples);
+    }
+
+    RawDelaunay triangulateRaw() throws IOException {
+        seen = null;
+        return rawXs == null ? null : new RawDelaunay(rawXs, rawYs, vertices.size(), grid.fillNearest);
+    }
+
+    Vertex vertex(int index) {
+        return vertices.get(index);
     }
 
     private int fillNearest(double[] samples) throws IOException {
@@ -266,9 +327,7 @@ final class TerrainWriter {
     private SemiVirtualIncrementalTin triangulate(boolean validateVertices) throws IOException {
         seen = null;
         checkInterrupted();
-        double minScale = Math.min(header.scale(0), header.scale(1));
-        double spacing = Math.min(0.35, minScale * (Thresholds.VERTEX_TOLERANCE_FACTOR_DEFAULT / 4));
-        var tin = new SemiVirtualIncrementalTin(spacing);
+        var tin = new SemiVirtualIncrementalTin(tinSpacing());
         try {
             if (vertices.size() < 3 || !tin.add(vertices, TIN_MONITOR)) {
                 checkInterrupted();
@@ -300,6 +359,11 @@ final class TerrainWriter {
             tin.dispose();
             throw e;
         }
+    }
+
+    double tinSpacing() {
+        double minScale = Math.min(header.scale(0), header.scale(1));
+        return Math.min(0.35, minScale * (Thresholds.VERTEX_TOLERANCE_FACTOR_DEFAULT / 4));
     }
 
     double localX(double x) {

@@ -1,5 +1,7 @@
 package pointcloud;
 
+import org.tinfour.common.GeometricOperations;
+import org.tinfour.common.Thresholds;
 import org.tinfour.common.Vertex;
 
 import java.nio.file.Path;
@@ -24,21 +26,34 @@ final class TerrainFaces {
                     terrain.add(batch, p);
                 }
             }
-            var tin = terrain.triangulate();
+            var raw = terrain.triangulateRaw();
+            var tin = raw == null ? terrain.triangulate() : null;
             try {
                 if (Boolean.getBoolean("pointcloud.tin.diagnostics")) {
-                    tin.printDiagnostics(System.err);
+                    System.err.println("DTM backend: " + (raw == null ? "tinfour" : "delaunator"));
+                    if (tin != null) {
+                        tin.printDiagnostics(System.err);
+                    }
                 }
+                var navigator = tin == null ? null : tin.getNavigator();
+                var geometry = raw == null ? null : new GeometricOperations(new Thresholds(terrain.tinSpacing()));
                 double west = terrain.localX(originX);
                 double south = terrain.localY(originY);
                 for (int index = 6; index < args.length; index++) {
                     int cell = Integer.parseInt(args[index]);
                     double x = Math.fma(cell % width, resolution, west + resolution / 2);
                     double y = Math.fma(height - 1 - cell / width, resolution, south + resolution / 2);
-                    var face = tin.getNavigator().getContainingTriangle(x, y);
+                    Vertex[] vertices;
+                    if (raw != null) {
+                        vertices = locateRawFace(terrain, raw, geometry, x, y);
+                    } else {
+                        var face = navigator.getContainingTriangle(x, y);
+                        vertices = face == null || face.isGhost() ? null
+                                : new Vertex[]{face.getVertexA(), face.getVertexB(), face.getVertexC()};
+                    }
                     System.out.print(cell);
-                    if (face != null && !face.isGhost()) {
-                        for (Vertex vertex : new Vertex[]{face.getVertexA(), face.getVertexB(), face.getVertexC()}) {
+                    if (vertices != null) {
+                        for (Vertex vertex : vertices) {
                             System.out.print("," + (originX + (vertex.x - west)) + "," +
                                     (originY + (vertex.y - south)) + "," + terrain.height(vertex));
                         }
@@ -46,8 +61,31 @@ final class TerrainFaces {
                     System.out.println();
                 }
             } finally {
-                tin.dispose();
+                if (tin != null) {
+                    tin.dispose();
+                }
             }
         }
+    }
+
+    private static Vertex[] locateRawFace(TerrainWriter terrain, RawDelaunay raw, GeometricOperations geometry,
+                                          double x, double y) {
+        for (int edge = 0; edge < raw.edges; edge += 3) {
+            Vertex a = terrain.vertex(raw.triangles[edge]);
+            Vertex b = terrain.vertex(raw.triangles[edge + 1]);
+            Vertex c = terrain.vertex(raw.triangles[edge + 2]);
+            if (x < Math.min(a.x, Math.min(b.x, c.x)) || x > Math.max(a.x, Math.max(b.x, c.x))
+                    || y < Math.min(a.y, Math.min(b.y, c.y)) || y > Math.max(a.y, Math.max(b.y, c.y))) {
+                continue;
+            }
+            double area = geometry.orientation(a.x, a.y, b.x, b.y, c.x, c.y);
+            if (area != 0
+                    && geometry.orientation(b.x, b.y, c.x, c.y, x, y) / area >= 0
+                    && geometry.orientation(c.x, c.y, a.x, a.y, x, y) / area >= 0
+                    && geometry.orientation(a.x, a.y, b.x, b.y, x, y) / area >= 0) {
+                return new Vertex[]{a, b, c};
+            }
+        }
+        return null;
     }
 }

@@ -219,8 +219,12 @@ Einheit und Höhenbezug der Eingabe. Für Bodenmodelle wählt ein
 vorgelagerter Filter die Bodenpunkte. Ein Rand um das Zielgitter kann
 zusätzliche Stützpunkte beisteuern.
 
-Die erste ausgewählte Höhe je rohem LAS-XY gewinnt. Tinfour 2.1.9 baut
-das Delaunay-Netz in XY auf. Die Höhen werden separat als Double geführt.
+Die erste ausgewählte Höhe je rohem LAS-XY gewinnt. Bei gleichen positiven
+X- und Y-Skalen und höchstens 35'000 Rohkoordinateneinheiten Spannweite pro
+Achse baut der Kandidat das Delaunay-Netz mit Delaunator auf. Massgebend
+sind die ausgewählten, deduplizierten Stützpunkte. In den übrigen Fällen
+übernimmt Tinfour 2.1.9. Beide Wege verwenden dieselbe Rasterisierung und
+dieselbe Ersatzregel für unbelegte Zellen. Die Höhen werden separat als Double geführt.
 Bis zu 1'000'000 ausgewählte Punkte vor der Deduplizierung und 1'000'000
 Rasterzellen sind zulässig. Das Dreiecksnetz benötigt mindestens drei
 unterschiedliche, nicht kollineare Stützpunkte.
@@ -239,9 +243,10 @@ des nächstgelegenen ausgewählten Stützpunkts. Die Distanz wird in XY
 ab der Zellmitte gemessen. Bei Gleichstand gewinnt der erste Punkt
 in Dateireihenfolge. Das gilt ausserhalb der konvexen Hülle und
 bei durch das Kantenlimit verworfenen Dreiecken. Bereits interpolierte
-Höhen bleiben erhalten. Mit einem, zwei oder nur kollinearen
-Stützpunkten füllt die Suche das gesamte Raster. Bei leerer Selektion
-meldet der Writer einen Fehler.
+Höhen bleiben erhalten. Der räumliche Index entsteht erst bei
+der ersten unbelegten Zelle nach Freigabe der Dreiecke. Mit einem,
+zwei oder nur kollinearen Stützpunkten füllt die Suche das gesamte
+Raster. Bei leerer Selektion meldet der Writer einen Fehler.
 
 Im vollständigen Modus enthält jede veröffentlichte Zelle eine
 endliche Höhe. Das GeoTIFF hat keinen NoData-Tag. Ein konfigurierter

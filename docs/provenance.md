@@ -83,6 +83,12 @@ Das Artefakt enthält die von Tinfour angepasste Double-Double-Arithmetik
 aus JTS unter EDL 1.0. Die mitgelieferten Lizenztexte und Hinweise liegen
 unter `licenses/tinfour/`. [Tinfour 2.1.9](https://github.com/gwlucastrig/Tinfour/tree/2.1.9)
 
+Der separate Delaunator-Kandidat adaptiert den radialen Aufbau aus
+Mapbox Delaunator 5.0.1. Die Java-Fassung arbeitet mit ganzzahligen
+LAS-XY-Koordinaten und verwendet eigene exakte geometrische Prädikate.
+Die Distribution enthält den Lizenztext unter `licenses/delaunator/`.
+[Delaunator 5.0.1 und ISC-Lizenz](https://github.com/mapbox/delaunator/tree/v5.0.1)
+
 ## Realdaten
 
 Die Solothurner Kacheln stammen vom Amt für Geoinformation des Kantons.
@@ -93,6 +99,7 @@ PDAL-Datenbestand. Die Dateien für die lokale Abnahme liegen im ignorierten Cac
 | --- | --- | ---: | --- |
 | `so-2019.laz` | [2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz) | 83'247'722 | 23.11.2026 |
 | `so-2019-urban.laz` | [2606500_1229000.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2606500_1229000.ch.so.agi.lidar_2019.pointcloud.laz) | 52'116'409 | 26.11.2026 |
+| `so-2019-height.laz` | [2592000_1228000.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2592000_1228000.ch.so.agi.lidar_2019.pointcloud.laz) | 79'958'069 | 26.11.2026 |
 | `so-2014.laz` | [2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2014.pointcloud/aktuell/2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz) | 74'261'841 | 23.11.2026 |
 | `autzen-classified.copc.laz` | [Autzen Stadium](https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz) | 81'123'042 | 24.11.2026 |
 

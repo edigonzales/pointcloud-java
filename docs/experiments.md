@@ -1711,3 +1711,107 @@ und Kantenlimit.
 | Wald | 4 | PDAL 2.10.2 | 2.998 / 2.955–3.044 | 9.18 | 1079 |
 
 [480 A/B-Einzelmessungen](measurements/tin-optimization-ab.csv)
+
+## Delaunator-Kandidat für vollständige DTM-Raster
+
+Der separate Branch `codex/tin-delaunator-candidate` vergleicht
+Delaunator mit der vollständigen Tinfour-Produktpipeline aus `aad5f70`.
+Der Ganzzahlpfad verwendet den radialen Aufbau aus Delaunator 5.0.1.
+Bei gleichen positiven X- und Y-Skalen darf der Abstand zwischen
+kleinster und grösster deduplizierter Rohkoordinate je Achse
+35'000 Einheiten betragen. Innerhalb dieses Bereichs passt der
+InCircle-Determinant in ein Java-`long`. Die radiale Ordnung verwendet
+eine exakte 128-Bit-Summe. Beide Kerne teilen sich die Rasterisierung
+und die Nächste-Nachbar-Suche für Restzellen.
+
+Die Messung verwendet macOS 15.8.1 auf dem Apple M1 mit 16 GiB RAM,
+Temurin 25.0.3+9, `-Xmx512m`, PDAL 2.10.2 und GDAL 3.13.3.
+Die Prozesse starten frisch mit warmem Dateicache. Gemessen
+wird das offene Netz mit unkomprimiertem GeoTIFF und
+JSON-Metadaten. Java läuft mit vollständiger Ausgabe, PDAL
+berechnet das reine TIN. Stadt und Wald erhalten acht rotierende
+Runden je Eingabe- und Worker-Konfiguration. Autzen, der breite
+Waldzuschnitt und die Höhenkachel erhalten fünf Runden mit
+vier LAZ-Readern. Die Abnahme prüft jedes Profil zusätzlich
+mit Kantenlimit und Java mit einem und vier LAZ-Workern.
+
+### Abnahme der Rasterhöhen
+
+Alle vollständigen Raster enthalten ausschliesslich endliche Höhen und
+keinen NoData-Tag. Die Java-Rasterwerte und Metadaten stimmen pro Kern
+mit einem und vier LAZ-Workern bitweise überein. Die nächstgelegenen
+Stützpunkte wurden pro Gebiet mit Restzellen an je 13 Zellen durch
+eine direkte Distanzsuche nachvollzogen.
+
+| Gebiet | TIN-Kern | Eindeutige Stützpunkte | Kantenlimit | Ergänzte Zellen, offen / mit Limit | TIN-Höhenabweichungen zum Produkt über 1 µm / Maximum |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Stadt | Delaunator | 728'751 | 20 m | 0 / 7'227 | 5 / 3.00 mm |
+| Wald | Delaunator | 428'313 | 5 m | 0 / 249 | 2 / 11.54 mm |
+| Autzen | Delaunator | 62'290 | 20 ft | 0 / 0 | 0 / <1 µm |
+| Breiter Wald | Tinfour | 712'642 | 5 m | 0 / 648 | 0 / bitgleich |
+| Höhenkachel | Delaunator | 787'920 | 5 m | 0 / 272 | 3 / 6.06 mm |
+
+Kein Wechsel zwischen TIN-Höhe und Ersatzhöhe in beiden Richtungen.
+Die zehn Höhenabweichungen zum Produkt oberhalb von 1 µm wurden aus
+den tatsächlich verwendeten Dreiecken nachgerechnet. Gegen PDAL
+waren es 4, 2, 6, 5 und 2 Zellen in der Reihenfolge der Tabelle.
+PDAL und Java ergaben in allen Profilen dieselben TIN-NoData-Masken.
+Die Rastergeometrie von Autzen ist in internationalen Fuss,
+die Höhentoleranz ist in US-Vermessungsfuss umgerechnet. PDAL
+führt für Autzen zusätzlich das vertikale CRS EPSG:6360.
+[Stützdreiecke und Zellhöhen](measurements/tin-complete-delaunator-faces.json)
+
+### Laufzeit und Speicher
+
+Die drei Werte je Messspalte stehen in der Reihenfolge Java-Produkt,
+Java-Kandidat und PDAL 2.10.2. Die Java-Varianten erzeugen das vollständige
+Raster. Das offene TIN von PDAL liefert bei diesem Vergleich bereits
+einen Wert je Zelle. CPU ist die Summe aus User- und Systemzeit.
+Spitzen-RSS ist der höchste gemessene Prozesswert. Der gepaarte
+Gewinn ist der Median der Zeitersparnis je Runde gegenüber dem
+Java-Produktstand.
+
+| Gebiet | Eingabe | Reader | Wandzeit Median (s) | CPU Median (s) | Spitzen-RSS (MiB) | Gepaarter Gewinn |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Stadt | Boden-LAS | 1 | 1.205 / 0.892 / 0.559 | 2.05 / 1.54 / 0.55 | 285 / 246 / 246 | 27.14 % |
+| Stadt | LAZ | 1 | 4.784 / 4.480 / 4.479 | 5.90 / 5.45 / 5.90 | 338 / 304 / 941 | 6.64 % |
+| Stadt | LAZ | 4 | 2.310 / 1.993 / 2.622 | 7.69 / 7.17 / 7.08 | 350 / 314 / 977 | 14.16 % |
+| Wald | Boden-LAS | 1 | 0.887 / 0.669 / 0.346 | 1.71 / 1.27 / 0.33 | 243 / 184 / 164 | 24.50 % |
+| Wald | LAZ | 1 | 5.611 / 5.414 / 5.590 | 6.75 / 6.35 / 7.33 | 326 / 275 / 1042 | 3.73 % |
+| Wald | LAZ | 4 | 2.416 / 2.197 / 2.973 | 8.94 / 8.59 / 9.12 | 349 / 295 / 1081 | 9.10 % |
+| Autzen | LAZ | 4 | 2.510 / 2.450 / 2.343 | 10.37 / 10.13 / 7.57 | 481 / 480 / 807 | 2.01 % |
+| Breiter Wald | LAZ | 4 | 2.858 / 2.889 / 3.420 | 9.87 / 9.99 / 9.88 | 380 / 380 / 993 | −0.46 % |
+| Höhenkachel | LAZ | 4 | 2.974 / 2.589 / 3.414 | 10.21 / 9.44 / 10.00 | 392 / 383 / 1177 | 12.94 % |
+
+Der Kandidat erfüllt die Übernahmekriterien. In Stadt und Wald gewann
+er alle acht LAZ-Runden mit vier Readern. Das Spitzen-RSS sank dort um
+36 bzw. 54 MiB. Der bitgleiche Tinfour-Fallback verlor im gepaarten
+Median 0.46 %. Seine Laufzeiten lagen zwischen 2.783 und 3.128 s,
+bei 2.801 bis 2.876 s für den Produktstand. Die Zahl der von
+anderen Diagonalen zusätzlich gefüllten Zellen beträgt null.
+[189 Einzelmessungen](measurements/tin-complete-delaunator.csv)
+
+Die Restzellensuche wurde separat auf der vorbereiteten Boden-LAS mit
+Kantenlimit gemessen. Je Profil liefen drei frische Prozesse. Das JFR-Ereignis
+`jdk.MethodTrace` erfasst `TerrainWriter.fillNearest` einschliesslich
+des Indexaufbaus. Die Mediane lagen bei 470 ms in der Stadt, 256 ms im Wald,
+1.9 ms in Autzen, 470 ms im breiten Wald und 478 ms auf der Höhenkachel.
+In Autzen genügte der Durchlauf über die 40'000 vorhandenen Höhen.
+
+### Reproduktion
+
+```sh
+# Gradle-Distributionen für aad5f70 und den Kandidaten bauen.
+# Die folgenden Befehle laufen im Kandidaten-Worktree.
+for tile in 2019 2019-urban 2019-height autzen
+do
+  ./gradlew downloadTestData -Ptile="$tile"
+done
+python3 experiments/check-tin.py "$pdal" \
+  --baseline-cli "$product/build/install/pointcloud/bin/pointcloud" \
+  --baseline-faces "$product/tools/TerrainFaces.java" \
+  --cli "$PWD/build/install/pointcloud/bin/pointcloud" \
+  --data "$PWD/.cache/test-data" --work "$work" \
+  --mode both --complete --extended --allow-mesh-differences --include-pdal \
+  --name delaunator --csv "$work/delaunator.csv"
+```

@@ -81,10 +81,14 @@ def read_result(args, target, metadata, area, writer, engine, points_read, *, co
     require(info["metadata"][""].get("AREA_OR_POINT", "Area") == "Area"
             and info["metadata"].get("IMAGE_STRUCTURE", {}).get("COMPRESSION", "NONE") == "NONE",
             f"{target}: incorrect pixel reference or compression")
-    crs = subprocess.check_output([args.gdal / "gdalsrsinfo", "-o", "epsg", target], text=True).split()
+    crs = json.loads(subprocess.check_output([args.gdal / "gdalsrsinfo", "-o", "PROJJSON", target], text=True))
     axes = info["coordinateSystem"]["dataAxisToSRSAxisMapping"]
-    require(area.epsg in crs and axes[:2] == [1, 2] and
-            (engine == "pdal" or (axes == [1, 2] and crs == [area.epsg])),
+    if engine == "pdal" and crs["type"] == "CompoundCRS":
+        # A compound with no registered EPSG identifier still has an identified horizontal component.
+        crs = crs["components"][0]
+    authority = crs.get("id", {})
+    require(crs["type"] == "ProjectedCRS" and f"{authority.get('authority')}:{authority.get('code')}" == area.epsg
+            and axes[:2] == [1, 2] and (engine == "pdal" or axes == [1, 2]),
             f"{target}: incorrect CRS or axis order")
     require(len(info["bands"]) == 1, f"{target}: expected exactly one elevation band")
     band = info["bands"][0]
@@ -256,7 +260,7 @@ def pdal_faces(mesh, targets):
     return matches
 
 
-def inspect_faces(args, work, writer, ground, targets, *, diagnostics=False):
+def inspect_faces(args, work, writer, ground, targets, *, diagnostics=False, expected_backend=None):
     java_home = os.environ.get("JAVA_HOME")
     java_bin = Path(java_home) / "bin" if java_home else Path(".")
     libraries = args.cli.parent.parent / "lib" / "*"
@@ -265,11 +269,19 @@ def inspect_faces(args, work, writer, ground, targets, *, diagnostics=False):
     run([java_bin / "javac", "-cp", libraries, "-d", classes,
          getattr(args, "faces_source", "tools/TerrainFaces.java")])
     geometry = [writer[k] for k in ("origin_x", "origin_y", "resolution", "width", "height")]
-    report = subprocess.check_output([java_bin / "java", "-Xmx512m",
-                                      *(["-Dpointcloud.tin.diagnostics=true"] if diagnostics else []),
-                                      "-cp", f"{classes}{os.pathsep}{libraries}",
-                                      "pointcloud.TerrainFaces", ground, *map(str, geometry), *map(str, targets)],
-                                     text=True)
+    command = [java_bin / "java", "-Xmx512m",
+               *(["-Dpointcloud.tin.diagnostics=true"] if diagnostics or expected_backend else []),
+               "-cp", f"{classes}{os.pathsep}{libraries}",
+               "pointcloud.TerrainFaces", ground, *map(str, geometry), *map(str, targets)]
+    if expected_backend is None:
+        report = subprocess.check_output(command, text=True)
+    else:
+        result = subprocess.run(command, capture_output=True, text=True)
+        require(result.returncode == 0, f"TerrainFaces failed: {result.stderr}")
+        expected = f"DTM backend: {expected_backend}"
+        require(expected in result.stderr.splitlines(), f"Expected {expected} from TerrainFaces: {result.stderr}")
+        print(f"{ground.parent.name}: {expected}", flush=True)
+        report = result.stdout
     faces = {}
     for line in report.splitlines():
         cell, *data = line.split(",")
