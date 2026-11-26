@@ -15,6 +15,7 @@ import org.geotools.referencing.CRS;
 
 import javax.imageio.IIOImage;
 import javax.imageio.ImageTypeSpecifier;
+import javax.imageio.ImageWriteParam;
 import javax.imageio.stream.FileImageOutputStream;
 import java.awt.Transparency;
 import java.awt.image.BandedSampleModel;
@@ -28,6 +29,7 @@ import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.List;
 
 final class GeoTiffOutput {
     static final double NODATA = -9999;
@@ -35,14 +37,6 @@ final class GeoTiffOutput {
     private static final int GEO_KEY_DIRECTORY = 34735;
     private static final int MAX_PROJECTION_BYTES = 65_535;
     private static final int PENDING_EXTRA_SAMPLES = BaselineTIFFTagSet.TAG_EXTRA_SAMPLES - 1;
-    private static final String BAND_DESCRIPTIONS = """
-            <GDALMetadata>
-              <Item name="DESCRIPTION" sample="0" role="description">min</Item>
-              <Item name="DESCRIPTION" sample="1" role="description">max</Item>
-              <Item name="DESCRIPTION" sample="2" role="description">mean</Item>
-              <Item name="DESCRIPTION" sample="3" role="description">count</Item>
-            </GDALMetadata>
-            """;
 
     private GeoTiffOutput() {}
 
@@ -127,9 +121,10 @@ final class GeoTiffOutput {
         return code;
     }
 
-    /** Encode a north-up raster in min, max, mean, count order without copying the sample arrays. */
+    /** Encode a north-up raster without copying the sample arrays. */
     static void write(Path target, CoordinateReferenceSystem crs, double originX, double originY,
-                      double resolution, int width, int height, double[][] bands) throws IOException {
+                      double resolution, int width, int height, double[][] bands,
+                      List<String> bandNames, double nodata, boolean deflate) throws IOException {
         var sampleModel = new BandedSampleModel(DataBuffer.TYPE_DOUBLE, width, height, bands.length);
         var data = new DataBufferDouble(bands, width * height);
         var raster = Raster.createWritableRaster(sampleModel, data, null);
@@ -141,12 +136,16 @@ final class GeoTiffOutput {
         encoder.addGeoShortParam(GeoTiffConstants.GTRasterTypeGeoKey, GeoTiffConstants.RasterPixelIsArea);
         encoder.setModelPixelScale(resolution, resolution);
         encoder.setModelTiePoint(0, 0, originX, originY + height * resolution);
-        encoder.setNoData(NODATA);
+        encoder.setNoData(nodata);
 
         // The GeoTools metadata plus explicit numeric extra-sample tags follow Hop's GeoTiffOutput.
         var writer = new TIFFImageWriterSpi().createWriterInstance();
         try (var stream = new FileImageOutputStream(target.toFile())) {
             var params = writer.getDefaultWriteParam();
+            if (deflate) {
+                params.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                params.setCompressionType("Deflate");
+            }
             var metadata = GeoTiffWriter.createGeoTiffIIOMetadata(
                     writer, ImageTypeSpecifier.createFromRenderedImage(image), encoder, params);
             var directory = TIFFDirectory.createFromMetadata(metadata);
@@ -156,17 +155,30 @@ final class GeoTiffOutput {
                     BaselineTIFFTagSet.PHOTOMETRIC_INTERPRETATION_BLACK_IS_ZERO));
             // The TIFF writer drops ExtraSamples for opaque images. Reserve the adjacent tag
             // while writing so declaring the numeric bands preserves IFD order.
-            var pending = new TIFFTag("PendingExtraSamples", PENDING_EXTRA_SAMPLES, 1 << TIFFTag.TIFF_SHORT);
-            directory.addTIFFField(new TIFFField(pending, TIFFTag.TIFF_SHORT, bands.length - 1,
-                    new char[bands.length - 1]));
+            if (bands.length > 1) {
+                var pending = new TIFFTag("PendingExtraSamples", PENDING_EXTRA_SAMPLES, 1 << TIFFTag.TIFF_SHORT);
+                directory.addTIFFField(new TIFFField(pending, TIFFTag.TIFF_SHORT, bands.length - 1,
+                        new char[bands.length - 1]));
+            }
             directory.addTIFFField(new TIFFField(new TIFFTag("GDAL_METADATA", 42112, 1 << TIFFTag.TIFF_ASCII),
-                    TIFFTag.TIFF_ASCII, 1, new String[]{BAND_DESCRIPTIONS}));
+                    TIFFTag.TIFF_ASCII, 1, new String[]{bandDescriptions(bandNames)}));
             writer.setOutput(stream);
             writer.write(null, new IIOImage(image, null, directory.getAsMetadata()), params);
         } finally {
             writer.dispose();
         }
-        declareExtraSamples(target, bands.length - 1);
+        if (bands.length > 1) {
+            declareExtraSamples(target, bands.length - 1);
+        }
+    }
+
+    private static String bandDescriptions(List<String> names) {
+        var xml = new StringBuilder("<GDALMetadata>\n");
+        for (int i = 0; i < names.size(); i++) {
+            xml.append("  <Item name=\"DESCRIPTION\" sample=\"").append(i).append("\" role=\"description\">")
+                    .append(names.get(i)).append("</Item>\n");
+        }
+        return xml.append("</GDALMetadata>\n").toString();
     }
 
     private static void declareExtraSamples(Path target, int count) throws IOException {

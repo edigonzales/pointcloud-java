@@ -1177,3 +1177,44 @@ leeren Zellen.
   Die gepaarte Zusatzzeit durch die Füllung lag bei allen vier
   Kombinationen im Median bei höchstens 0.60 %. Die Einzelwerte
   streuten in beide Richtungen.
+
+## Raster-Release mit Bandwahl, Intensity und Deflate
+
+Der Writer verarbeitet `Z` oder `Intensity` und wählbare Bänder
+in der Reihenfolge `min,max,mean,count,stdev`. Für die Populations-
+standardabweichung verwendet er Welfords laufendes zweites Moment.
+Die nichtnegativen Füllradien werden an der Rasterausdehnung begrenzt.
+Nur Messzellen liefern Stützwerte. Der erste Stützwert geht exakt in
+den gewichteten Mittelwert ein, auch bei grosser Distanz. Freies
+NoData und optionales Deflate werden in den GeoTIFF-Tags gespeichert.
+Kollisionen mit gültigen Werten werden vor dem Schreiben erkannt.
+
+- `./gradlew --offline clean check installDist distZip` bestand auf
+  Basis von `624ef94` mit Temurin 25.0.3, Gradle 9.9.1 und macOS arm64.
+  Alle 110 JUnit-Fälle bestanden. Die neuen Fälle prüfen unter anderem
+  Einzel- und Fünfbanddateien, Faktoren in zwei Ringen, grosse Radien,
+  Intensität bis 65'535, den exakten Einzelspenderwert und NoData-
+  Kollisionen bei Mess- und Füllwerten. Das ZIP bestand `unzip -tq`
+  und beide Rasterbeispiele liefen aus der entpackten Distribution
+  mit `-Xmx512m`.
+- Die Raster-Realdatenabnahme mit PDAL 2.10.2 und GDAL 3.13.3 bestätigte
+  das bestehende Polygon und die Fenster 0 und 1 im Rechteckausschnitt.
+  Das Releaseprofil für `Z` mit Fenster 2 füllte 4'735 Zellen. Vier
+  blieben NoData. Der maximale Z-Unterschied zu PDAL betrug
+  4.55 × 10⁻¹³ m. Java mit und ohne Deflate lieferte identische
+  Rasterwerte und Metadaten. Das einbandige Raster enthielt exakt
+  dasselbe `mean`-Band. Für `Intensity` mit Fenster 5 wurden alle
+  4'739 Lücken gefüllt, bei maximal 5.09 × 10⁻¹¹ Intensitätseinheiten
+  Unterschied. Die Rasterwerte und Metadaten waren für einen und vier
+  Java-Worker identisch.
+- `tools/check-real-data.py` bestätigte 496'586 LAS-Rohrecords,
+  Statistik und CRS. SIGTERM ergab Exit 143, ohne Ziel- oder
+  temporäre Ausgaben zu hinterlassen.
+- Der [Performancevergleich](experiments.md#raster-release-gegen-pdal)
+  umfasst 96 verifizierte Läufe. Bei Fenster 2 mit Deflate und vier
+  Workern lagen die Mediane bei 2.241 s für Java und 2.996 s für PDAL.
+  Die Testdatei schrumpfte mit Deflate in Java um 48.86 %.
+  In der separaten Schachbrettprobe mit einer Million Zellen und Fenster
+  20 dauerten die Einzelläufe 3.773 s in Java und 1.741 s in PDAL.
+  Beide füllten 500'000 Zellen und stimmten innerhalb (6.03 × 10⁻¹² m)
+  überein.

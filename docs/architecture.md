@@ -105,7 +105,7 @@ Punktformat geprüft.
 | `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. Optional `count: "Classification"`. |
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `extra_dims: "all"` und `compression: false` (Standard). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
-| `writers.raster` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width`, `height`, `output_type` mit `min,max,mean,count`. Optional `window_size: 0` (Standard) oder `1`. |
+| `writers.raster` | Float64-GeoTIFF. `filename` mit `.tif` oder `.tiff`, `binmode: true`, `resolution`, `origin_x`, `origin_y`, `width` und `height`. Optionen für Bandwahl, Dimension, Füllfenster, NoData und Kompression stehen unter [Rasterausgabe](#rasterausgabe). |
 
 `polygon` verwendet die XY-Koordinaten im CRS der Eingabedatei.
 JTS liest und validiert das Polygon beim Aufbau der Filterstage. Punkte
@@ -160,27 +160,40 @@ typisierte Ergebnis. Ein erneuter Aufruf erstellt frischen Stage-Zustand.
 
 ### Rasterausgabe
 
-`writers.raster` rastert die Z-Werte der gefilterten Punkte in ein explizites,
+`writers.raster` rastert ausgewählte Werte der gefilterten Punkte in ein explizites,
 nordorientiertes XY-Gitter mit höchstens 1'000'000 Zellen. `resolution` ist
 die Zellbreite in den Einheiten des horizontalen CRS. Der Ursprung ist
 die linke untere Ecke. Linker und unterer Rand sind inklusive, rechter und
 oberer Rand exklusiv. Innere Zellgrenzen gehören zur östlichen beziehungsweise
-nördlichen Zelle. Die Bänder sind immer `min`, `max`, `mean`, `count`.
-Leere Zellen verwenden `-9999` für die drei Höhenbänder und `0` im Count-Band.
-Die in allen Bändern deklarierte NoData-Kennung ist `-9999`. Auch eine leere
-Selektion schreibt das vollständige Gitter.
+nördlichen Zelle. Auch eine leere Selektion schreibt das vollständige Gitter.
 
-Mit `window_size: 1` erhält jede leere Zelle aus ihren bis zu acht direkt
-angrenzenden Messzellen einen Mittelwert je Höhenband. Jede Messzelle trägt
-gleich viel zum Mittelwert bei. Die Nachbarschaft endet am Gitterrand.
-`count` bleibt die Zahl der gemessenen Punkte. Zellen mit `count = 0` und
-einem gültigen Höhenwert sind interpoliert. Sie dienen keiner weiteren
-Zelle als Nachbarwert. Fehlen gemessene Nachbarn, bleiben die Höhenbänder
-auf NoData. `pointsBinned` zählt weiterhin die eingerasterten Punkte.
+`output_type` wählt eine kommaseparierte Teilmenge der Bänder. Die gewählten
+Bänder stehen im GeoTIFF in der Reihenfolge `min,max,mean,count,stdev`.
+Standard sind `min,max,mean,count`. `stdev` gibt die
+Populationsstandardabweichung der Zellwerte an. Bei einem einzigen Punkt
+beträgt sie 0.
 
-Die einzige unterstützte Dimension ist `Z`, der Datentyp ist `double`.
-Die Defaults lassen sich mit `dimension: "Z"`, `data_type: "double"` und
-`nodata: -9999` explizit setzen. GeoTools liest das horizontale CRS aus
+`dimension` wählt `Z` (Standard) oder den vorzeichenlosen LAS-Rohwert
+`Intensity`. Der Ausgabetyp ist `double` (Float64). `compression` akzeptiert
+`none` (Standard) und das verlustfreie `deflate`.
+
+`window_size` ist der maximale Abstand in Rasterzellen je Zeilen- oder
+Spaltenrichtung. `0` ist der Standard. Bei einem positiven Wert erhält eine
+leere Zelle einen gewichteten Mittelwert aus ursprünglich gemessenen Nachbarn,
+separat für jedes ausgewählte Statistikband. Das Gewicht ist der Kehrwert
+des grösseren Zeilen- oder Spaltenabstands. Bei Fenster 1 sind alle bis zu
+acht Nachbarn gleich gewichtet. Die Suche endet am Gitterrand. Die Laufzeit
+wächst mit der Zahl der leeren Zellen und der geprüften Fensterfläche.
+`count` zählt die direkt eingerasterten Punkte, mit 0 in leeren oder
+interpolierten Zellen.
+
+`nodata` setzt die gemeinsame endliche GeoTIFF-Kennung (Standard `-9999`).
+Zellen ohne Messung und ohne geeignete Nachbarn erhalten diese Kennung
+in den gewählten Statistikbändern. Bei ausgewähltem `count` muss sie
+ungleich 0 sein. Eine Übereinstimmung mit einem gültigen Mess- oder Füllwert
+führt vor der Veröffentlichung zu einem Fehler.
+
+GeoTools liest das horizontale CRS aus
 LAS-WKT oder direkten EPSG-GeoKeys und schreibt ein GeoTIFF mit
 `PixelIsArea`. Die Ausgabe übernimmt die XY-Koordinaten der Eingabe.
 CRS-Angaben, die sich nicht auflösen lassen, ergeben einen Stagefehler.
@@ -199,7 +212,8 @@ Die Stage-Optionen sind direkt übertragbar.
 
 - Der GeoTIFF-Writer heisst in PointCloud Java `writers.raster`. Für den
   PDAL-Referenzlauf setzt das Abnahmeskript den Typ auf `writers.gdal`.
-  Der unterstützte Bereich für `window_size` umfasst `0` und `1`.
+  Deflate entspricht beim Referenzlauf `gdalopts: "COMPRESS=DEFLATE"`.
+  Gemeinsame Pipelines setzen `output_type` und `binmode` explizit.
   [Rasterabnahme](../tools/check-ground-grid.py)
 - PointCloud Java akzeptiert in `filters.expression` die Literale `+2.1e1`
   und `.5`. PDAL 2.10.2 weist diese Schreibweisen zurück. Verwende `2.1e1`

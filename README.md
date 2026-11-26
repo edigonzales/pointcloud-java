@@ -77,6 +77,16 @@ Das Band `count` gibt weiterhin die Anzahl gemessener Punkte je Zelle an.
 "$cli" pipeline examples/ground-grid-fill.json --metadata build/results/ground-grid-fill.json
 ```
 
+[Ground-Grid-Height](examples/ground-grid-height.json) schreibt ein
+einbandiges Höhenraster mit Fenster 2 und verlustfreiem Deflate.
+[Ground-Grid-Intensity](examples/ground-grid-intensity.json) schreibt
+fünf Bänder für die Intensität, einschliesslich der Zellstreuung `stdev`.
+
+```sh
+"$cli" pipeline examples/ground-grid-height.json --metadata build/results/ground-grid-height.json
+"$cli" pipeline examples/ground-grid-intensity.json --metadata build/results/ground-grid-intensity.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 
@@ -111,6 +121,7 @@ verfügbar sein.
 
 ```sh
 python3 tools/check-ground-grid.py /pfad/zu/pdal
+python3 tools/check-ground-grid.py /pfad/zu/pdal --release
 ```
 
 Der Parallelvergleich auf macOS prüft Solothurn 2014 und Autzen mit
