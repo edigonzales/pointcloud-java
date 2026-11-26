@@ -27,6 +27,9 @@ class GroundGridTest {
     private static final double ORIGIN_X = 2594100;
     private static final double ORIGIN_Y = 1227600;
     private static final double[] EMPTY_CELL = {-9999, -9999, -9999, 0};
+    private static final String THRESHOLD_OPTIONS = """
+            ,"output_type":"count","dimension":"HeightAboveGround","height_thresholds":[0.5,2,5]
+            """;
 
     @TempDir Path temp;
 
@@ -93,19 +96,12 @@ class GroundGridTest {
     @Test
     void writesMaximumHeightAboveGroundAndCountAfterTheHagFilter() throws Exception {
         Path input = fixture(3, new int[][]{{1, 1, 22}, {3, 3, 30}, {5, 5, 24}, {5, 1, 30}, {7, 1, 32}});
-        Path dem = temp.resolve("dem.tif");
-        try (var source = Pipeline.openSequential(input, 2);
-             var writer = new GeoTiffOutput(input, dem, false, source.header(), source.channel())) {
-            writer.prepare(ORIGIN_X, ORIGIN_Y, 1, 2, 2, new double[][]{{700, 707, 703.125, 713}},
-                    List.of("elevation"), -9999, false);
-            writer.finish();
-        }
+        Path dem = dem(input, 700, 707, 703.125, 713);
 
         Path target = temp.resolve("canopy.tif");
-        String filters = """
-                {"type":"filters.hag_dem","raster":%s,"zero_ground":false},
+        String filters = hag(dem) + """
                 {"type":"filters.expression","expression":"HeightAboveGround >= 5"},
-                """.formatted(Pipeline.JSON.toJson(dem.toString()));
+                """;
         String config = config(input, target, filters, 2, 2,
                 ",\"output_type\":\"max,count\",\"dimension\":\"HeightAboveGround\",\"window_size\":0");
         var result = Pipeline.parse(new StringReader(config)).run(2, false);
@@ -144,6 +140,137 @@ class GroundGridTest {
         assertEquals("Stage 2 (writers.raster): HeightAboveGround requires a preceding filters.hag_dem stage",
                 error.getMessage());
         assertFalse(Files.exists(target));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"none", "deflate"})
+    void writesStrictHeightThresholdFractionsAcrossBatches(String compression) throws Exception {
+        Path input = fixture(3, new int[][]{{1, 1, -2}, {5, 5, 10}, {2, 2, 1}, {6, 6, 12}, {3, 3, 4}});
+        Path dem = dem(input, 700, 700, 700, 700);
+        Path target = temp.resolve("fractions.tif");
+        String options = """
+                ,"output_type":"count","dimension":"HeightAboveGround",
+                "height_thresholds":[-1,0.5,2.0,5e0],"compression":"%s"
+                """.formatted(compression);
+        String config = config(input, target, hag(dem), 2, 2, options);
+        var result = Pipeline.parse(new StringReader(config)).run(2, false);
+        assertEquals(5, result.pointsRead());
+        assertEquals(5, result.pointsSelected());
+        assertEquals(5, result.pointsBinned());
+        assertEquals(0, result.pointsWritten());
+
+        var reader = new GeoTiffReader(target.toFile());
+        try {
+            assertEquals(-9999, reader.getMetadata().getNoData());
+            var descriptions = reader.getMetadata().getAsciiTIFFTag("42112");
+            assertNotNull(descriptions);
+            var expectedNames = List.of("count", "fraction_above_-1", "fraction_above_0.5",
+                    "fraction_above_2", "fraction_above_5");
+            for (int band = 0; band < expectedNames.size(); band++) {
+                assertTrue(descriptions.contains("sample=\"" + band + "\" role=\"description\">"
+                        + expectedNames.get(band) + "</Item>"), descriptions);
+            }
+            var coverage = reader.read();
+            try {
+                var raster = coverage.getRenderedImage().getData();
+                assertEquals(DataBuffer.TYPE_DOUBLE, raster.getTransferType());
+                assertEquals(5, raster.getNumBands());
+                assertArrayEquals(new double[]{0, -9999, -9999, -9999, -9999},
+                        raster.getPixel(0, 0, (double[]) null));
+                assertArrayEquals(new double[]{2, 1, 1, 1, .5}, raster.getPixel(1, 0, (double[]) null));
+                assertArrayEquals(new double[]{3, 2.0 / 3, 1.0 / 3, 0, 0}, raster.getPixel(0, 1, (double[]) null));
+                assertArrayEquals(new double[]{0, -9999, -9999, -9999, -9999},
+                        raster.getPixel(1, 1, (double[]) null));
+            } finally {
+                coverage.dispose(true);
+            }
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    @Test
+    void fillsRegularBandsAndLeavesThresholdFractionsUnobserved() throws Exception {
+        Path input = fixture(3, new int[][]{{1, 1, 4}, {2, 2, 2}, {3, 3, 0}, {1, 2, 8}, {1, 3, 12}});
+        Path dem = dem(input, 700, 700, 700, 700);
+        Path target = temp.resolve("filled-statistics.tif");
+        String options = """
+                ,"output_type":"count,max","dimension":"HeightAboveGround","height_thresholds":[0.5,2,5],
+                "window_size":1,"nodata":-77.25
+                """;
+        String config = config(input, target, hag(dem), 2, 2, options);
+        Pipeline.parse(new StringReader(config)).run(2, false);
+
+        var reader = new GeoTiffReader(target.toFile());
+        try {
+            assertEquals(-77.25, reader.getMetadata().getNoData());
+            var coverage = reader.read();
+            try {
+                var raster = coverage.getRenderedImage().getData();
+                assertArrayEquals(new double[]{6, 5, .8, .4, .2}, raster.getPixel(0, 1, (double[]) null));
+                assertArrayEquals(new double[]{6, 0, -77.25, -77.25, -77.25},
+                        raster.getPixel(1, 0, (double[]) null));
+            } finally {
+                coverage.dispose(true);
+            }
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "1", "[]", "[null]", "[true]", "[\"0.5\"]", "[1e400]", "[2,0.5]",
+            "[0.5,0.5]", "[-0.0,0.0]", "[0,1,2,3,4,5,6,7,8]"})
+    void rejectsInvalidHeightThresholdLists(String thresholds) {
+        Path target = temp.resolve("invalid-thresholds.tif");
+        String options = ",\"output_type\":\"count\",\"dimension\":\"HeightAboveGround\",\"height_thresholds\":"
+                + thresholds;
+        String config = config(temp.resolve("missing.las"), target, hag(temp.resolve("dem.tif")),
+                2, 2, options);
+        var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
+        assertTrue(error.getMessage().startsWith("Stage 3 (writers.raster): "), error::getMessage);
+        assertTrue(error.getMessage().contains("height_thresholds"), error::getMessage);
+        assertFalse(Files.exists(target));
+    }
+
+    @Test
+    void requiresHeightAboveGroundAndCountForThresholds() {
+        Path target = temp.resolve("invalid-threshold-mode.tif");
+        Path input = temp.resolve("missing.las");
+        String hag = hag(temp.resolve("dem.tif"));
+        for (String option : List.of(",\"output_type\":\"count\",\"height_thresholds\":[2]",
+                ",\"output_type\":\"max\",\"dimension\":\"HeightAboveGround\",\"height_thresholds\":[2]")) {
+            String config = config(input, target, hag, 2, 2, option);
+            var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
+            assertTrue(error.getMessage().startsWith("Stage 3 (writers.raster): "), error::getMessage);
+        }
+        assertFalse(Files.exists(target));
+    }
+
+    @Test
+    void rejectsHeightThresholdsWithConfiguredHagFallback() {
+        Path target = temp.resolve("invalid-threshold-mode.tif");
+        Path dem = temp.resolve("dem.tif");
+        String hag = """
+                {"type":"filters.hag_dem","raster":%s,"nodata_hag":-99},
+                """.formatted(Pipeline.JSON.toJson(dem.toString()));
+        String config = config(temp.resolve("missing.las"), target, hag, 2, 2, THRESHOLD_OPTIONS);
+        var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
+        assertTrue(error.getMessage().contains("nodata_hag"), error::getMessage);
+        assertFalse(Files.exists(target));
+    }
+
+    @Test
+    void thresholdFractionsDetectNodataCollisionWithoutReplacingOutput() throws Exception {
+        Path input = fixture(3, new int[][]{{1, 1, -2}, {5, 5, 10}, {2, 2, 1}, {6, 6, 12}, {3, 3, 4}});
+        Path dem = dem(input, 700, 700, 700, 700);
+        Path target = Files.writeString(temp.resolve("protected-fractions.tif"), "previous output");
+        String config = config(input, target, hag(dem), 2, 2, THRESHOLD_OPTIONS + ",\"nodata\":0.5");
+        var pipeline = Pipeline.parse(new StringReader(config));
+        var error = assertThrows(IOException.class, () -> pipeline.run(2, true));
+        assertTrue(error.getMessage().contains("collides with valid data"), error::getMessage);
+        assertEquals("previous output", Files.readString(target));
+        assertNoPartFiles();
     }
 
     @Test
@@ -340,10 +467,26 @@ class GroundGridTest {
         assertFalse(Files.exists(target));
     }
 
-    @Test
-    void discardsStagedRasterWhenInterruptedBeforePublication() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void discardsStagedRasterWhenInterruptedBeforePublication(boolean heightThresholds) throws Exception {
         Path target = temp.resolve("interrupted.tif");
-        var pipeline = Pipeline.parse(new StringReader(config(fixture(3), target, "", 2, 2, ",\"window_size\":1")));
+        Path input;
+        String filters;
+        String options;
+        if (heightThresholds) {
+            input = fixture(3, new int[][]{{1, 1, 2}, {3, 3, 10}, {4, 4, 20}, {8, 1, 200}, {8, 1, 400}});
+            Path dem = dem(input, 700, 700, 700, 700);
+            filters = """
+                    {"type":"filters.expression","expression":"X < 2594102"},
+                    """ + hag(dem);
+            options = THRESHOLD_OPTIONS;
+        } else {
+            input = fixture(3);
+            filters = "";
+            options = ",\"window_size\":1";
+        }
+        var pipeline = Pipeline.parse(new StringReader(config(input, target, filters, 2, 2, options)));
         assertThrows(InterruptedIOException.class, () -> pipeline.run(2, false, Pipeline::openSequential,
                 (result, finish) -> {
                     assertFalse(Files.exists(target));
@@ -374,6 +517,23 @@ class GroundGridTest {
         assertEquals("previous metadata", Files.readString(metadata));
         assertEquals("previous output", Files.readString(previous));
         assertNoPartFiles();
+    }
+
+    private Path dem(Path input, double... samples) throws IOException {
+        Path dem = temp.resolve("dem.tif");
+        try (var source = Pipeline.openSequential(input, 2);
+             var writer = new GeoTiffOutput(input, dem, false, source.header(), source.channel())) {
+            writer.prepare(ORIGIN_X, ORIGIN_Y, 1, 2, 2, new double[][]{samples},
+                    List.of("elevation"), -9999, false);
+            writer.finish();
+        }
+        return dem;
+    }
+
+    private static String hag(Path dem) {
+        return """
+                {"type":"filters.hag_dem","raster":%s,"zero_ground":false},
+                """.formatted(Pipeline.JSON.toJson(dem.toString()));
     }
 
     private void assertNoPartFiles() throws IOException {

@@ -37,20 +37,21 @@ tasks.named('test') {
 
 tasks.register('downloadTestData') {
     group = 'verification'
-    description = 'Download the Solothurn 2019 (-Ptile=2019, 2019-urban, or 2019-height), 2014, or Autzen fixture.'
+    description = 'Download the Solothurn 2019 (-Ptile=2019, 2019-urban, 2019-height, or 2019-riedholz), 2014, or Autzen fixture.'
     doLast {
         def tile = providers.gradleProperty('tile').getOrElse('2019')
         def datasets = [
             '2019': [grid: '2594000_1227500', size: 83_247_722L],
             '2019-urban': [grid: '2606500_1229000', year: '2019', size: 52_116_409L],
             '2019-height': [grid: '2592000_1228000', year: '2019', size: 79_958_069L],
+            '2019-riedholz': [grid: '2610000_1232500', year: '2019', size: 30_303_122L],
             '2014': [grid: '2592000_1228000', size: 74_261_841L],
             'autzen': [filename: 'autzen-classified.copc.laz', size: 81_123_042L,
                        url: 'https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz']
         ]
         def dataset = datasets[tile]
         if (dataset == null) {
-            throw new GradleException('Expected -Ptile=2019, 2019-urban, 2019-height, 2014, or autzen')
+            throw new GradleException('Expected -Ptile=2019, 2019-urban, 2019-height, 2019-riedholz, 2014, or autzen')
         }
         def directory = file('.cache/test-data')
         long bytes = dataset.size

@@ -129,6 +129,17 @@ für Vegetation ab 5 m über Grund.
 "$cli" pipeline examples/chm-solothurn-forest.json --laz-workers 4 --metadata build/results/chm-solothurn-forest.json
 ```
 
+Das [Riedholzer Höhen-Schwellenraster](examples/height-thresholds-riedholz.json)
+schreibt die Anzahl ausgewählter Erstreflexionen und ihren jeweiligen Anteil
+über 0,5 m, 2 m und 5 m Höhe über Grund. Die Realdatenvorbereitung
+verwendet PDAL 2.10.2 und GDAL 3.13.3.
+
+```sh
+./gradlew downloadTestData -Ptile=2019-riedholz
+python3 tools/check-height-thresholds.py "$(command -v pdal)" --prepare-dem
+"$cli" pipeline examples/height-thresholds-riedholz.json --laz-workers 4 --metadata build/results/height-thresholds-riedholz.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 

@@ -213,6 +213,23 @@ rastert ausgewählte Vegetationspunkte ab 5 m Höhe über Grund.
 und die Zahl der Stützpunkte pro 0,5-m-Zelle. Unbelegte Zellen erhalten
 NoData im Höhenband und 0 im Zählband.
 
+Mit `height_thresholds` hängt `writers.raster` für jede Schwelle ein
+Float64-Band `fraction_above_<Schwelle>` an die regulären Bänder an.
+Die Option akzeptiert eine bis acht endliche, strikt aufsteigende
+Zahlen in der Z-Einheit der Eingabe. Sie setzt `dimension: "HeightAboveGround"`,
+ein vorgängiges `filters.hag_dem` und ein `count`-Band voraus. HAG muss
+für jedes verarbeitete Echo vorliegen. `nodata_hag` ist in diesem Modus
+unzulässig, da ein endlicher Ersatzwert als Höhe in die Zählung eingehen würde.
+
+Der Anteil von 0 bis 1 entspricht der Zahl der Echos **strikt über** der
+Schwelle geteilt durch `count`. Der Nenner zählt alle nach den Filtern
+in die Zelle fallenden Echos. Eine Zelle mit Echos bis zur Schwellenhöhe
+hat Anteil 0. Ohne Echos steht im Zählband 0 und in den Anteilsbändern
+NoData. Ein Füllfenster interpoliert nur die regulären Statistikbänder.
+Das [Riedholzer Beispiel](../examples/height-thresholds-riedholz.json)
+verwendet Erstreflexionen der Boden- und Vegetationsklassen 2–5 und
+Schwellen von 0,5 m, 2 m und 5 m.
+
 Für bestehende Java-Pipelines mit `"type": "writers.gdal"` reicht es,
 den Typ der letzten Stage auf `"type": "writers.raster"` zu setzen.
 Die Stage-Optionen sind direkt übertragbar.

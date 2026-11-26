@@ -44,6 +44,7 @@ public final class Pipeline {
     private static final String HAG_FILTER = "filters.hag_dem";
     private static final String RASTER_WRITER = "writers.raster";
     private static final String DTM_WRITER = "writers.dtm";
+    private static final int MAX_HEIGHT_THRESHOLDS = 8;
     private static final String BOUND = "\\s*\\[\\s*(" + Expression.NUMBER + ")\\s*,\\s*("
             + Expression.NUMBER + ")\\s*]\\s*";
     private static final Pattern BOX = Pattern.compile("\\s*\\(" + BOUND + "," + BOUND
@@ -196,8 +197,13 @@ public final class Pipeline {
         if (appendHeight && hag == null) {
             throw atStage(position, type, "HeightAboveGround export requires a preceding " + HAG_FILTER + " stage");
         }
-        if (rasterGrid != null && rasterGrid.dimension() == Dimension.HeightAboveGround && hag == null) {
-            throw atStage(position, type, "HeightAboveGround requires a preceding " + HAG_FILTER + " stage");
+        if (rasterGrid != null && rasterGrid.dimension() == Dimension.HeightAboveGround) {
+            if (hag == null) {
+                throw atStage(position, type, "HeightAboveGround requires a preceding " + HAG_FILTER + " stage");
+            }
+            if (rasterGrid.heightThresholds().length > 0 && Double.isFinite(hag.missing())) {
+                throw atStage(position, type, "height_thresholds cannot be used with nodata_hag");
+            }
         }
         appendHeightAboveGround = appendHeight;
     }
@@ -646,7 +652,7 @@ public final class Pipeline {
 
     private static GroundGridWriter.Grid parseRasterGrid(JsonObject stage) {
         options(stage, "filename", "binmode", "resolution", "origin_x", "origin_y", "width", "height",
-                "output_type", "dimension", "data_type", "nodata", "window_size", "compression");
+                "output_type", "dimension", "data_type", "nodata", "window_size", "compression", "height_thresholds");
         if (!bool(stage, "binmode", false)) {
             throw new IllegalArgumentException("binmode must be true");
         }
@@ -674,6 +680,15 @@ public final class Pipeline {
             case "HeightAboveGround" -> Dimension.HeightAboveGround;
             default -> throw new IllegalArgumentException("dimension must be 'Z', 'Intensity' or 'HeightAboveGround'");
         };
+        double[] heightThresholds = parseHeightThresholds(stage.get("height_thresholds"));
+        if (heightThresholds.length > 0) {
+            if (dimension != Dimension.HeightAboveGround) {
+                throw new IllegalArgumentException("height_thresholds requires dimension 'HeightAboveGround'");
+            }
+            if (!bands.contains(GroundGridWriter.Band.COUNT)) {
+                throw new IllegalArgumentException("height_thresholds requires the 'count' band");
+            }
+        }
         if (stage.has("data_type")) {
             exact(stage, "data_type", "double");
         }
@@ -687,7 +702,28 @@ public final class Pipeline {
         int effectiveWindow = (int) Math.min(windowSize, Math.max(width, height) - 1);
         return new GroundGridWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
                 number(stage, "resolution"), width, height, effectiveWindow, bands, dimension, nodata,
-                deflate(stage));
+                deflate(stage), heightThresholds);
+    }
+
+    private static double[] parseHeightThresholds(JsonElement value) {
+        if (value == null) {
+            return new double[0];
+        }
+        if (!(value instanceof JsonArray values) || values.isEmpty() || values.size() > MAX_HEIGHT_THRESHOLDS) {
+            throw new IllegalArgumentException("height_thresholds must be an array with 1 to "
+                    + MAX_HEIGHT_THRESHOLDS + " numbers");
+        }
+        var thresholds = new double[values.size()];
+        double previous = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < thresholds.length; i++) {
+            double threshold = number(values.get(i), "height_thresholds[" + i + "]");
+            if (threshold <= previous) {
+                throw new IllegalArgumentException("height_thresholds must be strictly increasing");
+            }
+            thresholds[i] = threshold == 0 ? 0 : threshold;
+            previous = threshold;
+        }
+        return thresholds;
     }
 
     private static TerrainWriter.Grid parseTerrainGrid(JsonObject stage) {
@@ -724,7 +760,10 @@ public final class Pipeline {
     }
 
     private static double number(JsonObject stage, String key) {
-        JsonElement value = stage.get(key);
+        return number(stage.get(key), key);
+    }
+
+    private static double number(JsonElement value, String key) {
         if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()
                 || !Double.isFinite(value.getAsDouble())) {
             throw new IllegalArgumentException(key + " must be a finite number");

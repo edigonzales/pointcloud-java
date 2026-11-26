@@ -1882,3 +1882,98 @@ separaten Prozessen mit eigener JIT-Aufwärmung.
 python3 tools/check-hag-dem.py "$pdal" \
   --benchmark-csv .cache/hag-dem/benchmark.csv --setup-csv .cache/hag-dem/setup.csv
 ```
+
+## Höhen-Schwellenanteile in Riedholz gegen PDAL 2.10.2
+
+Der Ausschnitt umfasst E 2'610'110 bis 2'610'310 und N 1'232'540
+bis 1'232'740 in LV95. Das 1-m-Gitter zählt Erstreflexionen der Klassen
+2–5 mit `Withheld == 0`. Java und PDAL verwenden denselben vollständig
+belegten Float64-Ausschnitt aus dem kantonalen DTM 2019 mit einem Meter
+Rand. `zero_ground: false` berechnet die Höhe auch für Bodenpunkte.
+PDAL erhält eine explizite negative Clamp-Untergrenze.
+[Dateiquellen und Prüfsummen](provenance.md#realdaten)
+
+PDAL verarbeitet die Kachel einmal im Stream-Modus. Vier sequenzielle
+`writers.gdal` schreiben den Nenner und die drei Zählraster mit
+`where: "HeightAboveGround > …"`. GDAL 3.13.3 berechnet daraus
+die Anteile und schreibt das Float64-Mehrband-GeoTIFF. Die Vergleichsgrösse
+für eine belegte Zelle ist die Double-Division aus ganzzahligen Zählern.
+[PDAL-Pipeline](https://pdal.io/en/stable/pipeline.html#multiple-writers-and-output-types) ·
+[GDAL-Rasteralgebra](https://gdal.org/en/stable/programs/gdal_raster_calc.html)
+
+### Zellgenaue Abnahme
+
+Von 7'327'607 Punkten lagen 599'763 ausgewählte Echos im Zielgitter.
+Davon überschritten 312'528, 306'984 und 280'460 Echos die Schwellen
+0,5 m, 2 m und 5 m. Bei einem und vier Workern erzeugte Java dieselben
+1'280'944 GeoTIFF-Bytes und dieselben JSON-Metadaten. Die 160'000
+Float64-Werte in den vier Bändern stimmten in allen 40'000 Zellen exakt
+mit der PDAL/GDAL-Referenz überein. Die 244 Zellen ohne ausgewählte
+Echos hatten im `count`-Band 0 und in allen Anteilsbändern NoData.
+
+### Wiese, Uferhecke und Wald
+
+Die Teilflächen stammen aus der amtlichen Bodenbedeckung und den
+kantonalen BFF-Daten. Das Orthofoto von 2018 zeigt die Gehölzstreifen
+entlang des Bachs. Die Zellauswahl verwendet die Zellmitten der Wiese
+im Rechteck E 2'610'240–2'610'270 und N 1'232'685–1'232'700. An
+derselben Ost-West-Spanne liegen die Uferhecke bei N 1'232'658–1'232'670
+und der Wald bei N 1'232'555–1'232'575. Für die Uferhecke gilt die
+amtliche Heckenmaske innerhalb des Rechtecks.
+[Solothurner WFS](https://so.ch/verwaltung/bau-und-justizdepartement/amt-fuer-geoinformation/geoportal/geodienste/wfs-web-feature-service/) ·
+[SWISSIMAGE 2018](https://data.geo.admin.ch/ch.swisstopo.swissimage-dop10/swissimage-dop10_2018_2610-1232/swissimage-dop10_2018_2610-1232_0.1_2056.tif)
+
+| Fläche | Zellen belegt / insgesamt | Echos | Über 0,5 m | Über 2 m | Über 5 m |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Wiese | 450 / 450 | 5'413 | 0,0 % | 0,0 % | 0,0 % |
+| Uferhecke | 217 / 217 | 4'095 | 92,6 % | 91,6 % | 87,1 % |
+| Geschlossener Wald | 593 / 600 | 10'968 | 88,0 % | 86,2 % | 78,3 % |
+
+Die Anteile sind über die Echos der jeweiligen Teilfläche gewichtet.
+Die amtlich kartierte Uferhecke enthält hohe Gehölze. Ihr Echoanteil
+über 5 m liegt in der Prüffläche höher als im geprüften Wald. Für die
+Einordnung als Hecke sind auch Lage und Form der Fläche relevant.
+[Karte der Prüfflächen und Anteilsbänder](measurements/riedholz-height-thresholds.png)
+
+### Laufzeit auf dem M1
+
+MacBook Air M1 mit acht logischen CPUs und 16 GiB RAM, macOS 15.8.1,
+Temurin 25.0.3+9 mit `-Xmx512m`, PDAL 2.10.2 und GDAL 3.13.3.
+Acht rotierende Runden verwenden frische Prozesse, warme LAZ- und
+DEM-Dateicaches, unkomprimierte GeoTIFFs und JSON-Metadaten. Die Zeit
+umfasst den LAZ-Lauf bis zum geschriebenen Mehrbandraster. Bei PDAL
+umfasst sie auch den anschliessenden GDAL-Prozess. Die CPU-Zeit ist
+die Summe beider Prozesse, das Spitzen-RSS das Maximum der seriell
+ausgeführten Prozesse. Die DEM-Vorbereitung liegt ausserhalb der Messung.
+
+| Engine | Reader | Ausgabe | Wandzeit Median / Min–Max (s) | CPU Median (s) | Spitzen-RSS Max (MiB) | Mio. gelesene Punkte/s Median |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| Java | 1 | Zählung und Anteile | 3,359 / 3,192–4,883 | 5,01 | 196,1 | 2,18 |
+| PDAL + GDAL | 1 | Zählung und Anteile | 2,797 / 2,695–3,248 | 4,91 | 82,4 | 2,62 |
+| Java | 4 | Zählung und Anteile | 2,001 / 1,817–2,566 | 6,82 | 212,3 | 3,66 |
+| PDAL + GDAL | 4 | Zählung und Anteile | 2,795 / 2,499–3,346 | 5,31 | 109,5 | 2,62 |
+| Java | 4 | Nur Zählung | 1,924 / 1,742–2,739 | 6,76 | 226,3 | 3,81 |
+
+Mit vier Readern braucht Java im Wandzeitmedian 28,4 % weniger Zeit.
+Mit einem Reader braucht PDAL 16,7 % weniger Zeit. Die Reihenfolge
+blieb in allen acht gepaarten Runden gleich. Die reine PDAL-Kette dauerte
+im Median 2,723 s mit einem und 2,725 s mit vier Readern. GDAL brauchte
+für das Mehrbandraster im Median weitere 75 beziehungsweise 73 ms.
+
+Die Ein-Minuten-Systemlast lag vor und nach den einzelnen Messungen
+zwischen 6,14 und 8,96. Die Reihe beschreibt diese Rechnerlast. Beim
+Java-Kontrolllauf betrug der Median der acht gepaarten Differenzen
+für die zusätzlichen Schwellenbänder +37 ms. Die Einzelwerte von
+−823 bis +620 ms erlauben keine präzise Aussage zum Mehraufwand.
+[40 Einzelmessungen mit Systemlast](measurements/riedholz-height-thresholds-pdal.csv)
+
+### Reproduktion
+
+```sh
+./gradlew installDist
+./gradlew downloadTestData -Ptile=2019-riedholz
+python3 tools/check-height-thresholds.py "$pdal"
+python3 tools/check-height-thresholds.py "$pdal" --stress
+python3 tools/check-height-thresholds.py "$pdal" \
+  --benchmark-csv .cache/height-thresholds/benchmark.csv
+```

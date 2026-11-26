@@ -1,0 +1,30 @@
+{
+  "pipeline": [
+    {
+      "type": "readers.las",
+      "filename": ".cache/test-data/so-2019-riedholz.laz"
+    },
+    {
+      "type": "filters.expression",
+      "expression": "X >= 2610110 && X < 2610310 && Y >= 1232540 && Y < 1232740 && ReturnNumber == 1 && Withheld == 0 && Classification >= 2 && Classification <= 5"
+    },
+    {
+      "type": "filters.hag_dem",
+      "raster": ".cache/height-thresholds/dem/riedholz.tif",
+      "zero_ground": false
+    },
+    {
+      "type": "writers.raster",
+      "filename": "build/results/height-thresholds-riedholz.tif",
+      "binmode": true,
+      "resolution": 1,
+      "origin_x": 2610110,
+      "origin_y": 1232540,
+      "width": 200,
+      "height": 200,
+      "dimension": "HeightAboveGround",
+      "output_type": "count",
+      "height_thresholds": [0.5, 2, 5]
+    }
+  ]
+}

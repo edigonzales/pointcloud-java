@@ -1631,3 +1631,47 @@ Die Einfachheitsprüfung bestätigt die Wiederverwendung des
 Rasterwriters und des HAG-Puffers. Die
 [Beispielpipeline](../examples/chm-solothurn-forest.json) macht
 Höhenmaximum und Dichte der Messpunkte gemeinsam sichtbar.
+
+## Rasteranteile oberhalb von HAG-Schwellen
+
+26. November 2026. Basis `59074a8`. `writers.raster` ergänzt
+mit `height_thresholds` bis zu acht Float64-Anteilsbänder. Die
+Riedholz-Pipeline ermittelt den Anteil der ausgewählten Echos
+strikt über 0,5 m, 2 m und 5 m. `count` dient als Nenner und
+weist die Datenabdeckung aus.
+
+- `./gradlew --offline clean check` und `./gradlew --offline installDist`
+  bestanden auf Apple M1, macOS 15.8.1 und Temurin 25.0.3+9.
+  Die 214 Produkttests bestanden ohne Fehler, Fehlschläge oder
+  übersprungene Tests. Die XML-Suitezeiten summierten sich auf 4,332 s.
+  Die direkten Regressionstests prüfen exakte Schwellen,
+  NoData und Nullanteile, Deflate, Füllfenster, ungültige Optionen
+  und Fehler oder Abbruch ohne Veröffentlichung einer Teilausgabe.
+- `./gradlew --offline downloadTestData -Ptile=2019-riedholz`
+  lieferte die amtliche LAZ-Kachel mit 7'327'607 Punkten.
+  `tools/check-height-thresholds.py` bestätigte Java-Ausgaben mit
+  einem und vier LAZ-Workern byteweise. PDAL 2.10.2 und GDAL 3.13.3
+  bestätigten dieselben 160'000 Float64-Samples, das LV95-Gitter
+  und die NoData-Maske. Das Raster enthält 599'763 ausgewählte
+  Erstreflexionen und 244 Zellen ohne ausgewählte Echos.
+- Die Speicherprobe `--stress` schrieb 104'002'484 Bytes mit
+  1'000'000 Zellen, acht Schwellen und fünf regulären Bändern
+  unter `-Xmx512m`. Der Prozess belegte 488,88 MiB Spitzen-RSS.
+- `python3 tools/check-real-data.py <pdal>` bestand mit PDAL 2.10.2.
+  Alle 496'586 vollständigen LAS-Records stimmten überein. SIGTERM
+  ergab Exit 143 ohne temporäre oder veröffentlichte Ausgabe.
+  `python3 tools/check-ground-grid.py <pdal> --release` bestätigte
+  die Rasteroptionen für Bandwahl, Fill, Intensität und Deflate.
+- `tools/check-height-thresholds.py <pdal> --benchmark-csv <csv>`
+  prüfte die Rasterwerte in 32 Vergleichsläufen und acht
+  Kontrollläufen. Im Wandzeitmedian erreichte Java 3,359 s und
+  2,001 s mit einem und vier LAZ-Workern. PDAL einschliesslich
+  GDAL-Ausgabe erreichte 2,797 s und 2,795 s. Die Ein-Minuten-Last
+  schwankte zwischen 6,14 und 8,96. Der gepaarte Mehraufwand der
+  Schwellen gegenüber `count` allein streute zwischen −823 und +620 ms.
+
+Die Einfachheitsprüfung belässt Zellzuordnung, HAG-Lesen,
+Standardbänder und transaktionale Publikation im bestehenden
+Rasterwriter. Je Schwelle kommt ein primitiver Zähler je Zelle
+hinzu. Ein Echo erhöht höchstens einen Zähler.
+[Riedholz-Abnahme und Vergleich](experiments.md#höhen-schwellenanteile-in-riedholz-gegen-pdal-2102)

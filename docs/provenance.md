@@ -101,6 +101,7 @@ PDAL-Datenbestand. Die Dateien für die lokale Abnahme liegen im ignorierten Cac
 | `so-2019.laz` | [2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2594000_1227500.ch.so.agi.lidar_2019.pointcloud.laz) | 83'247'722 | 23.11.2026 |
 | `so-2019-urban.laz` | [2606500_1229000.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2606500_1229000.ch.so.agi.lidar_2019.pointcloud.laz) | 52'116'409 | 26.11.2026 |
 | `so-2019-height.laz` | [2592000_1228000.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2592000_1228000.ch.so.agi.lidar_2019.pointcloud.laz) | 79'958'069 | 26.11.2026 |
+| `so-2019-riedholz.laz` | [2610000_1232500.ch.so.agi.lidar_2019.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2019.pointcloud/aktuell/2610000_1232500.ch.so.agi.lidar_2019.pointcloud.laz) | 30'303'122 | 26.11.2026 |
 | `so-2014.laz` | [2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz](https://files.geo.so.ch/ch.so.agi.lidar_2014.pointcloud/aktuell/2592000_1228000.ch.so.agi.lidar_2014.pointcloud.laz) | 74'261'841 | 23.11.2026 |
 | `autzen-classified.copc.laz` | [Autzen Stadium](https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz) | 81'123'042 | 24.11.2026 |
 
@@ -119,6 +120,13 @@ Zellen inklusive 1 m Rand, mit je 2'017'904 Bytes bei GDAL 3.13.3.
 | --- | --- |
 | Stadt | `036ab83686e8fdcb4b9adc9bebab781f0d2054709f5357cb26e89d37453b7977` |
 | Wald | `2a07ab615b5cfdb448b5efdba78bdba094072fe0ad4c13ec3e8950f0bcfdc747` |
+
+Für die Höhen-Schwellenanteile in Riedholz wird aus derselben DTM-Quelle
+ein 202 × 202 Zellen grosses Float64-Fenster mit einem Meter Rand erzeugt.
+Die 327'044 Bytes ergeben SHA-256
+`4bead5a305c00a81c088e62a7e63b9af2b0627288ba1271242a41654f5a1597c`.
+Die LAZ enthält 7'327'607 Punkte und hat SHA-256
+`fc2c5adde539277e33ecca04e0b310099c33acc41c3aed85ab1b8a7921569f4b`.
 
 ## Kleine Fixtures
 

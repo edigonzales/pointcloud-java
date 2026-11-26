@@ -1,6 +1,7 @@
 package pointcloud;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -19,10 +20,11 @@ final class GroundGridWriter {
     }
 
     record Grid(double originX, double originY, double resolution, int width, int height, int windowSize,
-                EnumSet<Band> bands, Dimension dimension, double nodata, boolean deflate) {
+                EnumSet<Band> bands, Dimension dimension, double nodata, boolean deflate, double[] heightThresholds) {
         Grid {
             GeoTiffOutput.validateGrid(originX, originY, resolution, width, height);
             bands = bands.clone();
+            heightThresholds = heightThresholds.clone();
         }
     }
 
@@ -34,6 +36,8 @@ final class GroundGridWriter {
     private final double[] means;
     private final double[] deviations;
     private final double[] countBand;
+    private final long[][] thresholdCounts;
+    private final double[][] fractionBands;
     private final double[][] outputBands;
     private final double[][] statisticBands;
     private final double east;
@@ -50,8 +54,10 @@ final class GroundGridWriter {
         deviations = grid.bands.contains(Band.STDEV) ? new double[cells] : null;
         means = grid.bands.contains(Band.MEAN) || deviations != null ? new double[cells] : null;
         countBand = grid.bands.contains(Band.COUNT) ? new double[cells] : null;
+        thresholdCounts = new long[grid.heightThresholds.length][cells];
+        fractionBands = new double[grid.heightThresholds.length][cells];
 
-        var bands = new ArrayList<double[]>(grid.bands.size());
+        var bands = new ArrayList<double[]>(grid.bands.size() + fractionBands.length);
         var statistics = new ArrayList<double[]>(grid.bands.size());
         for (Band band : grid.bands) {
             double[] values = switch (band) {
@@ -65,6 +71,9 @@ final class GroundGridWriter {
             if (band != Band.COUNT) {
                 statistics.add(values);
             }
+        }
+        for (double[] fractionBand : fractionBands) {
+            bands.add(fractionBand);
         }
         outputBands = bands.toArray(double[][]::new);
         statisticBands = statistics.toArray(double[][]::new);
@@ -83,10 +92,18 @@ final class GroundGridWriter {
         int cell = (grid.height - 1 - rowFromSouth) * grid.width + column;
         long count = ++counts[cell];
         pointsBinned++;
-        if (statisticBands.length == 0) {
+        if (statisticBands.length == 0 && thresholdCounts.length == 0) {
             return;
         }
         double value = grid.dimension.value(batch, point);
+        // Record only the highest crossed threshold and accumulate lower thresholds when writing.
+        int crossed = 0;
+        while (crossed < grid.heightThresholds.length && value > grid.heightThresholds[crossed]) {
+            crossed++;
+        }
+        if (crossed > 0) {
+            thresholdCounts[crossed - 1][cell]++;
+        }
         if (minima != null) {
             minima[cell] = count == 1 ? value : Math.min(minima[cell], value);
         }
@@ -113,7 +130,11 @@ final class GroundGridWriter {
         }
         checkInterrupted();
         finishBands();
-        var names = grid.bands.stream().map(Band::label).toList();
+        var names = new ArrayList<String>(outputBands.length);
+        grid.bands.forEach(band -> names.add(band.label()));
+        for (double threshold : grid.heightThresholds) {
+            names.add("fraction_above_" + BigDecimal.valueOf(threshold).stripTrailingZeros().toPlainString());
+        }
         output.prepare(grid.originX, grid.originY, grid.resolution, grid.width, grid.height,
                 outputBands, names, grid.nodata, grid.deflate);
     }
@@ -138,7 +159,17 @@ final class GroundGridWriter {
                 for (var band : statisticBands) {
                     band[cell] = grid.nodata;
                 }
+                for (var band : fractionBands) {
+                    band[cell] = grid.nodata;
+                }
                 continue;
+            }
+            long above = 0;
+            for (int i = fractionBands.length - 1; i >= 0; i--) {
+                above += thresholdCounts[i][cell];
+                double fraction = above / (double) count;
+                checkSample(fraction, cell);
+                fractionBands[i][cell] = fraction;
             }
             measured++;
             int row = cell / width;
