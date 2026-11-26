@@ -102,7 +102,7 @@ Punktformat geprüft.
 | `filters.crop` | Genau eine Geometrieoption. `bounds` als `([xmin,xmax],[ymin,ymax])` mit optionalem dritten Z-Intervall oder `polygon` als einzelnes 2D-WKT-Polygon. Grenzen sind inklusiv. `outside: true` invertiert die Auswahl. |
 | `filters.expression` | `expression` enthält Dimensionsvergleiche mit endlichen Dezimalliteralen. Unterstützt sind `== != < <= > >=`, `!`, `&&`, `\|\|` und Klammern. Negation bindet vor UND, UND vor ODER. |
 | `filters.decimation` | Ganzzahlige `step` (Standard 1), `offset` (Standard 0) und exklusives `limit` (optional). Zählung ab 0 über die Eingabe dieser Stage. |
-| `filters.hag_dem` | `raster` für ein lokales GeoTIFF. Erzeugt `HeightAboveGround` für nachfolgende Ausdrücke und Statistiken. [Weitere Optionen](#höhe-über-grund) |
+| `filters.hag_dem` | `raster` für ein lokales GeoTIFF. Erzeugt `HeightAboveGround` für nachfolgende Ausdrücke, Statistiken und Raster. [Weitere Optionen](#höhe-über-grund) |
 | `filters.stats` | `dimensions` als kommaseparierte Liste der verfügbaren Dimensionen. Optional `count: "Classification"`. |
 | `writers.las` | `filename` endet auf `.las`, `forward: "all"`, `compression: false` (Standard). `extra_dims: "all"` reicht die Originalrecords durch. Für den Export von `HeightAboveGround` siehe [LAS-Export](#las-export-der-höhe-über-grund). |
 | `writers.null` | Keine Optionen. Konsumiert den gefilterten Strom. |
@@ -175,8 +175,9 @@ Standard sind `min,max,mean,count`. `stdev` gibt die
 Populationsstandardabweichung der Zellwerte an. Bei einem einzigen Punkt
 beträgt sie 0.
 
-`dimension` wählt `Z` (Standard) oder den vorzeichenlosen LAS-Rohwert
-`Intensity`. Der Ausgabetyp ist `double` (Float64). `compression` akzeptiert
+`dimension` wählt `Z` (Standard), den vorzeichenlosen LAS-Rohwert
+`Intensity` oder `HeightAboveGround` nach `filters.hag_dem`.
+Der Ausgabetyp ist `double` (Float64). `compression` akzeptiert
 `none` (Standard) und das verlustfreie `deflate`.
 
 `window_size` ist der maximale Abstand in Rasterzellen je Zeilen- oder
@@ -205,6 +206,12 @@ CRS-Angaben, die sich nicht auflösen lassen, ergeben einen Stagefehler.
 `pointsWritten` bleibt bei einer Rasterausgabe 0. Die CLI veröffentlicht
 das GeoTIFF nach verifiziertem Dateiende. Zur JVM-Distribution gehören
 GeoTools und die [zugehörigen Lizenzhinweise](../licenses/geotools/NOTICE.md).
+
+Das [Solothurner Kronenhöhenmodell](../examples/chm-solothurn-forest.json)
+rastert ausgewählte Vegetationspunkte ab 5 m Höhe über Grund.
+`output_type: "max,count"` liefert die grösste gemessene relative Höhe
+und die Zahl der Stützpunkte pro 0,5-m-Zelle. Unbelegte Zellen erhalten
+NoData im Höhenband und 0 im Zählband.
 
 Für bestehende Java-Pipelines mit `"type": "writers.gdal"` reicht es,
 den Typ der letzten Stage auf `"type": "writers.raster"` zu setzen.

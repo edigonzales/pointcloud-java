@@ -1598,3 +1598,36 @@ Die Einfachheitsprüfung belässt den Vergleich bei der vorhandenen
 CRS-Prüfung in `HagDem`. Die Stage verwendet den bestehenden
 GeoTools-Parser und die normalisierten Projektionsparameter. Die
 Pflichtprüfungen und beide HAG-Roundtrips sind abgeschlossen.
+
+## Kronenhöhenraster aus `HeightAboveGround`
+
+26. November 2026. Basis `1e74f8f`. `writers.raster` akzeptiert
+`dimension: "HeightAboveGround"` nach `filters.hag_dem`. Der Writer
+liest die Double-Werte über denselben Dimensionszugriff wie die
+bestehenden Rasteroptionen. Die Baumdetektionsversuche sind unter
+`experiment/treetops-2026-11-26` auf `ac84135` gesichert.
+
+- `./gradlew --offline clean check` und `./gradlew --offline installDist`
+  bestanden auf Apple M1, macOS 15.8.1 und Temurin 25.0.3+9.
+  Alle 196 Produkttests bestanden ohne Fehler, Fehlschläge oder
+  übersprungene Tests. Die JUnit-Suitezeiten summierten sich auf
+  3,017 s. Zwei direkte Tests prüfen Höhenmaximum, Punktzahl, NoData
+  und den Stagefehler bei fehlendem `filters.hag_dem`.
+- Die Solothurner Wald-LAZ von 2019 lieferte ein vollständiges
+  DTM mit 40'000 Zellen. Die CHM-Pipeline las je 14'566'627 Punkte
+  und rasterte je 1'584'291 Vegetationspunkte. Mit einem und vier
+  LAZ-Workern waren die 2'560'944 GeoTIFF-Bytes und die Metadaten
+  identisch. PDAL 2.10.2 und GDAL 3.13.3 bestätigten auf demselben
+  DTM das EPSG:2056-Gitter mit 0,5 m Zellbreite und beide Float64-Bänder
+  für alle 160'000 Zellen. Höhenmaximum, Punktzahl und die 26'695
+  NoData-Zellen im Höhenband stimmten exakt überein. Der erste
+  Vergleichsversuch verwendete einen falschen DTM-Metadatenschlüssel.
+  Mit dem vorhandenen Schlüssel `dtm` bestand die Abnahme.
+- `python3 tools/check-real-data.py <pdal>` bestand mit PDAL 2.10.2.
+  Alle 496'586 Originalrecords stimmten überein. SIGTERM ergab
+  Exit 143 ohne temporäre oder veröffentlichte Ausgabe.
+
+Die Einfachheitsprüfung bestätigt die Wiederverwendung des
+Rasterwriters und des HAG-Puffers. Die
+[Beispielpipeline](../examples/chm-solothurn-forest.json) macht
+Höhenmaximum und Dichte der Messpunkte gemeinsam sichtbar.

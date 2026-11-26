@@ -120,6 +120,15 @@ der relativen Höhen.
 pdal info --schema build/results/hag-dem-solothurn-urban.las --readers.las.use_eb_vlr=true
 ```
 
+Das [Kronenhöhenmodell](examples/chm-solothurn-forest.json) nutzt das
+vollständige Wald-DTM oben und rastert `HeightAboveGround`.
+Das GeoTIFF enthält die maximale Höhe und die Punktzahl je 0,5-m-Zelle
+für Vegetation ab 5 m über Grund.
+
+```sh
+"$cli" pipeline examples/chm-solothurn-forest.json --laz-workers 4 --metadata build/results/chm-solothurn-forest.json
+```
+
 Für indizierte LAZ-Dateien kann die CLI mit `--laz-workers 4` bis zu vier
 unabhängige Chunks parallel dekodieren. Ohne Option liest sie seriell.
 

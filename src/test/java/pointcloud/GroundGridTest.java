@@ -19,6 +19,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -87,6 +88,62 @@ class GroundGridTest {
         } finally {
             reader.dispose();
         }
+    }
+
+    @Test
+    void writesMaximumHeightAboveGroundAndCountAfterTheHagFilter() throws Exception {
+        Path input = fixture(3, new int[][]{{1, 1, 22}, {3, 3, 30}, {5, 5, 24}, {5, 1, 30}, {7, 1, 32}});
+        Path dem = temp.resolve("dem.tif");
+        try (var source = Pipeline.openSequential(input, 2);
+             var writer = new GeoTiffOutput(input, dem, false, source.header(), source.channel())) {
+            writer.prepare(ORIGIN_X, ORIGIN_Y, 1, 2, 2, new double[][]{{700, 707, 703.125, 713}},
+                    List.of("elevation"), -9999, false);
+            writer.finish();
+        }
+
+        Path target = temp.resolve("canopy.tif");
+        String filters = """
+                {"type":"filters.hag_dem","raster":%s,"zero_ground":false},
+                {"type":"filters.expression","expression":"HeightAboveGround >= 5"},
+                """.formatted(Pipeline.JSON.toJson(dem.toString()));
+        String config = config(input, target, filters, 2, 2,
+                ",\"output_type\":\"max,count\",\"dimension\":\"HeightAboveGround\",\"window_size\":0");
+        var result = Pipeline.parse(new StringReader(config)).run(2, false);
+        assertEquals(5, result.pointsRead());
+        assertEquals(3, result.pointsSelected());
+        assertEquals(3, result.pointsBinned());
+        assertEquals(0, result.pointsWritten());
+
+        var reader = new GeoTiffReader(target.toFile());
+        try {
+            assertEquals("2056", reader.getMetadata().getGeoKey(3072));
+            assertEquals(-9999, reader.getMetadata().getNoData());
+            var coverage = reader.read();
+            try {
+                var raster = coverage.getRenderedImage().getData();
+                assertEquals(DataBuffer.TYPE_DOUBLE, raster.getTransferType());
+                assertEquals(2, raster.getNumBands());
+                assertArrayEquals(new double[]{-9999, 0}, raster.getPixel(0, 0, (double[]) null));
+                assertArrayEquals(new double[]{5, 1}, raster.getPixel(1, 0, (double[]) null));
+                assertArrayEquals(new double[]{11.875, 2}, raster.getPixel(0, 1, (double[]) null));
+                assertArrayEquals(new double[]{-9999, 0}, raster.getPixel(1, 1, (double[]) null));
+            } finally {
+                coverage.dispose(true);
+            }
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    @Test
+    void rejectsHeightAboveGroundRasterWithoutAPrecedingHagFilter() {
+        Path target = temp.resolve("missing-hag.tif");
+        String config = config(temp.resolve("missing.las"), target, "", 2, 2,
+                ",\"dimension\":\"HeightAboveGround\"");
+        var error = assertThrows(IllegalArgumentException.class, () -> Pipeline.parse(new StringReader(config)));
+        assertEquals("Stage 2 (writers.raster): HeightAboveGround requires a preceding filters.hag_dem stage",
+                error.getMessage());
+        assertFalse(Files.exists(target));
     }
 
     @Test
