@@ -1992,3 +1992,127 @@ python3 experiments/score-treetops.py experiments/treetop-reference \
 python3 experiments/check-treetops.py "$pdal" --verify
 python3 experiments/check-treetops.py "$pdal" --benchmark dsm-r3
 ```
+
+## Lokale Prominenz für Baumspitzen
+
+Das Java-Experiment sammelt die vorhandenen CHM- und DSM-Zellgewinner
+in einem LAZ-Durchlauf. Es vergleicht rohe und maskiert geglättete
+Oberflächen, jeweils mit 3-m-Maxima und fünf Prominenzschwellen von
+0,25 bis 1,50 m. Der Gaussian-Filter hat σ = 0,5 m und einen
+separablen Filterradius von 1,5 m. Er normiert über vorhandene Werte
+und erhält NoData an unbelegten Zellen. Die Ausgabe verwendet XYZ/HAG
+des ursprünglichen Zellgewinners.
+
+Die Prominenzsuche beginnt an einem lokalen Maximum mit mindestens
+drei gültigen Nachbarzellen. Sie verfolgt achtfach verbundene Zellen
+im 6-m-Kreis, solange die Oberfläche höher als Spitzenhöhe minus
+Schwelle ist. Ein erreichbarer höherer Wert verwirft die Spitze.
+Gleichstände entscheidet die Nordwest-Reihenfolge. Der Halo umfasst
+6 m und bei Glättung weitere 1,5 m. Ein Sattel genau auf der
+Prominenzschwelle genügt für zwei getrennte Spitzen.
+[Studie zu Höhendynamik und Baumspitzen](https://doi.org/10.1109/IGARSS53475.2024.10640418)
+
+### Bisherige Flächen und Variantenwahl
+
+Auf den fünf bekannten Flächen erreichte `chm-gauss-prom-150` mit
+F1 **0,667** das beste Mittel der Prominenzvarianten. `dsm-r3`
+lag bei 0,674. Mit demselben 3-m-Detektor und Gaussian-Glättung
+erreichten sowohl CHM als auch DSM rund 0,697. Auf der bekannten
+steilen Fläche stiegen die Treffer mit dem geglätteten CHM und
+3 m Radius von 55 auf 61 bei 99 Referenzen. Die Zahl der
+Detektionen stieg von 86 auf 100. Für den Blindtest wurde wie
+vereinbart die beste Prominenzvariante eingefroren.
+
+### Zwei neue Blindflächen
+
+Die [Referenzen](../experiments/treetop-prominence-reference/README.md)
+beruhen auf zwei getrennten visuellen Beurteilungen von Original-LiDAR
+und Orthofotos. Bewertet wurden 146 gemeinsam markierte Spitzen im
+Oberstand. Für den Vergleich gilt eine eindeutige Zuordnung bis 2 m.
+
+| Fläche | Methode | Referenzen | Detektiert | Zugeordnet | Precision | Recall | F1 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Steil, 31,8° | DSM, 3 m Radius | 80 | 99 | 49 | 49,5 % | 61,3 % | 0,547 |
+| Steil, 31,8° | CHM, 1,5 m Prominenz | 80 | 74 | 43 | 58,1 % | 53,8 % | 0,558 |
+| Mässig geneigt, 12,9° | DSM, 3 m Radius | 66 | 89 | 57 | 64,0 % | 86,4 % | 0,735 |
+| Mässig geneigt, 12,9° | CHM, 1,5 m Prominenz | 66 | 76 | 54 | 71,1 % | 81,8 % | 0,761 |
+| Gesamt | DSM, 3 m Radius | 146 | 188 | 106 | 56,4 % | 72,6 % | 0,635 |
+| Gesamt | CHM, 1,5 m Prominenz | 146 | 150 | 97 | **64,7 %** | **66,4 %** | **0,655** |
+
+Die Prominenz liefert neun Referenzspitzen, die der 3-m-Detektor
+verfehlt, und verliert 18 seiner Treffer. Im steilen Wald sinkt
+die Zahl der nicht zugeordneten Detektionen von 50 auf 31. Dort
+bleiben 37 von 80 markierten Spitzen ohne Treffer. Die Schranken
+von je 80 % für Precision und Recall sowie F1 ≥ 0,75 je Fläche
+sind verfehlt. Der Detektor bleibt im Experimentmodul.
+[Blindprüfkarte](measurements/treetop-prominence-holdout.jpg) ·
+[Vollständige Qualitätsdaten](measurements/treetop-prominence-quality.json)
+
+### Unabhängige Methoden
+
+Die folgenden Ergebnisse betreffen die fünf bekannten Flächen.
+Die Rastervergleiche verwenden dasselbe 0,5-m-Gitter und die
+gleichen Ausgabekerne. Die 3-m-Suche in NumPy reproduzierte die
+rohen Java-CHM- und DSM-Ausgaben in allen zehn Fällen exakt.
+Das amtliche Vegetationshöhenmodell wurde aus 25-cm-Zellen per
+ausgerichtetem 2×2-Maximum aggregiert. GDAL und ein separater
+Arrayvergleich bestätigten Georeferenzierung, NoData und jedes
+aggregierte Maximum. Die alternative Spike-free-Oberfläche kam
+aus den normalisierten Erstreflexionen der gleichen Auswahl.
+Auf der Höhenkachel änderte sie gegenüber dem einfachen CHM
+34'174 Zellen in der Abdeckungsmaske ab 5 m.
+
+| Externe Methode | Mittleres F1 | Rasterdetektionen ohne Originalrücklauf |
+|---|---:|---:|
+| Amtliches VHM, 3 m Radius | 0,569 | 35 |
+| `lidR::lspikefree`, 3 m Radius | 0,667 | 12 |
+| `lidaRtRee` auf CHM | 0,582 | 5 |
+| `lidaRtRee` auf DSM und DTM | 0,604 | 3 |
+| `lidR::li2012`, 3D | 0,462 | 0 |
+
+Die ungestützten Rasterdetektionen werden in der Precision
+als unzugeordnet mitgezählt. Li2012 verarbeitete je Ausschnitt
+66'876 bis 302'626 Voxelrepräsentanten innerhalb des Zeitlimits.
+`lidaRtRee` verwendet sein internes Ersetzen von NoData durch
+Null beziehungsweise Gelände-Z. Die Ergebnisse stammen aus
+R 4.5.3, `lidR` 4.3.3, `terra` 1.9.60 und `lidaRtRee` 4.0.9.
+[Solothurner VHM](https://data.geo.so.ch/?filter=ch.so.agi.lidar_2019.ndsm_vegetation) ·
+[lidR](https://cran.r-project.org/web/packages/lidR/refman/lidR.html) ·
+[lidaRtRee](https://lidar.pages-forge.inrae.fr/lidaRtRee/reference/tree_segmentation.html)
+
+### Laufzeit
+
+Die Messung auf dem M1 steht wegen gleichzeitiger Systemlast aus.
+Der vorbereitete Benchmark verwendet denselben 480 × 480 m grossen
+Kern der Waldkachel, 0,5 m Zellbreite und `-Xmx512m`. Er misst den
+3-m-DSM-Detektor und `chm-gauss-prom-150` mit je einem und vier
+LAZ-Workern in acht rotierenden Runden. Nach zwei Aufwärmläufen
+startet er für jede Messung einen frischen Prozess. Er vergleicht
+die CSV-Bytes und Punktzähler je Methode und protokolliert Wandzeit,
+Prozess-CPU-Zeit, Spitzen-RSS, Durchsatz, Rasteraufbau, Glättung
+und Detektor. Die Schranken für die Detektion samt Glättung sind
+0,5 s und 20 % der Vier-Worker-Wandzeit im Median.
+
+### Reproduktion
+
+Die Pfade und Voraussetzungen aus dem vorherigen Experiment
+gelten weiter. Jeder Vergleich bekommt ein frisches Arbeitsverzeichnis.
+Für die externen Vergleiche installieren wir `lidaRtRee` in der
+separaten R-Bibliothek und verwenden die bereits eingerichtete
+`lidR`-Bibliothek. Die Prüfflächen werden nach Nominierung mit den
+eingefrorenen Referenzdateien ausgewertet.
+
+```sh
+./gradlew -Pexperiments :experiments:test installDist
+treetop_run=$(mktemp -d .cache/treetop-prominence.XXXXXX)
+mkdir -p "$treetop_run/r-library"
+R_LIBS_USER=.cache/treetops/r-library Rscript --vanilla -e \
+  'install.packages("lidaRtRee", lib=commandArgs(TRUE)[1], repos="https://cloud.r-project.org")' \
+  "$treetop_run/r-library"
+python3 experiments/check-treetop-prominence.py "$pdal" develop --work "$treetop_run"
+python3 experiments/check-treetops-external.py "$pdal" --work "$treetop_run"
+python3 experiments/check-treetop-prominence.py "$pdal" external --work "$treetop_run"
+python3 experiments/check-treetop-prominence.py "$pdal" holdout --work "$treetop_run"
+python3 experiments/check-treetop-prominence.py "$pdal" verify --work "$treetop_run"
+python3 experiments/check-treetop-prominence.py "$pdal" benchmark --work "$treetop_run"
+```

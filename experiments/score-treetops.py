@@ -38,7 +38,7 @@ def outside_exclusions(coordinates, bounds):
     return coordinates[~excluded]
 
 
-def score(actual, reference):
+def score(actual, reference, unsupported=0):
     distance = cdist(reference[:, :2], actual[:, :2])
     # One dummy column per reference. An additional match always saves more
     # than rearranging all valid matches could add to the total distance.
@@ -49,12 +49,13 @@ def score(actual, reference):
     matched = detections < len(actual)
     refs, detections = refs[matched], detections[matched]
     matches = len(refs)
+    count = len(actual) + unsupported
     offsets = distance[refs, detections]
     height_errors = actual[detections, 2] - reference[refs, 2]
-    return {"reference": len(reference), "detections": len(actual), "matches": matches,
-            "precision": matches / len(actual) if len(actual) else 0.0,
+    return {"reference": len(reference), "detections": count, "matches": matches,
+            "precision": matches / count if count else 0.0,
             "recall": matches / len(reference) if len(reference) else 0.0,
-            "f1": 2 * matches / (len(actual) + len(reference)) if len(actual) + len(reference) else 0.0,
+            "f1": 2 * matches / (count + len(reference)) if count + len(reference) else 0.0,
             "xy_mean_m": float(offsets.mean()) if matches else None,
             "xy_max_m": float(offsets.max()) if matches else None,
             "hag_bias_m": float(height_errors.mean()) if matches else None,

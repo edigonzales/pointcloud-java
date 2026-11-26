@@ -11,8 +11,9 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Stream;
 
-/** Compares local maxima in LV95 canopy-height and absolute vegetation-height grids. */
+/** Compares tree-peak detectors on LV95 canopy-height and absolute vegetation-height grids. */
 public final class TreetopExperiment {
     private static final double MIN_HEIGHT = 5;
     private static final double MAX_RADIUS = 4;
@@ -22,33 +23,37 @@ public final class TreetopExperiment {
     public static void main(String[] args) throws IOException {
         if (args.length < 9) {
             throw new IllegalArgumentException("Use LAS DEM OUT_DIR ORIGIN_X ORIGIN_Y WIDTH HEIGHT RESOLUTION"
-                    + " WORKERS [--method METHOD] [--rasters]");
+                    + " WORKERS [--method METHOD | --prominence] [--rasters]");
         }
         Path input = Path.of(args[0]);
         Path demPath = Path.of(args[1]);
         Path output = Path.of(args[2]);
-        Grid grid = Grid.fromCore(Double.parseDouble(args[3]), Double.parseDouble(args[4]),
-                Integer.parseInt(args[5]), Integer.parseInt(args[6]), Double.parseDouble(args[7]));
         int workers = Integer.parseInt(args[8]);
         if (workers != 1 && workers != 4) {
             throw new IllegalArgumentException("Use 1 or 4 LAZ reader workers");
         }
         Variant chosen = null;
+        boolean prominence = false;
         boolean rasters = false;
         for (int i = 9; i < args.length; i++) {
             if (args[i].equals("--rasters") && !rasters) {
                 rasters = true;
-            } else if (args[i].equals("--method") && chosen == null && i + 1 < args.length) {
+            } else if (args[i].equals("--prominence") && !prominence && chosen == null) {
+                prominence = true;
+            } else if (args[i].equals("--method") && chosen == null && !prominence && i + 1 < args.length) {
                 chosen = Variant.parse(args[++i]);
             } else {
                 throw new IllegalArgumentException("Unsupported or duplicate argument: " + args[i]);
             }
         }
-        run(input, demPath, output, grid, workers, chosen, rasters);
+        var variants = prominence ? Variant.PROMINENCE : chosen == null ? Variant.ALL : List.of(chosen);
+        Grid grid = Grid.fromCore(Double.parseDouble(args[3]), Double.parseDouble(args[4]),
+                Integer.parseInt(args[5]), Integer.parseInt(args[6]), Double.parseDouble(args[7]), variants);
+        run(input, demPath, output, grid, workers, variants, rasters);
     }
 
     private static void run(Path input, Path demPath, Path output, Grid grid, int workers,
-                            Variant chosen, boolean rasters) throws IOException {
+                            List<Variant> variants, boolean rasters) throws IOException {
         var timings = new ArrayList<String>();
         try (var reader = ParallelLazReader.open(input, LasReader.DEFAULT_BATCH_SIZE, workers)) {
             long start = System.nanoTime();
@@ -56,21 +61,35 @@ public final class TreetopExperiment {
             timings.add("dem,," + elapsed(start));
 
             start = System.nanoTime();
-            boolean both = chosen == null || rasters;
-            Surface chm = both || chosen.kind == Kind.CHM ? new Surface(grid.cells(), Kind.CHM) : null;
-            Surface dsm = both || chosen.kind == Kind.DSM ? new Surface(grid.cells(), Kind.DSM) : null;
+            Surface chm = rasters || variants.stream().anyMatch(v -> v.kind == Kind.CHM)
+                    ? new Surface(grid.cells(), Kind.CHM) : null;
+            Surface dsm = rasters || variants.stream().anyMatch(v -> v.kind == Kind.DSM)
+                    ? new Surface(grid.cells(), Kind.DSM) : null;
             long pointsBinned = accumulate(reader, dem, grid, chm, dsm);
             timings.add("raster,," + elapsed(start));
 
             Files.createDirectories(output);
-            var variants = chosen == null ? Variant.ALL : List.of(chosen);
             start = System.nanoTime();
-            var offsets = offsets(grid.resolution());
+            var offsets = variants.stream().anyMatch(v -> v.prominenceHundredths == 0)
+                    ? offsets(grid.resolution()) : null;
             timings.add("offsets,," + elapsed(start));
+            double[][] smoothed = new double[Kind.values().length][];
             for (Variant variant : variants) {
                 Surface surface = variant.kind == Kind.CHM ? chm : dsm;
+                double[] scores = surface.scores;
+                if (variant.gaussian) {
+                    int slot = variant.kind.ordinal();
+                    if (smoothed[slot] == null) {
+                        start = System.nanoTime();
+                        smoothed[slot] = TreetopProminence.smooth(grid, scores);
+                        timings.add("smooth," + variant.surfaceId() + "," + elapsed(start));
+                    }
+                    scores = smoothed[slot];
+                }
                 start = System.nanoTime();
-                int[] peaks = detect(grid, surface, variant, offsets);
+                int[] peaks = variant.prominenceHundredths == 0
+                        ? detect(grid, scores, surface.heights, variant, offsets)
+                        : TreetopProminence.detect(grid, scores, variant.prominenceHundredths / 100.0);
                 timings.add("detector," + variant.id() + "," + elapsed(start));
                 start = System.nanoTime();
                 writePeaks(output.resolve(variant.id() + ".csv"), peaks, surface, reader.header());
@@ -79,6 +98,17 @@ public final class TreetopExperiment {
             if (rasters) {
                 writeSurface(input, output, reader, grid, chm);
                 writeSurface(input, output, reader, grid, dsm);
+                for (Kind kind : Kind.values()) {
+                    if (smoothed[kind.ordinal()] != null) {
+                        double[] samples = smoothed[kind.ordinal()].clone();
+                        for (int cell = 0; cell < samples.length; cell++) {
+                            if (samples[cell] == Double.NEGATIVE_INFINITY) {
+                                samples[cell] = GeoTiffOutput.NODATA;
+                            }
+                        }
+                        writeRaster(input, output, reader, grid, kind.id() + "-gauss", samples);
+                    }
+                }
             }
             writeText(output.resolve("timings.csv"), "phase,method,nanos\n" + String.join("\n", timings) + "\n");
             writeText(output.resolve("counts.csv"), "points_read,points_binned,core_cells,halo_cells\n"
@@ -131,6 +161,11 @@ public final class TreetopExperiment {
     }
 
     static int[] detect(Grid grid, Surface surface, Variant variant, Offset[] offsets) throws IOException {
+        return detect(grid, surface.scores, surface.heights, variant, offsets);
+    }
+
+    private static int[] detect(Grid grid, double[] scores, double[] heights, Variant variant, Offset[] offsets)
+            throws IOException {
         int[] peaks = new int[grid.coreCells()];
         int size = 0;
         int width = grid.width();
@@ -140,18 +175,18 @@ public final class TreetopExperiment {
             candidates:
             for (int column = halo; column < width - halo; column++) {
                 int cell = row * width + column;
-                double centre = surface.scores[cell];
+                double centre = scores[cell];
                 if (centre == Double.NEGATIVE_INFINITY) {
                     continue;
                 }
-                double radius = variant.radius(surface.heights[cell]);
+                double radius = variant.radius(heights[cell]);
                 double squaredRadius = radius * radius;
                 for (Offset offset : offsets) {
                     if (offset.squaredDistance > squaredRadius) {
                         break;
                     }
                     int neighbour = cell + offset.row * width + offset.column;
-                    double neighbourScore = surface.scores[neighbour];
+                    double neighbourScore = scores[neighbour];
                     if (neighbourScore > centre || neighbourScore == centre && neighbour < cell) {
                         continue candidates;
                     }
@@ -193,7 +228,7 @@ public final class TreetopExperiment {
 
     private static void writeSurface(Path input, Path output, Pipeline.BatchInput reader, Grid grid, Surface surface)
             throws IOException {
-        String prefix = surface.kind.name().toLowerCase(Locale.ROOT);
+        String prefix = surface.kind.id();
         double[] samples = surface.scores.clone();
         try (var points = Files.newBufferedWriter(output.resolve(prefix + "-cells.csv"), StandardOpenOption.CREATE_NEW)) {
             points.write("row,col,easting,northing,z,height_above_ground\n");
@@ -206,6 +241,11 @@ public final class TreetopExperiment {
                 }
             }
         }
+        writeRaster(input, output, reader, grid, prefix, samples);
+    }
+
+    private static void writeRaster(Path input, Path output, Pipeline.BatchInput reader, Grid grid,
+                                    String prefix, double[] samples) throws IOException {
         try (var tiff = new GeoTiffOutput(input, output.resolve(prefix + ".tif"), false,
                 reader.header(), reader.channel())) {
             tiff.prepare(grid.originX(), grid.originY(), grid.resolution(), grid.width(), grid.height(),
@@ -223,7 +263,7 @@ public final class TreetopExperiment {
         Files.writeString(path, contents, StandardOpenOption.CREATE_NEW);
     }
 
-    private static void checkInterrupted() throws InterruptedIOException {
+    static void checkInterrupted() throws InterruptedIOException {
         if (Thread.currentThread().isInterrupted()) {
             throw new InterruptedIOException("Tree detection cancelled");
         }
@@ -233,20 +273,51 @@ public final class TreetopExperiment {
         return System.nanoTime() - start;
     }
 
-    enum Kind { CHM, DSM }
+    enum Kind {
+        CHM, DSM;
 
-    record Variant(Kind kind, int fixedRadius) {
+        String id() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+    }
+
+    record Variant(Kind kind, int fixedRadius, int prominenceHundredths, boolean gaussian) {
         static final List<Variant> ALL = List.of(new Variant(Kind.CHM, 2), new Variant(Kind.CHM, 3),
                 new Variant(Kind.CHM, 4), new Variant(Kind.CHM, 0), new Variant(Kind.DSM, 2),
                 new Variant(Kind.DSM, 3), new Variant(Kind.DSM, 4), new Variant(Kind.DSM, 0));
+        static final List<Variant> PROMINENCE = prominenceVariants();
+
+        Variant(Kind kind, int fixedRadius) {
+            this(kind, fixedRadius, 0, false);
+        }
+
+        private static List<Variant> prominenceVariants() {
+            var variants = new ArrayList<Variant>();
+            for (Kind kind : Kind.values()) {
+                for (boolean smooth : new boolean[]{false, true}) {
+                    variants.add(new Variant(kind, 3, 0, smooth));
+                    for (int threshold : new int[]{25, 50, 75, 100, 150}) {
+                        variants.add(new Variant(kind, 0, threshold, smooth));
+                    }
+                }
+            }
+            return List.copyOf(variants);
+        }
 
         static Variant parse(String id) {
-            return ALL.stream().filter(variant -> variant.id().equals(id)).findFirst()
+            return Stream.concat(ALL.stream(), PROMINENCE.stream()).filter(variant -> variant.id().equals(id)).findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("Unknown tree detection method: " + id));
         }
 
         String id() {
-            return kind.name().toLowerCase(Locale.ROOT) + (fixedRadius == 0 ? "-adaptive" : "-r" + fixedRadius);
+            if (prominenceHundredths != 0) {
+                return surfaceId() + String.format(Locale.ROOT, "-prom-%03d", prominenceHundredths);
+            }
+            return surfaceId() + (fixedRadius == 0 ? "-adaptive" : "-r" + fixedRadius);
+        }
+
+        String surfaceId() {
+            return kind.id() + (gaussian ? "-gauss" : "");
         }
 
         double radius(double height) {
@@ -258,8 +329,17 @@ public final class TreetopExperiment {
 
     record Grid(double originX, double originY, double resolution, int width, int height, int halo) {
         static Grid fromCore(double x, double y, int width, int height, double resolution) {
+            return fromCore(x, y, width, height, resolution, Variant.ALL);
+        }
+
+        static Grid fromCore(double x, double y, int width, int height, double resolution, List<Variant> variants) {
             GeoTiffOutput.validateGrid(x, y, resolution, width, height);
-            double border = Math.ceil(MAX_RADIUS / resolution);
+            double border = 0;
+            for (Variant variant : variants) {
+                double searchRadius = variant.prominenceHundredths == 0 ? MAX_RADIUS : TreetopProminence.SEARCH_RADIUS;
+                double smoothing = variant.gaussian ? Math.ceil(TreetopProminence.GAUSSIAN_RADIUS / resolution) : 0;
+                border = Math.max(border, Math.ceil(searchRadius / resolution) + smoothing);
+            }
             if (border >= GeoTiffOutput.MAX_CELLS) {
                 throw new IllegalArgumentException("Tree detection resolution requires too many halo cells");
             }

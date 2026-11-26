@@ -1,0 +1,30 @@
+{
+  "blind-steep": {
+    "picks_a": 151,
+    "picks_b": 150,
+    "near_pairs": 87,
+    "disputed_picks": 127,
+    "pairs_without_shared_return": 0,
+    "points_in_exclusions": 7,
+    "duplicate_records": 0,
+    "reference": 80,
+    "annotation_sha256": {
+      "A": "9a149d1a3b52e4f2549a43157a23867cb0c8769334fe0f9bb9cb9dfbd82b80b7",
+      "B": "daef8da425dcd2ab04bc5308c2bffe745bf49d6dc58cdbc6de355fce45c11762"
+    }
+  },
+  "blind-mild": {
+    "picks_a": 112,
+    "picks_b": 87,
+    "near_pairs": 75,
+    "disputed_picks": 49,
+    "pairs_without_shared_return": 0,
+    "points_in_exclusions": 9,
+    "duplicate_records": 0,
+    "reference": 66,
+    "annotation_sha256": {
+      "A": "4deefb043a525893a8c6dbc82b5a40ab38e70b71ee4bd0ef0656b0de3c7a1fa3",
+      "B": "6f055625618175216cf9079fda56b8ca1283c99a09d0197f8a5d735ae366b25b"
+    }
+  }
+}

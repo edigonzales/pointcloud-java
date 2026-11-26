@@ -1656,3 +1656,42 @@ Rasterpipeline und die lokalen Maxima in einem gemeinsamen
 Detektor mit primitiven Arrays. Die Realdaten- und
 Auswertungsbefehle sind im Experimentbericht dokumentiert.
 [Versuch und Prüfergebnisse](experiments.md#einzelbaumdetektion-im-solothurner-wald)
+
+## Begrenzte Prominenz für Baumspitzen
+
+26. November 2026. Basis `0fb06d5`. Das Experimentprojekt prüft
+die Prominenz lokaler Kronenmaxima über den erreichbaren Sattel
+im 6-m-Kreis. Die maskierte Gaussian-Glättung behält NoData und
+liefert die Koordinaten und Höhen der ursprünglichen Messpunkte.
+Die 24 Varianten teilen sich je Fläche einen LAZ-Durchlauf.
+
+- `./gradlew --offline -Pexperiments clean check installDist`
+  bestand in 15 s auf Apple M1, macOS 15.8.1 und Temurin 25.0.3+9.
+  Alle 196 Produkttests und 13 Experimenttests bestanden ohne
+  übersprungene Tests. Die XML-Suitezeiten betrugen 4,984 s
+  beziehungsweise 0,413 s. Die neuen direkten Tests prüfen unter
+  anderem einen unabhängigen Sattelvergleich, NoData, Gleichstände,
+  die 6-m-Grenze und getrennte Rasterkerne.
+- `python3 tools/check-real-data.py <pdal>` bestand mit PDAL 2.10.2.
+  Die 496'586 Originalrecords stimmten überein. SIGTERM ergab
+  Exit 143 nach 0,96 s ohne temporäre oder veröffentlichte Ausgabe.
+- Der unabhängige NumPy-Vergleich bestätigte zehn feste 3-m-Läufe
+  auf den Rohoberflächen. Die amtlichen VHM-Maxima und NoData-Masken
+  stimmten in allen fünf Ausschnitten exakt. Alle externen R-Läufe
+  einschliesslich Li2012 blieben innerhalb des vorgesehenen Limits.
+- Die Realdatenprüfung mit einem und vier LAZ-Workern lieferte für
+  `chm-gauss-prom-150` 96 bytegleiche CSV-Zeilen im bekannten steilen
+  Ausschnitt. Beide Teilkerne lieferten gemeinsam dieselben
+  Originalkoordinaten und HAG-Werte in derselben Reihenfolge.
+- Die 32 Laufzeitmessungen auf dem M1 sind wegen der gleichzeitigen
+  Systemlast zurückgestellt. Das Skript mit der festgelegten
+  Reihenfolge und dem unveränderten Qualitätskandidaten ist vorhanden.
+
+Zwei getrennte visuelle Bewertungen ergaben 146 Referenzspitzen
+für zwei neue Blindflächen. Der eingefrorene Kandidat erzielte
+64,7 % Precision, 66,4 % Recall und 0,558 F1 auf der steilen
+Fläche. Er bleibt im Experimentprojekt. Die Einfachheitsprüfung
+belässt Oberflächen, CSV und LAZ-Durchlauf im bestehenden
+Experiment. Die Prominenzsuche verwendet je Raster einen
+wiederverwendeten Suchpuffer.
+[Versuch und Prüfergebnisse](experiments.md#lokale-prominenz-für-baumspitzen)
