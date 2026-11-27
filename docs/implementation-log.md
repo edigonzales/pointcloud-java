@@ -1779,3 +1779,54 @@ Die Einfachheitsprüfung belässt Rasterisierung, Nächste-Nachbar-Suche
 und GeoTIFF-Metadaten im vorhandenen Code. Die Sicherung des Maskenziels
 liegt im gemeinsamen Ausgabeschritt und wird bei Einzelrasterausgaben
 übersprungen.
+
+## Experiment für punktbasierte Bestockungspolygone
+
+27. November 2026. Basis `abae1f8`. Das Experiment kombiniert
+Punktaufbereitung aus swissSURFACE3D 2023 mit einer JTS-Umrissbildung.
+Die Abnahme verwendet die lokal gelieferte Flotron-Bestockung als
+Produktionsreferenz. Die HAG- und LAS-Stages stammen aus dem vorhandenen
+Produkt. Die neue Geometrieberechnung, ihre Punktselektion und der
+GeoPackage-Vergleich liegen im Experimentmodul.
+
+- `./gradlew --offline -Pexperiments clean check :experiments:test installDist`
+  bestand in 6 s auf Apple M1, macOS 15.8.1, Temurin 25.0.3+9
+  und Gradle 9.9.1. Die XML-Berichte unter `build/test-results/test`
+  und `experiments/build/test-results/test` enthalten 234 Produkt- und
+  16 Experimenttests ohne Fehler, Fehlschläge oder übersprungene Tests.
+  Die Suitezeiten summierten sich auf 2,281 s und 0,844 s.
+- Die drei amtlichen LAS-ZIPs wurden anhand SHA-256 geprüft.
+  `experiments/prepare-vegetation-outlines.py` erzeugte 45 ausgerichtete
+  DTM-Kerne mit Stützmaske und eine LAS je Prüffenster. Alle 2'298'542
+  ausgewählten Records bildeten bytegleiche Teilfolgen der Zuschnitte.
+  51 Originalproben bestätigten Attribute, Koordinaten und HAG-Schwelle.
+  Mit einem oder drei Terrainaufträgen waren LAS, DTM und Stützmaske
+  des Nahtfensters bytegleich.
+- `experiments/check-vegetation-outlines.py --benchmark-runs 5`
+  bestätigte sechs gültige Riedholzer Polygone mit 95,63 % Flächen-IoU.
+  Der zusätzliche Nachbarschaftsfilter erzielte 95,35 %. Die vorab
+  festgeschriebene Variante erreichte im unabhängigen 600-m-Fenster
+  97,20 % IoU und 2,13 m P95-Grenzabstand. Am Nahtstreifen betrugen
+  symmetrische Differenz und P95 1,19 m² beziehungsweise 8,3 cm.
+  Alle fünf frischen Läufe reproduzierten die gewählte Riedholzer
+  Geometrie bytegleich. Der Median inklusive Vorbereitung und
+  GeoPackage-Ausgabe betrug 58,00 s. GDAL 3.13.3 schrieb je
+  Vergleichsdatei vier Polygonlayer in LV95. Die GeoPackages für
+  Riedholz, den geteilten Nahtlauf und das unabhängige Fenster
+  messen 311'296, 200'704 und 438'272 Bytes.
+- `tools/check-real-data.py <pdal>` bestand mit PDAL 2.10.2/LazPerf.
+  Alle 496'586 ausgegebenen LAS-Records stimmten überein. SIGTERM
+  ergab Exit 143 und bereinigte Ausgaben und Teildateien. Der erste
+  Aufruf kollidierte mit einem gleichzeitigen Gradle-`clean` im
+  gemeinsamen Ausgabeverzeichnis und bestand nach dem Build.
+
+Der erste 4'096-Punkte-Puffer überschritt das 512-MiB-Java-Heaplimit.
+Kleine räumliche Gruppen und die kaskadierte Vereinigung beschränken
+die Zwischengrössen. Eine JTS-Triangulationsausnahme bei verschachtelten
+Polygonringen führte zur Hüllenberechnung über Aussenringe mit
+anschliessender Wiederherstellung der ursprünglichen Lichtungen.
+Der Realdatenlauf bestand mit dieser Korrektur. Die Einfachheitsprüfung
+belässt LAS- und Höhenverarbeitung in den vorhandenen Stages. GEOS
+wertet die als WKT vorbereiteten Polygone aus und GDAL schreibt
+die vier GeoPackage-Layer.
+[Vergleich und Laufzeiten](experiments.md#punktbasierte-bestockungspolygone-für-riedholz)

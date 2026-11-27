@@ -128,6 +128,19 @@ Die 327'044 Bytes ergeben SHA-256
 Die LAZ enthält 7'327'607 Punkte und hat SHA-256
 `fc2c5adde539277e33ecca04e0b310099c33acc41c3aed85ab1b8a7921569f4b`.
 
+Für die Bestockungspolygone verwenden wir drei LV95/LN02-Kacheln
+der swissSURFACE3D-Befliegung 2023. Die Archive enthalten unkomprimierte
+LAS 1.2 im Punktformat 1. Das Vorbereitungsskript prüft die archivierten
+SHA-256-Werte und die 1-cm-Skalen. Der gelieferte Polygonvergleich
+`futterbaulinien_geometrie.gpkg` bleibt lokal.
+[Vorbereitung und Prüfsummen](../experiments/prepare-vegetation-outlines.py)
+
+| Kachel | ZIP-Bytes | Punkte |
+| --- | ---: | ---: |
+| [2610-1232](https://data.geo.admin.ch/ch.swisstopo.swisssurface3d/swisssurface3d_2023_2610-1232/swisssurface3d_2023_2610-1232_2056_5728.las.zip) | 153'492'296 | 15'058'216 |
+| [2609-1232](https://data.geo.admin.ch/ch.swisstopo.swisssurface3d/swisssurface3d_2023_2609-1232/swisssurface3d_2023_2609-1232_2056_5728.las.zip) | 199'231'346 | 18'453'702 |
+| [2611-1233](https://data.geo.admin.ch/ch.swisstopo.swisssurface3d/swisssurface3d_2023_2611-1233/swisssurface3d_2023_2611-1233_2056_5728.las.zip) | 141'050'788 | 13'871'301 |
+
 ## Kleine Fixtures
 
 `src/test/resources/las` enthält eigene synthetische LAS-Bestände mit

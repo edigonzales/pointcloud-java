@@ -2062,3 +2062,116 @@ python3 tools/check-raster-percentile-memory.py "$pdal"
 python3 tools/check-raster-percentiles.py "$pdal" \
   --benchmark-csv .cache/raster-percentiles/benchmark.csv
 ```
+## Punktbasierte Bestockungspolygone für Riedholz
+
+Der Prototyp rekonstruiert die beschriebenen Arbeitsschritte der
+Flotron-Bestockungsabgrenzung vom 6. Juni 2025. Er verwendet die
+swissSURFACE3D-Befliegung von 2023. Die Vergleichsdatei enthält die
+gelieferten Bestockungspolygone im Raum Riedholz.
+
+### Punktaufbereitung und Geometrie
+
+Die amtlichen Archive enthalten LAS 1.2 im Format 1 mit
+Zentimeterskalierung und ohne CRS-VLR. Die Vorbereitung prüft
+Dateigrössen und SHA-256, ergänzt LV95/LN02 und verschiebt die
+Rohkoordinaten auf eine gemeinsame Skalen- und Offsetbasis.
+Das Java-DTM aus Klasse 2 verwendet ein 0,5-m-Gitter mit
+200-m-Kernen und 25 m Bodenstützrand. Die Stützmaske weist
+den Anteil der durch die nächste Bodenmessung ergänzten
+Rasterzellen aus. Der nachfolgende Durchlauf übernimmt
+Vegetationspunkte der Klasse 3 ohne Withheld-Flag ab 2,0 m Höhe
+über Grund. [swissSURFACE3D-Klassifikation](https://www.swisstopo.admin.ch/de/hoehenmodell-swisssurface3d)
+[Eingabekacheln und Prüfsummen](provenance.md#realdaten)
+
+Die zweite Punktvariante behält nur Positionen mit zwei weiteren
+unterschiedlichen XY-Positionen innerhalb von 1 m. Beide Varianten
+wählen je global ausgerichteter 25-cm-Zelle den Originalpunkt
+mit dem geringsten Abstand zur Zellmitte. Kleinere X- und Y-Werte
+entscheiden bei Gleichstand.
+
+Der JTS-Kern bildet die Vereinigung von 1,4-m-Kreisen auf Kernen
+mit 10 m echtem Halo. Die konkave Hülle verarbeitet die auf
+25 cm segmentierte Kante mit einer maximalen Kantenlänge knapp
+unter 1,5 m. Diese Kantenlänge nähert die Öffnungsbreite an.
+Auf den Rückpuffer um 1,4 m folgen Lichtungsprüfung mit
+5 m Innenpuffer, topologieerhaltende Vereinfachung um 10 cm und
+die 20-m²-Flächenschwelle. Nach Vereinigung der Kacheln folgen
+die Puffer −2,5 m und +0,7 m, die 15-cm-Vereinfachung,
+der Zuschnitt und die 40-m²-Flächenschwelle.
+
+### Vergleich mit der Flotron-Lieferung
+
+| Ausschnitt | LV95 Ost / Nord in Metern | Klasse 3 ohne Withheld im Halo | Davon HAG ≥ 2 m | Stützraster |
+| --- | --- | ---: | ---: | ---: |
+| Riedholz | 2'610'200–2'610'600 / 1'232'400–1'232'800 | 763'771 | 721'832 | 16 |
+| Naht bei E 2'610'000 | 2'609'900–2'610'100 / 1'232'500–1'232'700 | 440'388 | 425'655 | 4 |
+| Unabhängiger Ausschnitt | 2'611'200–2'611'800 / 1'233'200–1'233'800 | 1'205'077 | 1'151'055 | 25 |
+
+Alle drei DTM-Mosaike waren vollständig TIN-interpoliert. Die 2'298'542
+ausgewählten LAS-Records bilden bytegleiche Teilfolgen der PDAL-Zuschnitte
+in Dateireihenfolge. Je 17 Stichproben bestätigten die
+Originalattribute, umgerechnete Rohkoordinaten auf dem gemeinsamen
+Zentimetergitter und die Schwelle aus den direkt mit GDAL gelesenen
+Rasterhöhen. Der unabhängige Ausschnitt enthält Punkte exakt auf 2,0 m.
+
+| Ausschnitt und Variante | Flächen-IoU | Zusätzlich (m²) | Fehlend (m²) | Grenzabstand Median / P95 (m) |
+| --- | ---: | ---: | ---: | ---: |
+| Riedholz, alle HAG-Punkte | 95,63 % | 629,43 | 1'679,57 | 0,29 / 6,07 |
+| Riedholz, mindestens zwei Nachbarn | 95,35 % | 552,05 | 1'904,67 | 0,28 / 6,82 |
+| Naht, zusammenhängend | 99,22 % | 193,62 | 4,13 | 0,27 / 0,79 |
+| Naht, geteilt | 99,22 % | 194,02 | 3,99 | 0,27 / 0,80 |
+| Unabhängiger Ausschnitt | 97,20 % | 1'794,86 | 724,39 | 0,26 / 2,13 |
+
+Die höhere IoU in Riedholz entschied für den Lauf mit allen Punkten
+ab 2 m HAG. Diese Auswahl stand vor der unabhängigen Prüfung fest.
+Die symmetrische Differenz zwischen den beiden Nahtvarianten beträgt
+4,10 m² im gesamten Nahtfenster und 1,19 m² im Streifen bis 10 m
+von der Naht. Im Streifen lag P95 bei 8,3 cm.
+
+### Laufzeit auf dem M1
+
+Fünf frische Riedholz-Läufe mit warmem LAS-Dateicache,
+Temurin 25.0.3+9 und `-Xmx512m`. Die Vorbereitung erzeugte
+alle 16 Terrainraster je Lauf neu und verarbeitete bis zu drei
+Terrainaufträge gleichzeitig. Der Geometrieprozess las die
+vorbereitete LAS und schrieb normalisiertes WKT. Alle fünf
+Läufe erzeugten bytegleiches WKT und gleiche Vergleichswerte.
+Die Ein-Minuten-Systemlast zu Laufbeginn lag bei 3,73–6,17.
+
+| Schritt | Wandzeit Median (s) | Min–Max (s) | CPU-Median (s) | Höchste Spitzen-RSS (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Punktaufbereitung und Prüfung | 43,92 | 43,58–50,23 | 146,16 | 445,55 |
+| Java-Geometrieprozess | 13,68 | 13,41–14,42 | 21,07 | 392,08 |
+| GeoPackage-Export | 0,27 | 0,20–0,28 | | |
+| Summe dieser Schritte je Lauf | 58,00 | 57,46–64,92 | | |
+
+Auf die JTS-Operationen entfielen im Median 12,78 s.
+Die gesamte Geometriephase verarbeitete effektiv 52'767
+vorbereitete HAG-Punkte pro Sekunde. Die Aufbereitungs-RSS
+ist der vom Messwerkzeug erfasste Spitzenwert eines Prozesses.
+Die unabhängige Auswertung der Flächen- und Grenzabweichungen
+liegt ausserhalb der Summe.
+
+### Reproduktion
+
+Neben Java 25 werden PDAL 2.10.2 und die GDAL-Kommandozeilenwerkzeuge
+verwendet. Shapely 2.1.2 mit NumPy dient dem unabhängigen
+GeoPackage-Vergleich. Die Referenzdatei `futterbaulinien_geometrie.gpkg`
+bleibt eine lokale Eingabe.
+
+```sh
+./gradlew --offline -Pexperiments clean check :experiments:test installDist
+python3 -m pip install 'shapely==2.1.2'
+export JAVA_OPTS=-Xmx512m
+python3 experiments/prepare-vegetation-outlines.py --pdal "$pdal"
+python3 experiments/check-vegetation-outlines.py \
+  --pdal "$pdal" --reference "$reference" \
+  --output .cache/vegetation-outlines/acceptance --benchmark-runs 5
+```
+
+Der Bericht enthält beidseitige Grenzabstände aus Stichproben im
+Abstand von höchstens 0,5 m. Schnittkanten am Prüfperimeter
+bleiben dabei unberücksichtigt. Jedes Vergleichs-GeoPackage enthält
+Bestockung, Referenz, zusätzlich und fehlend klassifizierte
+Flächen. Die Realdaten und Ausgaben liegen unter
+`.cache/vegetation-outlines`.
