@@ -206,22 +206,30 @@ public final class Main {
         if (target != null && Files.exists(target) && Files.isSameFile(target, config)) {
             throw new IOException("Point cloud output aliases the pipeline configuration: " + target);
         }
+        checkSupportConfigAlias(pipeline, config);
         if (metadata == null) {
-            out.println(Pipeline.JSON.toJson(pipeline.run(batchSize, overwrite, inputs, Pipeline::publishOutput)));
+            out.println(Pipeline.JSON.toJson(pipeline.run(batchSize, overwrite, inputs, (result, finish) -> {
+                checkSupportConfigAlias(pipeline, config);
+                Pipeline.publishOutput(result, finish);
+            })));
         } else {
             runWithMetadata(pipeline, config, metadata, batchSize, overwrite, inputs);
+        }
+    }
+
+    private static void checkSupportConfigAlias(Pipeline pipeline, Path config) throws IOException {
+        Path support = pipeline.supportOutput();
+        if (support != null && Pipeline.destinationsOverlap(support, config)) {
+            throw new IOException("support_filename aliases the pipeline configuration: " + support);
         }
     }
 
     private static void runWithMetadata(Pipeline pipeline, Path config, Path metadata, int batchSize,
                                         boolean overwrite, Pipeline.InputFactory inputs) throws IOException {
         checkMetadata(metadata, pipeline, config, overwrite);
-        if (pipeline.output() != null) {
-            Path target = destinationLocation(pipeline.output());
-            Path json = destinationLocation(metadata);
-            if (target.startsWith(json) || json.startsWith(target)) {
-                throw new IOException("Output and metadata destinations must be separate files: " + target + " and " + json);
-            }
+        if (pipeline.output() != null && Pipeline.destinationsOverlap(pipeline.output(), metadata)) {
+            throw new IOException("Output and metadata destinations must be separate files: "
+                    + pipeline.output() + " and " + metadata);
         }
         Files.createDirectories(metadata.getParent());
         Path temporary = Files.createTempFile(metadata.getParent(), ".pointcloud-meta-", ".part");
@@ -253,6 +261,7 @@ public final class Main {
             if (finish != null) {
                 // Publishing metadata can make an alias of a previously absent output target visible.
                 checkMetadataAliases(metadata, pipeline, config);
+                checkSupportConfigAlias(pipeline, config);
                 finish.finish();
             }
         } catch (IOException | RuntimeException failure) {
@@ -302,16 +311,10 @@ public final class Main {
                 throw new IOException("Metadata destination aliases a pipeline file: " + metadata);
             }
         }
-    }
-
-    private static Path destinationLocation(Path path) throws IOException {
-        Path absolute = path.toAbsolutePath();
-        Path parent = absolute.getParent();
-        while (parent != null && !Files.exists(parent)) {
-            parent = parent.getParent();
+        if (pipeline.supportOutput() != null && Pipeline.destinationsOverlap(metadata, pipeline.supportOutput())) {
+            throw new IOException("Metadata and support_filename must be separate files: "
+                    + metadata + " and " + pipeline.supportOutput());
         }
-        return parent == null ? absolute.normalize()
-                : parent.toRealPath().resolve(parent.relativize(absolute)).normalize();
     }
 
     private static int lazWorkers(String value) {

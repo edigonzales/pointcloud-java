@@ -24,6 +24,8 @@ import static pointcloud.GeoTiffOutput.checkInterrupted;
 /** Builds an XY Delaunay mesh over selected LAS points and samples it at pixel centres. */
 final class TerrainWriter {
     private static final int MAX_POINTS = 1_000_000;
+    private static final byte TIN_SUPPORT = 1;
+    private static final byte NEAREST_SUPPORT = 2;
 
     record Grid(double originX, double originY, double resolution, int width, int height,
                 double maxEdge, double nodata, boolean deflate, boolean fillNearest) {
@@ -128,7 +130,7 @@ final class TerrainWriter {
         return value ^ (value >>> 31);
     }
 
-    Pipeline.TerrainStatistics prepare(boolean sourceFinished) throws IOException {
+    Pipeline.TerrainStatistics prepare(boolean sourceFinished, GeoTiffOutput support) throws IOException {
         if (!sourceFinished) {
             throw new IOException("GeoTIFF output requires a complete source scan");
         }
@@ -140,20 +142,28 @@ final class TerrainWriter {
         var samples = new double[grid.width * grid.height];
         Arrays.fill(samples, nodata);
         rasterize(samples);
+        byte[] supportSamples = support == null ? null : new byte[samples.length];
         Integer filledNearest = null;
         int covered = 0;
         if (grid.fillNearest) {
-            filledNearest = fillNearest(samples);
+            filledNearest = fillNearest(samples, supportSamples);
             covered = samples.length;
         } else {
-            for (double value : samples) {
-                if (value != nodata) {
+            for (int cell = 0; cell < samples.length; cell++) {
+                if (samples[cell] != nodata) {
                     covered++;
+                    if (supportSamples != null) {
+                        supportSamples[cell] = TIN_SUPPORT;
+                    }
                 }
             }
         }
         output.prepare(grid.originX, grid.originY, grid.resolution, grid.width, grid.height,
                 new double[][]{samples}, List.of("elevation"), nodata, grid.deflate);
+        if (support != null) {
+            support.prepareSupport(grid.originX, grid.originY, grid.resolution, grid.width, grid.height,
+                    supportSamples, grid.deflate);
+        }
         return new Pipeline.TerrainStatistics(vertices.size(), covered, samples.length - covered, filledNearest);
     }
 
@@ -220,7 +230,7 @@ final class TerrainWriter {
         return vertices.get(index);
     }
 
-    private int fillNearest(double[] samples) throws IOException {
+    private int fillNearest(double[] samples, byte[] supportSamples) throws IOException {
         NearestGround nearest = null;
         double centerX = localX(grid.originX) + grid.resolution / 2;
         double centerY = localY(grid.originY) + grid.resolution / 2;
@@ -229,7 +239,8 @@ final class TerrainWriter {
             if ((cell & 4095) == 0) {
                 checkInterrupted();
             }
-            if (Double.isNaN(samples[cell])) {
+            boolean missing = Double.isNaN(samples[cell]);
+            if (missing) {
                 double x = Math.fma(cell % grid.width, grid.resolution, centerX);
                 double y = Math.fma(grid.height - 1 - cell / grid.width, grid.resolution, centerY);
                 if (!Double.isFinite(x) || !Double.isFinite(y)) {
@@ -243,6 +254,9 @@ final class TerrainWriter {
             }
             if (!Double.isFinite(samples[cell])) {
                 throw new IOException("Nonfinite DTM height at raster cell " + cell);
+            }
+            if (supportSamples != null) {
+                supportSamples[cell] = missing ? NEAREST_SUPPORT : TIN_SUPPORT;
             }
         }
         return filled;

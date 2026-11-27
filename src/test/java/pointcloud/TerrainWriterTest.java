@@ -1,5 +1,6 @@
 package pointcloud;
 
+import org.geotools.api.metadata.spatial.PixelOrientation;
 import org.geotools.gce.geotiff.GeoTiffReader;
 import org.geotools.referencing.CRS;
 import org.junit.jupiter.api.Test;
@@ -170,10 +171,12 @@ class TerrainWriterTest {
     void retainsSupportEvenWhenEveryTriangleIsOutsideTheRaster() throws Exception {
         var source = fixture(new int[][]{{20, 20, 10}, {28, 20, 20}, {20, 28, 30}, {20, 20, 90}, {28, 20, 99}});
         var target = temp.resolve("outside.tif");
-        var result = pipeline(source, target, "").run(2, false);
+        var support = temp.resolve("outside-support.tif");
+        var result = pipeline(source, target, supportOption(support)).run(2, false);
         assertEquals(new Pipeline.TerrainStatistics(3, 0, 9), result.dtm());
         assertArrayEquals(new double[]{-9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999},
                 samples(target));
+        assertArrayEquals(new int[9], supportSamples(support));
     }
 
     @Test
@@ -194,6 +197,7 @@ class TerrainWriterTest {
     void dispatchesAtTheSpanBoundaryOfSelectedLasPoints(int span) throws Exception {
         var input = fixture(new int[][]{{0, 0, 0}, {0, 8, 8}, {span, 0, span}, {0, 0, 99}, {0, 8, 99}});
         var target = temp.resolve("span.tif");
+        var support = temp.resolve("span-support.tif");
         try (var source = Pipeline.openSequential(input, 2);
              var output = new GeoTiffOutput(input, target, false, source.header(), source.channel())) {
             var grid = new TerrainWriter.Grid(2606740, 1229150, 1, 3, 3, Double.POSITIVE_INFINITY,
@@ -213,13 +217,14 @@ class TerrainWriterTest {
             }
         }
 
-        var result = pipeline(input, target, "").run(2, false);
+        var result = pipeline(input, target, supportOption(support)).run(2, false);
         assertEquals(new Pipeline.TerrainStatistics(3, 6, 3), result.dtm());
         assertArrayEquals(new double[]{
                 -9999, -9999, -9999,
                 z(8), z(12), z(16),
                 z(4), z(8), z(12)
         }, samples(target), 1e-12);
+        assertArrayEquals(new int[]{0, 0, 0, 1, 1, 1, 1, 1, 1}, supportSamples(support));
     }
 
     @Test
@@ -242,17 +247,31 @@ class TerrainWriterTest {
                 complete);
     }
 
-    @Test
-    void fillsOnlyCellsExcludedByTheTriangleEdgeLimit() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"none", "deflate"})
+    void fillsOnlyCellsExcludedByTheTriangleEdgeLimit(String compression) throws Exception {
         // Three metres tall. The two left faces have shorter diagonals than the two right faces.
         var source = fixture(new int[][]{{0, 0, 0}, {0, 12, 12}, {4, 0, 4}, {4, 12, 16},
                 {12, 0, 12}, {12, 12, 24}});
         var pure = temp.resolve("capped.tif");
         var complete = temp.resolve("capped-complete.tif");
-        String cap = ",\"max_triangle_edge_length\":3.3";
-        assertEquals(new Pipeline.TerrainStatistics(6, 3, 6), pipeline(source, pure, cap).run(2, false).dtm());
-        assertEquals(new Pipeline.TerrainStatistics(6, 9, 0, 6),
-                pipeline(source, complete, cap + FILL_NEAREST).run(2, false).dtm());
+        var pureWithMask = temp.resolve("capped-with-mask.tif");
+        var completeWithMask = temp.resolve("capped-complete-with-mask.tif");
+        var pureMask = temp.resolve("capped-support.tif");
+        var completeMask = temp.resolve("capped-complete-support.tif");
+        String cap = ",\"max_triangle_edge_length\":3.3,\"compression\":\"" + compression + "\"";
+        var pureResult = pipeline(source, pure, cap).run(2, false);
+        var completeResult = pipeline(source, complete, cap + FILL_NEAREST).run(2, false);
+        assertEquals(new Pipeline.TerrainStatistics(6, 3, 6), pureResult.dtm());
+        assertEquals(new Pipeline.TerrainStatistics(6, 9, 0, 6), completeResult.dtm());
+        assertEquals(pureResult, pipeline(source, pureWithMask, cap + supportOption(pureMask)).run(2, false));
+        assertEquals(completeResult, pipeline(source, completeWithMask, cap + FILL_NEAREST
+                + supportOption(completeMask)).run(2, false));
+        assertEquals(-1, Files.mismatch(pure, pureWithMask));
+        assertEquals(-1, Files.mismatch(complete, completeWithMask));
+        assertArrayEquals(new int[]{1, 0, 0, 1, 0, 0, 1, 0, 0}, supportSamples(pureMask));
+        assertArrayEquals(new int[]{1, 2, 2, 1, 2, 2, 1, 2, 2}, supportSamples(completeMask));
+
         double[] original = samples(pure);
         double[] filled = samples(complete);
         for (int row = 0; row < 3; row++) {
@@ -265,11 +284,13 @@ class TerrainWriterTest {
     void fillsAnEntireGridOutsideTheSupportHull() throws Exception {
         var source = fixture(new int[][]{{20, 20, 10}, {28, 20, 20}, {20, 28, 30}});
         var target = temp.resolve("complete-outside.tif");
+        var support = temp.resolve("complete-outside-support.tif");
         assertEquals(new Pipeline.TerrainStatistics(3, 9, 0, 9),
-                pipeline(source, target, FILL_NEAREST).run(2, false).dtm());
+                pipeline(source, target, FILL_NEAREST + supportOption(support)).run(2, false).dtm());
         var expected = new double[9];
         Arrays.fill(expected, z(10));
         assertArrayEquals(expected, samples(target));
+        assertArrayEquals(new int[]{2, 2, 2, 2, 2, 2, 2, 2, 2}, supportSamples(support));
     }
 
     @Test
@@ -277,10 +298,12 @@ class TerrainWriterTest {
         var source = fixture(new int[][]{{0, 0, 0}, {0, 12, 12}, {12, 0, 12}, {12, 12, 24}});
         var pure = temp.resolve("full-tin.tif");
         var complete = temp.resolve("full-tin-complete.tif");
+        var support = temp.resolve("full-tin-support.tif");
         assertEquals(new Pipeline.TerrainStatistics(4, 9, 0), pipeline(source, pure, "").run(2, false).dtm());
         assertEquals(new Pipeline.TerrainStatistics(4, 9, 0, 0),
-                pipeline(source, complete, FILL_NEAREST).run(2, false).dtm());
+                pipeline(source, complete, FILL_NEAREST + supportOption(support)).run(2, false).dtm());
         assertArrayEquals(samples(pure), samples(complete));
+        assertArrayEquals(new int[]{1, 1, 1, 1, 1, 1, 1, 1, 1}, supportSamples(support));
     }
 
     @Test
@@ -288,11 +311,13 @@ class TerrainWriterTest {
         // The first column is equidistant from both supports, with the higher X stored first.
         var source = fixture(new int[][]{{4, 2, 0}, {0, 2, 90}});
         var target = temp.resolve("nearest-tie.tif");
+        var support = temp.resolve("nearest-tie-support.tif");
         assertEquals(new Pipeline.TerrainStatistics(2, 9, 0, 9),
-                pipeline(source, target, FILL_NEAREST + ",\"nodata\":700").run(1, false).dtm());
+                pipeline(source, target, FILL_NEAREST + ",\"nodata\":700" + supportOption(support)).run(1, false).dtm());
         var expected = new double[9];
         Arrays.fill(expected, 700);
         assertArrayEquals(expected, samples(target));
+        assertArrayEquals(new int[]{2, 2, 2, 2, 2, 2, 2, 2, 2}, supportSamples(support));
         var reader = new GeoTiffReader(target.toFile());
         try {
             assertFalse(reader.getMetadata().hasNoData());
@@ -419,6 +444,40 @@ class TerrainWriterTest {
             assertEquals(DataBuffer.TYPE_DOUBLE, raster.getDataBuffer().getDataType());
             assertEquals(1, raster.getNumBands());
             return raster.getSamples(0, 0, 3, 3, 0, (double[]) null);
+        } finally {
+            reader.dispose();
+        }
+    }
+
+    private static String supportOption(Path target) {
+        return ",\"support_filename\":\"" + target + "\"";
+    }
+
+    private static int[] supportSamples(Path target) throws Exception {
+        var reader = new GeoTiffReader(target.toFile());
+        try {
+            var metadata = reader.getMetadata();
+            assertFalse(metadata.hasNoData());
+            assertEquals("1", metadata.getGeoKey(1025)); // PixelIsArea
+            var descriptions = metadata.getAsciiTIFFTag("42112");
+            assertNotNull(descriptions);
+            assertTrue(descriptions.contains("sample=\"0\" role=\"description\">support</Item>"), descriptions);
+            var coverage = reader.read();
+            try {
+                assertEquals(2056, CRS.lookupEpsgCode(coverage.getCoordinateReferenceSystem2D(), true));
+                var gridToCrs = coverage.getGridGeometry().getGridToCRS2D(PixelOrientation.UPPER_LEFT);
+                double[] corners = new double[4];
+                gridToCrs.transform(new double[]{0, 0, 3, 3}, 0, corners, 0, 2);
+                assertArrayEquals(new double[]{2606740, 1229153, 2606743, 1229150}, corners);
+                var raster = coverage.getRenderedImage().getData();
+                assertEquals(3, raster.getWidth());
+                assertEquals(3, raster.getHeight());
+                assertEquals(1, raster.getNumBands());
+                assertEquals(DataBuffer.TYPE_BYTE, raster.getTransferType());
+                return raster.getSamples(0, 0, 3, 3, 0, (int[]) null);
+            } finally {
+                coverage.dispose(true);
+            }
         } finally {
             reader.dispose();
         }

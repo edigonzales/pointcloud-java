@@ -26,6 +26,7 @@ import java.awt.image.BandedSampleModel;
 import java.awt.image.BufferedImage;
 import java.awt.image.ComponentColorModel;
 import java.awt.image.DataBuffer;
+import java.awt.image.DataBufferByte;
 import java.awt.image.DataBufferDouble;
 import java.awt.image.Raster;
 import java.io.IOException;
@@ -70,6 +71,14 @@ final class GeoTiffOutput implements AutoCloseable {
         crs = resolveCrs(header, source, false);
     }
 
+    GeoTiffOutput(GeoTiffOutput elevation, Path target) throws IOException {
+        this.input = elevation.input;
+        this.target = target.toAbsolutePath();
+        this.overwrite = elevation.overwrite;
+        this.crs = elevation.crs;
+        checkTarget();
+    }
+
     boolean isProjected() {
         return crs == null || crs instanceof ProjectedCRS;
     }
@@ -87,23 +96,59 @@ final class GeoTiffOutput implements AutoCloseable {
 
     void prepare(double originX, double originY, double resolution, int width, int height,
                  double[][] bands, List<String> names, double nodata, boolean deflate) throws IOException {
+        var sampleModel = new BandedSampleModel(DataBuffer.TYPE_DOUBLE, width, height, bands.length);
+        var data = new DataBufferDouble(bands, width * height);
+        var raster = Raster.createWritableRaster(sampleModel, data, null);
+        var colors = new ComponentColorModel(new NotAColorSpace(bands.length), false, false,
+                Transparency.OPAQUE, DataBuffer.TYPE_DOUBLE);
+        prepareImage(originX, originY, resolution, new BufferedImage(colors, raster, false, null),
+                names, nodata, deflate);
+    }
+
+    void prepareSupport(double originX, double originY, double resolution, int width, int height,
+                        byte[] samples, boolean deflate) throws IOException {
+        var data = new DataBufferByte(samples, samples.length);
+        var raster = Raster.createInterleavedRaster(data, width, height, width, 1, new int[]{0}, null);
+        var gray = ImageTypeSpecifier.createFromBufferedImageType(BufferedImage.TYPE_BYTE_GRAY).getColorModel();
+        prepareImage(originX, originY, resolution, new BufferedImage(gray, raster, false, null),
+                List.of("support"), Double.NaN, deflate);
+    }
+
+    private void prepareImage(double originX, double originY, double resolution, BufferedImage image,
+                              List<String> names, double nodata, boolean deflate) throws IOException {
         checkInterrupted();
         Files.createDirectories(target.getParent());
         temporary = Files.createTempFile(target.getParent(), ".pointcloud-", ".tif.part");
-        write(temporary, crs, originX, originY, resolution, width, height, bands, names, nodata, deflate);
+        write(temporary, crs, originX, originY, resolution, image, names, nodata, deflate);
         checkInterrupted();
     }
 
     void finish() throws IOException {
+        publishPrepared();
+        discardTemporary();
+    }
+
+    Path target() {
+        return target;
+    }
+
+    Path temporary() {
+        return temporary;
+    }
+
+    boolean overwrite() {
+        return overwrite;
+    }
+
+    void publishPrepared() throws IOException {
         checkInterrupted();
         checkTarget();
         if (overwrite) {
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            temporary = null;
         } else {
             Files.createLink(target, temporary);
-            Files.delete(temporary);
         }
-        temporary = null;
     }
 
     private void checkTarget() throws IOException {
@@ -125,8 +170,13 @@ final class GeoTiffOutput implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
+        discardTemporary();
+    }
+
+    private void discardTemporary() throws IOException {
         if (temporary != null) {
             Files.deleteIfExists(temporary);
+            temporary = null;
         }
     }
 
@@ -304,17 +354,11 @@ final class GeoTiffOutput implements AutoCloseable {
         return code;
     }
 
-    /** Encode a north-up raster without copying the sample arrays. */
+    /** Encode a north-up raster backed by the caller's sample arrays. */
     private static void write(Path target, CoordinateReferenceSystem crs, double originX, double originY,
-                              double resolution, int width, int height, double[][] bands,
+                              double resolution, BufferedImage image,
                               List<String> bandNames, double nodata, boolean deflate) throws IOException {
-        var sampleModel = new BandedSampleModel(DataBuffer.TYPE_DOUBLE, width, height, bands.length);
-        var data = new DataBufferDouble(bands, width * height);
-        var raster = Raster.createWritableRaster(sampleModel, data, null);
-        var colors = new ComponentColorModel(new NotAColorSpace(bands.length), false, false,
-                Transparency.OPAQUE, DataBuffer.TYPE_DOUBLE);
-        var image = new BufferedImage(colors, raster, false, null);
-
+        int extraSamples = image.getSampleModel().getNumBands() - 1;
         GeoTiffIIOMetadataEncoder encoder;
         if (crs == null) {
             encoder = new GeoTiffIIOMetadataEncoder();
@@ -325,7 +369,7 @@ final class GeoTiffOutput implements AutoCloseable {
         }
         encoder.addGeoShortParam(GeoTiffConstants.GTRasterTypeGeoKey, GeoTiffConstants.RasterPixelIsArea);
         encoder.setModelPixelScale(resolution, resolution);
-        encoder.setModelTiePoint(0, 0, originX, originY + height * resolution);
+        encoder.setModelTiePoint(0, 0, originX, originY + image.getHeight() * resolution);
         if (!Double.isNaN(nodata)) {
             encoder.setNoData(nodata);
         }
@@ -347,10 +391,10 @@ final class GeoTiffOutput implements AutoCloseable {
                     BaselineTIFFTagSet.PHOTOMETRIC_INTERPRETATION_BLACK_IS_ZERO));
             // The TIFF writer drops ExtraSamples for opaque images. Reserve the adjacent tag
             // while writing so declaring the numeric bands preserves IFD order.
-            if (bands.length > 1) {
+            if (extraSamples > 0) {
                 var pending = new TIFFTag("PendingExtraSamples", PENDING_EXTRA_SAMPLES, 1 << TIFFTag.TIFF_SHORT);
-                directory.addTIFFField(new TIFFField(pending, TIFFTag.TIFF_SHORT, bands.length - 1,
-                        new char[bands.length - 1]));
+                directory.addTIFFField(new TIFFField(pending, TIFFTag.TIFF_SHORT, extraSamples,
+                        new char[extraSamples]));
             }
             directory.addTIFFField(new TIFFField(new TIFFTag("GDAL_METADATA", 42112, 1 << TIFFTag.TIFF_ASCII),
                     TIFFTag.TIFF_ASCII, 1, new String[]{bandDescriptions(bandNames)}));
@@ -359,8 +403,8 @@ final class GeoTiffOutput implements AutoCloseable {
         } finally {
             writer.dispose();
         }
-        if (bands.length > 1) {
-            declareExtraSamples(target, bands.length - 1);
+        if (extraSamples > 0) {
+            declareExtraSamples(target, extraSamples);
         }
     }
 

@@ -25,6 +25,7 @@ TOLERANCE = 1e-6
 SIZE = (200, 200)
 CELLS = math.prod(SIZE)
 PROFILE = GRID["RasterProfile"]("dtm", 0, ("elevation",))
+SUPPORT_PROFILE = GRID["RasterProfile"]("dtm-support", 0, ("support",))
 VARIANTS = (("java", 1), ("pdal", 1), ("java", 4), ("pdal", 4))
 
 
@@ -45,7 +46,7 @@ AREAS = (
 )
 
 
-def configure(args, work, input_stages, writer, engine, workers, cap, *, complete=False):
+def configure(args, work, input_stages, writer, engine, workers, cap, *, complete=False, support=False):
     target, metadata, config = (work / name for name in ("dtm.tif", "metadata.json", "pipeline.json"))
     if engine == "java":
         output = {**writer, "filename": str(target)}
@@ -53,6 +54,8 @@ def configure(args, work, input_stages, writer, engine, workers, cap, *, complet
             output["max_triangle_edge_length"] = cap
         if complete:
             output["fill_nodata"] = "nearest"
+        if support:
+            output["support_filename"] = str(work / "support.tif")
         stages = [*input_stages, output]
         command = [args.cli, "pipeline", config, "--laz-workers", workers, "--metadata", metadata]
     else:
@@ -204,6 +207,45 @@ def check_complete(area, writer, ground, tin, complete, *, expected_filled=None)
         checked = len(proof)
     print(f"{area.name}: {count} nearest cells, {checked} checked by direct search, no NoData cells", flush=True)
     return count
+
+
+def check_support(args, area, writer, work, stages, cap, pdal):
+    def raster_info(path):
+        return json.loads(subprocess.check_output([args.gdal / "gdalinfo", "-json", path], text=True))
+
+    for complete in (False, True):
+        mode = "complete" if complete else "java"
+        missing_code = 2 if complete else 0
+        expected = tuple(missing_code if z == NODATA else 1 for z in pdal)
+        masks = []
+        for workers in (1, 4):
+            baseline = work / f"{mode}-{workers}-cap-{cap}"
+            case = work / f"support-{mode}-{workers}-cap-{cap}"
+            case.mkdir()
+            command, target, metadata = configure(args, case, stages, writer, "java", workers, cap,
+                                                   complete=complete, support=True)
+            run(command)
+            require(target.read_bytes() == (baseline / target.name).read_bytes()
+                    and metadata.read_bytes() == (baseline / metadata.name).read_bytes(),
+                    f"{case}: requesting a support mask changed the DTM or its metadata")
+            mask = case / "support.tif"
+            info, elevation = raster_info(mask), raster_info(target)
+            require(all(info[key] == elevation[key]
+                        for key in ("driverShortName", "size", "geoTransform", "coordinateSystem")),
+                    f"{mask}: driver, size, geotransform or CRS differs from the DTM")
+            require(info["metadata"][""].get("AREA_OR_POINT", "Area") == "Area"
+                    and info["metadata"].get("IMAGE_STRUCTURE", {}).get("COMPRESSION", "NONE") == "NONE",
+                    f"{mask}: incorrect pixel reference or compression")
+            require(len(info["bands"]) == 1, f"{mask}: expected one support band")
+            band = info["bands"][0]
+            require(band["type"] == "Byte" and band.get("description") == "support" and "noDataValue" not in band,
+                    f"{mask}: incorrect support band type, name or NoData declaration")
+            values, = read_bands(args.gdal / "gdal_translate", mask, area, SUPPORT_PROFILE)
+            require(values == expected, f"{mask}: support classes differ from PDAL TIN coverage")
+            masks.append(mask.read_bytes())
+        require(masks[0] == masks[1], f"{area.name}: support masks with 1/4 workers differ for {mode}, edge limit {cap}")
+        print(f"{area.name}, {mode}, edge limit {cap}: support mask 0/1/2 = "
+              f"{expected.count(0)}/{expected.count(1)}/{expected.count(2)}", flush=True)
 
 
 def weights(face, x, y):
@@ -399,6 +441,8 @@ def check_area(args, area):
                     f"{area.name}: complete 1/4 worker results differ")
             check_complete(area, writer, ground, java, completed[1],
                            expected_filled=0 if cap is None else {"urban": 7_227, "forest": 249}[area.name])
+        if args.support_mask:
+            check_support(args, area, writer, work, stages, cap, pdal[1])
     compare_surfaces(args, area, writer, work, stages, ground, accepted)
     return stages, writer, ground, accepted[None]
 
@@ -455,7 +499,9 @@ def main():
     parser.add_argument("--output", type=Path, default=Path(".cache/dtm-acceptance"))
     parser.add_argument("--benchmark-csv", type=Path, help="also run the M1 comparison and write measurements")
     parser.add_argument("--complete", action="store_true", help="also verify the Java nearest fallback")
+    parser.add_argument("--support-mask", action="store_true", help="also verify Java support masks (implies --complete)")
     args = parser.parse_args()
+    args.complete = args.complete or args.support_mask
     args.pdal = args.pdal.resolve()
     args.gdal = args.gdal or args.pdal.parent
     args.output.mkdir(parents=True, exist_ok=True)

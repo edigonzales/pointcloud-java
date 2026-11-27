@@ -1721,3 +1721,61 @@ und transaktionale Veröffentlichung im vorhandenen Rasterwriter.
 Die Perzentile teilen sich den Blockpuffer und die Sortierung.
 Der Puffer wird vor der Sortierung freigegeben.
 [Riedholz-Abnahme](experiments.md#exakte-rasterperzentile-in-riedholz-gegen-pdal-2102)
+
+## Stützmaske für `writers.dtm`
+
+27. November 2026. Basis `f42d8e3`. `support_filename` exportiert die
+Herkunft der Geländehöhen in einem separaten UInt8-GeoTIFF. Der vorhandene
+Abschlussdurchlauf erfasst die Codes mit einem Byte je Zelle. Beide
+Triangulationskerne und beide Raster verwenden denselben Gittervertrag.
+Eine gemeinsame Veröffentlichung bereitet beide Dateien vor und setzt
+die Maske zurück, falls die Veröffentlichung des Höhenrasters scheitert.
+[Stadtbeispiel](../examples/dtm-solothurn-urban-support.json)
+
+- `./gradlew --offline clean check installDist` bestand auf Apple M1 mit
+  macOS 15.8.1, Temurin 25.0.3+9 und Gradle 9.9.1. Alle 234 Tests
+  bestanden ohne Fehler, Fehlschläge oder übersprungene Tests. Der
+  Build dauerte 9 s, die Suitezeiten in `build/test-results/test`
+  summierten sich auf 4,737 s. Direkte Tests prüfen beide TIN-Kerne,
+  das Kantenlimit, Zellen ausserhalb der Hülle, beide Kompressionsmodi,
+  Pfadaliasse sowie Rückabwicklung bei Kollision, Fehler und Abbruch.
+- `tools/check-dtm.py <pdal> --support-mask` verwendete die Solothurner
+  Stadt-LAZ (11'963'266 Punkte, 728'768 ausgewählt) und Wald-LAZ
+  (14'566'627 Punkte, 428'321 ausgewählt). Je Ausschnitt und Kantenlimit
+  stimmten die Codepositionen aller 40'000 Zellen mit der TIN-Abdeckung
+  von PDAL 2.10.2/LazPerf überein. Ohne Limit lieferten beide Ausschnitte
+  40'000 TIN-Zellen. Mit 20 m Limit wechselten in der Stadt 7'227
+  Zellen von Code `0` auf `2`, mit 5 m im Wald 249. Je Ausschnitt
+  bestätigte eine direkte Distanzsuche 13 der ergänzten Höhen. Bei
+  denselben TIN-Dreiecken bestätigt der Vergleich die Toleranz von
+  1 µm. Vier Stadt- und zwei Waldzellen mit grösseren Abweichungen
+  liessen sich aus den jeweils anders triangulierten Stützpunkten
+  nachrechnen. Höhen-TIFF und JSON waren mit und ohne Maske bytegleich,
+  die Masken mit einem und vier LAZ-Workern ebenfalls. Exit 0.
+- `tools/check-real-data.py <pdal>` mit PDAL 2.10.2/LazPerf verglich alle
+  496'586 ausgegebenen LAS-Records ohne Abweichung. SIGTERM ergab Exit
+  143 ohne veröffentlichte oder temporäre Datei. `tools/check-ground-grid.py
+  <pdal> --release` bestätigte auch Bandwahl, Füllung, Intensität und
+  Deflate des gemeinsamen GeoTIFF-Ausgabepfads.
+- `pointcloud pipeline examples/dtm-solothurn-urban-support.json
+  --laz-workers 4 --metadata build/results/dtm-solothurn-urban-support.json`
+  las 11'963'266 Punkte, selektierte 728'768 Bodenpunkte und schrieb
+  40'000 Zellen pro Raster. Der Lauf mit `-Xmx512m` dauerte 5,33 s,
+  Exit 0. GDAL 3.13.3 bestätigte Deflate für beide Dateien und
+  identische Geotransformationen. Das Höhen-TIFF
+  misst 229'254 Bytes (Float64), die Maske 5'373 Bytes (Byte ohne
+  NoData-Tag). Ein erneuter Lauf mit `--overwrite` ersetzte beide
+  Raster und die Metadaten bytegleich und bereinigte alle temporären
+  Dateien.
+- Die Speicherprobe verwendete die vorhandene synthetische Boden-LAS
+  mit 1'000'000 Punkten (20'000'321 Bytes) und ein Raster mit 1'000'000
+  Zellen. Mit einem Reader, 32'768 Punkten pro Batch und `-Xmx512m`
+  schrieb sie 8'001'468 Bytes
+  Höhen-TIFF und 1'008'432 Bytes Maske. Der einzelne Lauf belegte
+  291,81 MiB Spitzen-RSS und dauerte 2,08 s. GDAL bestätigte 40'000
+  TIN-Zellen und 960'000 unbelegte Zellen in der Maske.
+
+Die Einfachheitsprüfung belässt Rasterisierung, Nächste-Nachbar-Suche
+und GeoTIFF-Metadaten im vorhandenen Code. Die Sicherung des Maskenziels
+liegt im gemeinsamen Ausgabeschritt und wird bei Einzelrasterausgaben
+übersprungen.

@@ -4,10 +4,12 @@ import com.google.gson.JsonParser;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.PrintStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -16,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MainTest {
@@ -230,6 +233,154 @@ class MainTest {
                 new PrintStream(output), new PrintStream(errors)));
         assertTrue(errors.toString().contains("aliases the pipeline configuration"), errors::toString);
         assertEquals(before, Files.readString(config));
+    }
+
+    @Test
+    void dtmOutputFailureRestoresPreviousSupportAndMetadata(@TempDir Path temp) throws IOException {
+        Path target = Files.createDirectory(temp.resolve("elevation.tif"));
+        Path previousSupport = Files.writeString(temp.resolve("previous.tif"), "previous support");
+        Path support = Files.createSymbolicLink(temp.resolve("support.tif"), previousSupport.getFileName());
+        Path metadata = Files.writeString(temp.resolve("stats.json"), "previous metadata");
+        Path config = writeDtmPipeline(temp.resolve("pipeline.json"), projectedLas(temp), target, support, "");
+
+        assertTrue(assertPipelineError(config, metadata, "--overwrite").contains(target.toString()));
+
+        assertEquals(previousSupport.getFileName(), Files.readSymbolicLink(support));
+        assertEquals("previous support", Files.readString(previousSupport));
+        assertEquals("previous metadata", Files.readString(metadata));
+        assertTrue(Files.isDirectory(target));
+        assertNoStagedFiles(temp);
+    }
+
+    @Test
+    void lateDtmOrSupportCollisionLeavesOnlyTheCompetingFile(@TempDir Path temp) throws IOException {
+        Path input = projectedLas(temp);
+        for (String name : List.of("elevation.tif", "support.tif")) {
+            Path directory = Files.createDirectory(temp.resolve(name + "-case"));
+            Path target = directory.resolve("elevation.tif");
+            Path support = directory.resolve("support.tif");
+            Path competing = directory.resolve(name);
+            var pipeline = Pipeline.read(writeDtmPipeline(directory.resolve("pipeline.json"), input, target, support, ""));
+
+            assertThrows(FileAlreadyExistsException.class, () -> pipeline.run(2, false, Pipeline::openSequential,
+                    (result, finish) -> {
+                        Files.writeString(competing, "competing output");
+                        finish.finish();
+                    }));
+
+            assertEquals("competing output", Files.readString(competing));
+            assertFalse(Files.exists(competing.equals(target) ? support : target));
+            assertNoStagedFiles(directory);
+        }
+    }
+
+    @Test
+    void interruptionAfterSupportPublicationRollsBackBothRasters(@TempDir Path temp) throws IOException {
+        Path input = projectedLas(temp);
+        Path target = temp.resolve("elevation.tif");
+        Path support = temp.resolve("support.tif");
+        try (var source = new LasReader(input, 2);
+             var elevation = new GeoTiffOutput(input, target, false, source.header(), source.source);
+             var mask = new GeoTiffOutput(elevation, support)) {
+            elevation.prepare(0, 0, 1, 1, 1, new double[][]{{17}}, List.of("elevation"), Double.NaN, false);
+            mask.prepareSupport(0, 0, 1, 1, 1, new byte[]{1}, false);
+
+            try {
+                assertThrows(InterruptedIOException.class, () -> SupportRasterOutput.finish(mask, () -> {
+                    assertTrue(Files.exists(support));
+                    Thread.currentThread().interrupt();
+                    elevation.publishPrepared();
+                }));
+                assertTrue(Thread.currentThread().isInterrupted());
+            } finally {
+                Thread.interrupted();
+            }
+        }
+        assertFalse(Files.exists(support));
+        assertFalse(Files.exists(target));
+        assertNoStagedFiles(temp);
+    }
+
+    @Test
+    void refusesSupportAliasesToInputDemAndElevation(@TempDir Path temp) throws IOException {
+        Path input = projectedLas(temp);
+        Path target = temp.resolve("elevation.tif");
+        Path support = temp.resolve("support.tif");
+        Path config = temp.resolve("pipeline.json");
+        Files.createLink(support, input);
+
+        var inputAlias = Pipeline.read(writeDtmPipeline(config, input, target, support, ""));
+        assertTrue(assertThrows(IOException.class, () -> inputAlias.run(2, true)).getMessage()
+                .contains("support_filename"));
+        assertTrue(Files.isSameFile(input, support));
+
+        Files.delete(support);
+        Path dem = Files.writeString(temp.resolve("dem.tif"), "DEM source");
+        Files.createSymbolicLink(support, dem.getFileName());
+        String hag = "{\"type\":\"filters.hag_dem\",\"raster\":" + Pipeline.JSON.toJson(dem.toString()) + "},";
+        var demAlias = Pipeline.read(writeDtmPipeline(config, input, target, support, hag));
+        assertTrue(assertThrows(IOException.class, () -> demAlias.run(2, true)).getMessage()
+                .contains("support_filename"));
+        assertEquals("DEM source", Files.readString(dem));
+
+        Path directoryAlias = Files.createSymbolicLink(temp.resolve("directory-alias"), temp);
+        var elevationAlias = Pipeline.read(writeDtmPipeline(config, input, target,
+                directoryAlias.resolve(target.getFileName()), ""));
+        assertTrue(assertThrows(IOException.class, () -> elevationAlias.run(2, true)).getMessage()
+                .contains("support_filename"));
+        assertFalse(Files.exists(target));
+        assertNoStagedFiles(temp);
+    }
+
+    @Test
+    void refusesSupportAliasesToMetadataOrPipelineConfiguration(@TempDir Path temp) throws IOException {
+        Path input = projectedLas(temp);
+        Path target = temp.resolve("elevation.tif");
+        Path config = temp.resolve("pipeline.json");
+        Path support = temp.resolve("support.tif");
+        writeDtmPipeline(config, input, target, support, "");
+        Path metadata = Files.writeString(temp.resolve("stats.json"), "previous metadata");
+        Files.createLink(support, metadata);
+
+        assertTrue(assertPipelineError(config, metadata, "--overwrite").contains("support_filename"));
+        assertEquals("previous metadata", Files.readString(metadata));
+        assertTrue(Files.isSameFile(support, metadata));
+
+        Files.delete(support);
+        Files.createLink(support, config);
+        String previousConfig = Files.readString(config);
+        var output = new ByteArrayOutputStream();
+        var errors = new ByteArrayOutputStream();
+        assertEquals(2, Main.run(new String[]{"pipeline", config.toString(), "--overwrite"},
+                new PrintStream(output), new PrintStream(errors)));
+        assertTrue(errors.toString().contains("support_filename aliases the pipeline configuration"), errors::toString);
+        assertEquals(previousConfig, Files.readString(config));
+        assertFalse(Files.exists(target));
+        assertNoStagedFiles(temp);
+    }
+
+    private static Path projectedLas(Path temp) throws IOException {
+        var geokeys = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+        for (int value : new int[]{1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 2056}) {
+            geokeys.putChar((char) value);
+        }
+        return addProjectionRecord(temp, LasIoTest.fixture(3, "las"), 34735, geokeys.array(), false);
+    }
+
+    private static Path writeDtmPipeline(Path config, Path input, Path target, Path support, String filters)
+            throws IOException {
+        return Files.writeString(config, """
+                [%s, %s {"type":"writers.dtm","filename":%s,"support_filename":%s,
+                         "origin_x":2600000,"origin_y":1200000,"width":2,"height":2,"resolution":1,
+                         "fill_nodata":"nearest"}]
+                """.formatted(Pipeline.JSON.toJson(input.toString()), filters,
+                Pipeline.JSON.toJson(target.toString()), Pipeline.JSON.toJson(support.toString())));
+    }
+
+    private static void assertNoStagedFiles(Path directory) throws IOException {
+        try (var entries = Files.list(directory)) {
+            assertFalse(entries.anyMatch(path -> path.getFileName().toString().endsWith(".part")));
+        }
     }
 
     private static Path addProjectionRecord(Path temp, Path path, int id, byte[] payload, boolean extended) throws IOException {

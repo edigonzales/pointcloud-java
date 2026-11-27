@@ -115,6 +115,7 @@ public final class Pipeline {
 
     private final Path input;
     private final Path output;
+    private final Path supportOutput;
     private final HagStage hag;
     private final boolean appendHeightAboveGround;
     private final GroundGridWriter.Grid rasterGrid;
@@ -149,6 +150,8 @@ public final class Pipeline {
         try {
             rasterGrid = type.equals(RASTER_WRITER) ? parseRasterGrid(writer) : null;
             terrainGrid = type.equals(DTM_WRITER) ? parseTerrainGrid(writer) : null;
+            supportOutput = terrainGrid != null && writer.has("support_filename")
+                    ? tiffFilename(writer, "support_filename") : null;
             output = switch (type) {
                 case "writers.las" -> {
                     options(writer, "filename", "forward", "compression", "extra_dims");
@@ -164,14 +167,7 @@ public final class Pipeline {
                     }
                     yield filename(string(writer, "filename"), false);
                 }
-                case RASTER_WRITER, DTM_WRITER -> {
-                    String name = string(writer, "filename");
-                    String lower = name.toLowerCase(Locale.ROOT);
-                    if (!lower.endsWith(".tif") && !lower.endsWith(".tiff")) {
-                        throw new IllegalArgumentException("filename must end in .tif or .tiff");
-                    }
-                    yield Path.of(name);
-                }
+                case RASTER_WRITER, DTM_WRITER -> tiffFilename(writer, "filename");
                 case "writers.null" -> {
                     options(writer);
                     yield null;
@@ -238,6 +234,10 @@ public final class Pipeline {
         return output;
     }
 
+    Path supportOutput() {
+        return supportOutput;
+    }
+
     Path demInput() {
         return hag == null ? null : hag.raster;
     }
@@ -297,6 +297,18 @@ public final class Pipeline {
         }
     }
 
+    private GeoTiffOutput openSupportTiff(GeoTiffOutput elevation) throws IOException {
+        if (supportOutput == null) {
+            return null;
+        }
+        try {
+            return new GeoTiffOutput(elevation, supportOutput);
+        } catch (IOException e) {
+            throw new IOException("Stage " + stages.size() + " (" + DTM_WRITER + "): support_filename: "
+                    + e.getMessage(), e);
+        }
+    }
+
     Result run(int batchSize, boolean overwrite, InputFactory inputs, ResultOutput resultOutput) throws IOException {
         var filters = new Filter[stages.size() - 2];
         for (int i = 0; i < filters.length; i++) {
@@ -308,6 +320,7 @@ public final class Pipeline {
             filters[i] = filter;
         }
         checkDemOutputAlias();
+        checkSupportDestinations();
         try (var reader = inputs.open(input, batchSize)) {
             for (var filter : filters) {
                 for (var dimension : filter.dimensions) {
@@ -323,6 +336,7 @@ public final class Pipeline {
                 filters[index] = new Filter(filter.stage, filter.type, filter.dimensions, hag.open(reader), null);
             }
             try (var tiff = openTiff(reader, overwrite);
+                 var support = openSupportTiff(tiff);
                  var writer = output == null || tiff != null ? null
                          : new LasWriter(input, reader.channel(), reader.header(), reader.finished(), output,
                                overwrite, appendHeightAboveGround)) {
@@ -371,8 +385,18 @@ public final class Pipeline {
                     raster.prepare(reader.finished().getAsBoolean());
                     pointsBinned = raster.pointsBinned();
                 }
-                var dtm = terrain == null ? null : terrain.prepare(reader.finished().getAsBoolean());
+                var dtm = terrain == null ? null : terrain.prepare(reader.finished().getAsBoolean(), support);
                 OutputFinish finish = tiff != null ? tiff::finish : writer != null ? writer::finish : null;
+                if (support != null) {
+                    finish = () -> {
+                        checkSupportDestinations();
+                        SupportRasterOutput.finish(support, () -> {
+                            // A newly published mask makes aliases on case-insensitive filesystems visible.
+                            checkSupportDestinations();
+                            tiff.publishPrepared();
+                        });
+                    };
+                }
                 if (hag != null && finish != null) {
                     OutputFinish publish = finish;
                     finish = () -> {
@@ -394,6 +418,37 @@ public final class Pipeline {
                     || Files.exists(hag.raster) && Files.exists(output) && Files.isSameFile(hag.raster, output))) {
             throw hag.failure("output destination aliases the input DEM: " + output, null);
         }
+    }
+
+    private void checkSupportDestinations() throws IOException {
+        if (supportOutput == null) {
+            return;
+        }
+        for (Path path : new Path[]{input, output, demInput()}) {
+            if (path != null && destinationsOverlap(supportOutput, path)) {
+                throw new IOException("Stage " + stages.size() + " (" + DTM_WRITER
+                        + "): support_filename must be separate from " + path + ": " + supportOutput);
+            }
+        }
+    }
+
+    static boolean destinationsOverlap(Path first, Path second) throws IOException {
+        if (Files.exists(first) && Files.exists(second) && Files.isSameFile(first, second)) {
+            return true;
+        }
+        Path a = destinationLocation(first);
+        Path b = destinationLocation(second);
+        return a.startsWith(b) || b.startsWith(a);
+    }
+
+    private static Path destinationLocation(Path path) throws IOException {
+        Path absolute = path.toAbsolutePath();
+        Path parent = absolute.getParent();
+        while (parent != null && !Files.exists(parent)) {
+            parent = parent.getParent();
+        }
+        return parent == null ? absolute.normalize()
+                : parent.toRealPath().resolve(parent.relativize(absolute)).normalize();
     }
 
     private Filter compile(int position) {
@@ -743,7 +798,7 @@ public final class Pipeline {
 
     private static TerrainWriter.Grid parseTerrainGrid(JsonObject stage) {
         options(stage, "filename", "resolution", "origin_x", "origin_y", "width", "height",
-                "max_triangle_edge_length", "nodata", "compression", "fill_nodata");
+                "max_triangle_edge_length", "nodata", "compression", "fill_nodata", "support_filename");
         if (stage.has("fill_nodata")) {
             exact(stage, "fill_nodata", "nearest");
         }
@@ -752,6 +807,15 @@ public final class Pipeline {
         return new TerrainWriter.Grid(number(stage, "origin_x"), number(stage, "origin_y"),
                 number(stage, "resolution"), gridDimension(stage, "width"), gridDimension(stage, "height"),
                 maxEdge, nodata(stage), deflate(stage), stage.has("fill_nodata"));
+    }
+
+    private static Path tiffFilename(JsonObject stage, String key) {
+        String name = string(stage, key);
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (!lower.endsWith(".tif") && !lower.endsWith(".tiff")) {
+            throw new IllegalArgumentException(key + " must end in .tif or .tiff");
+        }
+        return Path.of(name);
     }
 
     private static int gridDimension(JsonObject stage, String key) {

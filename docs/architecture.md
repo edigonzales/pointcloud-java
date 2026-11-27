@@ -294,6 +294,22 @@ Im vollständigen Modus enthält jede veröffentlichte Zelle eine
 endliche Höhe. Das GeoTIFF hat keinen NoData-Tag. Ein konfigurierter
 `nodata`-Wert bleibt in diesem Modus ohne Auswirkung auf die Ausgabe.
 
+`support_filename` schreibt optional ein separates `.tif` oder `.tiff`
+mit einem UInt8-Band `support`. Gitter, horizontales CRS und Kompression
+entsprechen dem Höhenraster. Alle drei Kategorien sind gültige Pixelwerte.
+
+| Wert | Herkunft der Geländehöhe |
+| --- | --- |
+| `0` | Unbelegte Zelle |
+| `1` | Interpolation in einem zulässigen TIN-Dreieck |
+| `2` | Höhe des nächstgelegenen ausgewählten Stützpunkts |
+
+Mit `fill_nodata: "nearest"` enthält die Maske nur `1` und `2`. Die
+Option beeinflusst weder die Geländehöhen noch die JSON-Metadaten.
+Beide GeoTIFFs werden je Datei atomar veröffentlicht. Scheitert die
+Veröffentlichung des Höhenrasters, wird die Maske zurückgesetzt.
+[Stadtbeispiel mit Stützmaske](../examples/dtm-solothurn-urban-support.json)
+
 Die JSON-Metadaten zählen unter `dtm` die eindeutigen Stützpunkte
 (`supportPoints`) und die gültigen beziehungsweise unbelegten Zellen
 (`cellsCovered` und `cellsNoData`). Im vollständigen Modus zählt
@@ -383,7 +399,9 @@ Dimension weiterhin aus dem angegebenen DEM.
   verschiedene interpolierte Höhen ergeben. Java führt die XY-Geometrie
   lokal auf Basis der LAS-Rohkoordinaten. PDAL trianguliert die skalierten
   Weltkoordinaten. Für doppelte XY dokumentiert Java die Auswahl in
-  Dateireihenfolge. [TIN-Realdatenabnahme](../tools/check-dtm.py)
+  Dateireihenfolge. `support_filename` ist eine Java-Writeroption. Der
+  Referenzlauf verwendet die PDAL-NoData-Maske zur Prüfung der TIN-Abdeckung.
+  [TIN-Realdatenabnahme](../tools/check-dtm.py)
 - Der GeoTIFF-Writer heisst in PointCloud Java `writers.raster`. Für den
   PDAL-Referenzlauf setzt das Abnahmeskript den Typ auf `writers.gdal`.
   Deflate entspricht beim Referenzlauf `gdalopts: "COMPRESS=DEFLATE"`.

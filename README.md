@@ -107,6 +107,14 @@ nächstgelegenen Bodenpunkts.
 "$cli" pipeline examples/dtm-solothurn-forest-complete.json --laz-workers 4 --metadata build/results/dtm-solothurn-forest-complete.json
 ```
 
+Das [Stadtbeispiel mit Stützmaske](examples/dtm-solothurn-urban-support.json)
+schreibt zusätzlich ein deckungsgleiches GeoTIFF. Die Codes `0`, `1` und `2`
+kennzeichnen unbelegte Zellen, TIN-Höhen und Höhen der nächsten Bodenmessung.
+
+```sh
+"$cli" pipeline examples/dtm-solothurn-urban-support.json --laz-workers 4 --metadata build/results/dtm-solothurn-urban-support.json
+```
+
 [`filters.hag_dem`](docs/architecture.md#höhe-über-grund) berechnet aus
 einem vorhandenen DTM die Punktdimension `HeightAboveGround`. Nach dem
 Stadt-DTM oben liest dieses Beispiel erneut die ursprüngliche LAZ,
