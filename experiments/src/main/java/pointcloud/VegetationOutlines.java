@@ -11,6 +11,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -25,12 +26,16 @@ import org.locationtech.jts.geom.GeometryCollection;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.locationtech.jts.geom.Triangle;
 import org.locationtech.jts.geom.util.AffineTransformation;
+import org.locationtech.jts.geom.util.GeometryFixer;
 import org.locationtech.jts.operation.buffer.BufferOp;
 import org.locationtech.jts.operation.buffer.BufferParameters;
+import org.locationtech.jts.operation.overlayng.CoverageUnion;
 import org.locationtech.jts.operation.overlayng.OverlayNG;
 import org.locationtech.jts.operation.overlayng.OverlayNGRobust;
 import org.locationtech.jts.simplify.TopologyPreservingSimplifier;
+import org.locationtech.jts.triangulate.DelaunayTriangulationBuilder;
 
 /** Experimental polygonization of LAS records already selected by class and height above ground. */
 public final class VegetationOutlines {
@@ -50,6 +55,8 @@ public final class VegetationOutlines {
     private static final String BEFORE_EROSION = "before-erosion.wkt";
     private static final String AFTER_EROSION = "after-erosion.wkt";
     private static final String AFTER_DILATION = "after-dilation.wkt";
+    private static final String ALPHA_HULL = "alpha-hull.wkt";
+    private static final String ALPHA_BACK_BUFFER = "alpha-back-buffer.wkt";
     private static final GeometryFactory LV95 = new GeometryFactory(new PrecisionModel(), 2056);
     private static final Coordinate[] DISK_OFFSETS =
             LV95.createPoint(new CoordinateXY(0, 0)).buffer(DISK_METRES).getCoordinates();
@@ -76,15 +83,16 @@ public final class VegetationOutlines {
     private record TileMetrics(String las, double[] core, int selected, int kept, int haloKept, int thinned,
             double readSeconds, double selectionSeconds, double geometrySeconds) {}
 
-    private record Metrics(String mode, List<TileMetrics> tiles, double area, int polygons, int vertices,
-            double finishSeconds, String thinning, SpacingMetrics spacing, boolean earlyClose) {}
+    private record Alpha(String mode, double radiusMetres) {}
 
-    private record Snapshots(Geometry beforeErosion, Geometry afterErosion, Geometry afterDilation) {}
+    private record Metrics(String mode, List<TileMetrics> tiles, double area, int polygons, int vertices,
+            double finishSeconds, String thinning, SpacingMetrics spacing, boolean earlyClose, Alpha alpha) {}
 
     public static void main(String[] args) throws IOException {
         String thinning = null;
         boolean snapshots = false;
         boolean earlyClose = false;
+        Alpha alpha = null;
         int prefix = 0;
         while (prefix < args.length && args[prefix].startsWith("--")) {
             String option = args[prefix++];
@@ -92,6 +100,10 @@ public final class VegetationOutlines {
                 snapshots = true;
             } else if (option.equals("--early-close") && !earlyClose) {
                 earlyClose = true;
+            } else if (alpha == null && (option.startsWith("--alpha-replace=") || option.startsWith("--alpha-fill="))) {
+                double radius = Double.parseDouble(option.substring(option.indexOf('=') + 1));
+                requireAlphaRadius(radius);
+                alpha = new Alpha(option.startsWith("--alpha-fill=") ? "fill" : "replace", radius);
             } else if (option.startsWith("--thinning=") && thinning == null) {
                 thinning = switch (option) {
                     case "--thinning=grid" -> "grid";
@@ -103,6 +115,9 @@ public final class VegetationOutlines {
                 throw new IllegalArgumentException("Unknown or repeated option " + option);
             }
         }
+        if (earlyClose && alpha != null) {
+            throw new IllegalArgumentException("Choose either early closing or an alpha hull");
+        }
         if (prefix != 0) {
             args = Arrays.copyOfRange(args, prefix, args.length);
         }
@@ -111,6 +126,7 @@ public final class VegetationOutlines {
         }
         if (args.length < 11 || (args.length - 6) % 5 != 0 || (args.length - 6) / 5 > MAX_TILES) {
             throw new IllegalArgumentException("Expected [--thinning=grid|spacing|none] [--snapshots] [--early-close]"
+                    + " [--alpha-replace=<m>|--alpha-fill=<m>]"
                     + " <all|neighbors> <new-output-dir> <eval-xmin> <eval-ymin>"
                     + " <eval-xmax> <eval-ymax> followed by up to " + MAX_TILES
                     + " groups of <xmin> <ymin> <xmax> <ymax> <prepared.las>");
@@ -136,7 +152,7 @@ public final class VegetationOutlines {
         var partials = new ArrayList<Geometry>();
         var tiles = new ArrayList<TileMetrics>();
         // Keep openings whole through the hull and width test, including at internal tile cuts.
-        var earlyPoints = earlyClose ? new HashSet<Coordinate>() : null;
+        var sharedPoints = earlyClose || alpha != null ? new HashSet<Coordinate>() : null;
         for (int i = 6; i < args.length; i += 5) {
             var core = bounds(args, i);
             if (core.getWidth() > 1000 || core.getHeight() > 1000) {
@@ -160,12 +176,12 @@ public final class VegetationOutlines {
                 selection = new Selection(positions, count, count, region.tileHaloKept()[tile]);
             }
             long startGeometry = System.nanoTime();
-            if (earlyPoints == null) {
+            if (sharedPoints == null) {
                 partials.add(trace(selection.points()));
             } else {
                 for (var point : selection.points()) {
-                    if (earlyPoints.add(point) && earlyPoints.size() > MAX_REGION_CANDIDATES) {
-                        throw new IllegalArgumentException("Early closing exceeds 2,000,000 distinct XY positions");
+                    if (sharedPoints.add(point) && sharedPoints.size() > MAX_REGION_CANDIDATES) {
+                        throw new IllegalArgumentException("Shared hull exceeds 2,000,000 distinct XY positions");
                     }
                 }
             }
@@ -177,11 +193,12 @@ public final class VegetationOutlines {
                     seconds(startGeometry, done)));
         }
         long startFinish = System.nanoTime();
-        if (earlyPoints != null) {
+        var recorded = snapshots ? new LinkedHashMap<String, Geometry>() : null;
+        if (sharedPoints != null) {
             checkInterrupted();
-            var points = earlyPoints.toArray(Coordinate[]::new);
-            earlyPoints.clear();
-            partials.add(trace(points, true));
+            var points = sharedPoints.toArray(Coordinate[]::new);
+            sharedPoints.clear();
+            partials.add(trace(points, earlyClose, alpha, recorded));
         }
         var outline = finish(partials, clip);
         if (!outline.isValid()) {
@@ -190,14 +207,16 @@ public final class VegetationOutlines {
         outline.normalize();
         var metrics = new Metrics(args[0], tiles, outline.getArea(),
                 outline.isEmpty() ? 0 : outline.getNumGeometries(), outline.getNumPoints(),
-                seconds(startFinish, System.nanoTime()), thinning, region == null ? null : region.metrics(), earlyClose);
-        Snapshots recorded = null;
-        if (snapshots) {
+                seconds(startFinish, System.nanoTime()), thinning, region == null ? null : region.metrics(),
+                earlyClose, alpha);
+        if (recorded != null) {
             // Preserve the accepted grid computation. Replay the two buffers on its
             // already fixed tile geometries for recording, after computing the outline.
             var dissolved = OverlayNGRobust.union(partials, clip.getFactory());
             var eroded = dissolved.buffer(-2.5);
-            recorded = new Snapshots(dissolved, eroded, eroded.buffer(0.7));
+            recorded.put(BEFORE_EROSION, dissolved);
+            recorded.put(AFTER_EROSION, eroded);
+            recorded.put(AFTER_DILATION, eroded.buffer(0.7));
         }
         publish(output, outline, metrics, recorded);
     }
@@ -533,8 +552,18 @@ public final class VegetationOutlines {
     }
 
     static Geometry trace(Coordinate[] points, boolean earlyClose) {
+        return trace(points, earlyClose, null, null);
+    }
+
+    private static Geometry trace(Coordinate[] points, boolean earlyClose, Alpha alpha,
+            Map<String, Geometry> snapshots) {
         if (points.length == 0) {
-            return LV95.createPolygon();
+            var empty = LV95.createPolygon();
+            if (alpha != null && snapshots != null) {
+                snapshots.put(ALPHA_HULL, empty);
+                snapshots.put(ALPHA_BACK_BUFFER, empty);
+            }
+            return empty;
         }
         // Translate to metre-sized local coordinates so the strict gap limit is not rounded at LV95 magnitude.
         var ordered = points.clone();
@@ -562,10 +591,63 @@ public final class VegetationOutlines {
             }
         }
         var coverage = OverlayNGRobust.union(blocks, LV95);
-        var outline = backBuffer(closeOpenings(coverage), earlyClose);
+        var hull = alpha == null ? closeOpenings(coverage) : alphaHull(coverage, alpha.radiusMetres(),
+                alpha.mode().equals("fill"));
+        var outline = backBuffer(hull, earlyClose);
+        var toWorld = AffineTransformation.translationInstance(originX, originY);
+        if (alpha != null && snapshots != null) {
+            snapshots.put(ALPHA_HULL, validPolygonal(toWorld.transform(hull)));
+            snapshots.put(ALPHA_BACK_BUFFER, validPolygonal(toWorld.transform(outline)));
+        }
         outline = fillSmallHoles(outline);
         outline = minimumArea(TopologyPreservingSimplifier.simplify(outline, 0.10), 20);
-        return AffineTransformation.translationInstance(originX, originY).transform(outline);
+        return toWorld.transform(outline);
+    }
+
+    static Geometry alphaHull(Geometry coverage, double alpha, boolean fill) {
+        requireAlphaRadius(alpha);
+        if (coverage.isEmpty()) {
+            return coverage;
+        }
+        // Segmentize the rings only, including hole boundaries and the edges of vegetation islands.
+        var sites = Densifier.densify(coverage.getBoundary(), GRID_METRES);
+        checkInterrupted();
+        var triangulation = new DelaunayTriangulationBuilder();
+        triangulation.setSites(sites);
+        var factory = coverage.getFactory();
+        var triangles = triangulation.getTriangles(factory);
+        var accepted = new ArrayList<Geometry>();
+        for (int i = 0; i < triangles.getNumGeometries(); i++) {
+            if ((i & 4095) == 0) {
+                checkInterrupted();
+            }
+            var triangle = (Polygon) triangles.getGeometryN(i);
+            var vertices = triangle.getExteriorRing().getCoordinateSequence();
+            double radius = Triangle.circumradius(vertices.getCoordinate(0),
+                    vertices.getCoordinate(1), vertices.getCoordinate(2));
+            if (radius <= alpha) {
+                accepted.add(triangle);
+            }
+        }
+        if (accepted.isEmpty()) {
+            return fill ? coverage : factory.createPolygon();
+        }
+        checkInterrupted();
+        // Faces from one triangulation meet along exactly matching edges.
+        var hull = validPolygonal(CoverageUnion.union(
+                factory.createGeometryCollection(accepted.toArray(Geometry[]::new))));
+        return fill ? OverlayNGRobust.overlay(coverage, hull, OverlayNG.UNION) : hull;
+    }
+
+    private static Geometry validPolygonal(Geometry geometry) {
+        // A ring may touch itself at a vertex, including after rounding back to LV95.
+        return geometry.isValid() ? geometry : GeometryFixer.fix(geometry);
+    }
+
+    private static void requireAlphaRadius(double radius) {
+        if (!Double.isFinite(radius) || radius <= 0) {
+            throw new IllegalArgumentException("Alpha must be a positive finite radius in metres");
+        }
     }
 
     static Geometry backBuffer(Geometry cover, boolean earlyClose) {
@@ -668,7 +750,8 @@ public final class VegetationOutlines {
         }
     }
 
-    private static void publish(Path output, Geometry result, Metrics metrics, Snapshots snapshots) throws IOException {
+    private static void publish(Path output, Geometry result, Metrics metrics, Map<String, Geometry> snapshots)
+            throws IOException {
         checkInterrupted();
         Files.createDirectories(output.getParent());
         var staged = Files.createTempDirectory(output.getParent(), ".vegetation-");
@@ -676,18 +759,20 @@ public final class VegetationOutlines {
             Files.writeString(staged.resolve("outline.wkt"), result.toText() + "\n");
             Files.writeString(staged.resolve("metrics.json"), Pipeline.JSON.toJson(metrics) + "\n");
             if (snapshots != null) {
-                Files.writeString(staged.resolve(BEFORE_EROSION), snapshots.beforeErosion().toText() + "\n");
-                Files.writeString(staged.resolve(AFTER_EROSION), snapshots.afterErosion().toText() + "\n");
-                Files.writeString(staged.resolve(AFTER_DILATION), snapshots.afterDilation().toText() + "\n");
+                for (var snapshot : snapshots.entrySet()) {
+                    Files.writeString(staged.resolve(snapshot.getKey()), snapshot.getValue().toText() + "\n");
+                }
             }
             checkInterrupted();
             Files.move(staged, output, StandardCopyOption.ATOMIC_MOVE);
         } finally {
             Files.deleteIfExists(staged.resolve("outline.wkt"));
             Files.deleteIfExists(staged.resolve("metrics.json"));
-            Files.deleteIfExists(staged.resolve(BEFORE_EROSION));
-            Files.deleteIfExists(staged.resolve(AFTER_EROSION));
-            Files.deleteIfExists(staged.resolve(AFTER_DILATION));
+            if (snapshots != null) {
+                for (var filename : snapshots.keySet()) {
+                    Files.deleteIfExists(staged.resolve(filename));
+                }
+            }
             Files.deleteIfExists(staged);
         }
     }

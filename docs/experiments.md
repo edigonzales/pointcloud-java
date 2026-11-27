@@ -2348,3 +2348,83 @@ kleinere Heap-Limit. Die höchste beobachtete Spitzen-RSS betrug
 Abnahmeentscheid und alle Messflächen fest. Die GeoPackages
 zeigen die Puffer-Zwischenstände, die Bestockung und die
 offenen Teile der Lichtung.
+
+## Alpha-Hüllen nach der FME-Dreiecksregel
+
+Das Experiment verwendet die gemeinsame Vereinigung der 1,4-m-Kreise
+über die Kachelgrenzen. JTS unterteilt ihre Aussen- und Innenringe
+in Abschnitte von höchstens 25 cm und trianguliert die eindeutigen
+XY-Koordinaten im lokalen Koordinatensystem. Erhalten bleiben
+Dreiecke mit einem Umkreisradius bis einschliesslich Alpha
+in Metern. Die dokumentierte FME-Dreiecksregel dient als Vorbild.
+Die genaue Randabtastung und der gewählte Alpha-Wert von Flotron
+sind offen.
+[FME HullReplacer](https://docs.safe.com/fme/2025.1/html/FME-Form-Documentation/FME-Transformers/Transformers/hullreplacer.htm)
+
+`--alpha-replace=<m>` ersetzt die Kreisfläche durch die Vereinigung
+der Dreiecke. `--alpha-fill=<m>` ergänzt dieselbe Kreisfläche um
+diese Dreiecke. Beide Varianten verwenden dieselbe Punktauswahl
+und Lochregel und gehen direkt in den bisherigen −1,4-m-Rückpuffer.
+Die separate 0,25-m-Schliessung ist eine Vergleichsvariante.
+Die finalen Puffer betragen −2,5 m und +0,7 m.
+
+### Auswahl in Riedholz
+
+Im Ersatzmodus bleiben bis Alpha 1,00 m bereits nach dem Rückpuffer
+0 m² übrig. Bei 1,50 m sind es im Prüffenster 49,87 m² in kleinen
+Teilflächen. Sie fallen an der 20-m²-Schwelle weg. Die sechs
+Endgeometrien sind leer. Für die unabhängige Prüfung wurde 0,50 m
+als kleinster Radius mit diesem Ergebnis eingefroren.
+
+| Ergänzungsvariante | Bestockung zurückgewonnen (m²) | Zusammenhängend offene Lichtung (m²) | Anteil offen | Flächen-IoU |
+| --- | ---: | ---: | ---: | ---: |
+| 0,25-m-Pufferschliessung | 622,66 | 1’197,07 | 95,71 % | 96,83 % |
+| Alpha 0,50 m | 932,77 | 980,10 | 78,36 % | 97,57 % |
+| Alpha 0,75 m | 1’069,64 | 765,62 | 61,21 % | 97,51 % |
+| Alpha 0,76 m | 1’069,64 | 763,76 | 61,06 % | 97,49 % |
+| Alpha 0,80 m | 1’069,64 | 759,92 | 60,76 % | 97,49 % |
+| Alpha 1,00 m | 1’069,64 | 394,78 | 31,56 % | 96,68 % |
+| Alpha 1,50 m | 1’069,64 | 346,84 | 27,73 % | 95,12 % |
+
+Bei allen Alpha-Ergänzungen bleibt eine einzige eingeschlossene
+offene Komponente übrig. Ihr Flächenanteil liegt stets unter
+der geforderten Schwelle von 95 %. Die mit Alpha 0,50 m
+höchste Flächen-IoU entschied für deren Diagnose im unabhängigen
+Ausschnitt und an den Nähten.
+
+### Prüfung ausserhalb der Kalibrierung
+
+| Variante | Flächen-IoU | P95-Grenzabstand | Zusätzlich (m²) | Fehlend (m²) |
+| --- | ---: | ---: | ---: | ---: |
+| 0,25-m-Pufferschliessung | 97,41 % | 1,50 m | 1’886,15 | 449,03 |
+| Alpha-Ergänzung 0,50 m | 98,03 % | 1,36 m | 1’184,70 | 574,07 |
+
+Die Alpha-Ergänzung bei 0,50 m erzeugt an beiden Nähten jeweils
+bytegleiches End-WKT und 0 m² symmetrische Flächendifferenz.
+Der direkte Lichtungsschnitt lässt in beiden Läufen 979,69 m²
+zusammenhängend offen. Die bekannte 340,89-m²-Lichtung im
+unabhängigen Ausschnitt bleibt vollständig bestockt.
+Der Ersatzmodus liefert auch hier leere Endgeometrien.
+Für die vereinbarten Lichtungskriterien bleibt die
+0,25-m-Pufferschliessung die bevorzugte Variante.
+
+### Reproduktion
+
+```sh
+./gradlew --offline -Pexperiments check :experiments:test installDist
+python3 experiments/check-vegetation-outlines.py --compare-alpha \
+  --pdal "$pdal" --reference "$reference" \
+  --output .cache/vegetation-outlines/alpha-2g
+```
+
+Der Vergleich verwendet die vorbereiteten LAS-Dateien und den
+abgenommenen 0,25-m-Vergleich unter `.cache/vegetation-outlines`.
+Der Lauf speichert die Auswahl aus Riedholz in `calibration.json`
+vor dem Laden der unabhängigen Vergleichsgeometrien.
+`report.json` enthält die gesamte Alpha-Reihe und die
+Prüfergebnisse für die beiden eingefrorenen Kandidaten.
+Die 22 Läufe verwendeten `-Xmx2g`. Die höchste gemessene
+Spitzen-RSS lag bei 740,33 MiB.
+Die Vergleichs-GeoPackages enthalten die Layer `alpha_huelle`,
+`nach_rueckpuffer`, `bestockung` und für die Lichtungsfenster
+`lichtung_offen`.

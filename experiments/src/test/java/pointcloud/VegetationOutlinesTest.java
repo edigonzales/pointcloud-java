@@ -187,6 +187,60 @@ class VegetationOutlinesTest {
         assertEquals(forest.intersection(shell).getArea(), closed.intersection(shell).getArea(), 1e-9);
     }
 
+    @Test
+    void alphaUsesTheClosedCircumradiusCutoff() {
+        // A 3-4-5 right triangle scaled by 1/32. Its circumradius is exactly 5/64.
+        var triangle = GEOMETRY.createPolygon(new Coordinate[]{
+                point(0, 0), point(3.0 / 32, 0), point(0, 4.0 / 32), point(0, 0)});
+        double alpha = 5.0 / 64;
+
+        assertTrue(VegetationOutlines.alphaHull(triangle, Math.nextDown(alpha), false).isEmpty());
+        assertTrue(VegetationOutlines.alphaHull(triangle, alpha, false).equalsTopo(triangle));
+        assertTrue(VegetationOutlines.alphaHull(triangle, Math.nextDown(alpha), true).equalsTopo(triangle));
+    }
+
+    @ParameterizedTest
+    @ValueSource(doubles = {1.49, 1.51})
+    void alphaBridgesTheNarrowerGapAtPointSevenSixMetres(double gap) {
+        var stock = GEOMETRY.createMultiPolygon(new Polygon[]{
+                rectangle(0, 0, 10, 10), rectangle(10 + gap, 0, 20 + gap, 10)});
+        double centre = 10 + gap / 2;
+
+        assertFalse(covers(VegetationOutlines.alphaHull(stock, .75, true), centre, 5));
+        var replaced = VegetationOutlines.alphaHull(stock, .76, false);
+        var filled = VegetationOutlines.alphaHull(stock, .76, true);
+
+        assertTrue(replaced.isValid());
+        assertTrue(filled.isValid());
+        assertEquals(gap < 1.5, covers(replaced, centre, 5));
+        assertEquals(gap < 1.5, covers(filled, centre, 5));
+        assertFalse(covers(replaced, 5, 5));
+        assertTrue(filled.covers(stock));
+    }
+
+    @Test
+    void alphaFillsAnInternalGapAndKeepsABroadClearingAroundAnIsland() {
+        var clip = rectangle(0, 0, 64, 64);
+        var clearing = rectangle(14, 14, 50, 50);
+        var island = rectangle(24, 24, 40, 40);
+        var narrowGap = rectangle(5, 16, 6.49, 28);
+        var stock = clip.difference(clearing).difference(narrowGap).union(island);
+        var hull = VegetationOutlines.alphaHull(stock, .76, true);
+
+        assertTrue(hull.isValid());
+        assertTrue(covers(hull, 5.75, 22));
+        assertFalse(covers(hull, 18, 32));
+
+        var partial = VegetationOutlines.fillSmallHoles(VegetationOutlines.backBuffer(hull, false));
+        var outline = VegetationOutlines.finish(List.of(partial), clip);
+        assertTrue(outline.isValid());
+        var open = assertInstanceOf(Polygon.class, clearing.difference(outline));
+        assertEquals(1, open.getNumInteriorRing());
+        assertTrue(covers(open, 18, 32));
+        assertTrue(covers(open, 46, 32));
+        assertTrue(covers(outline, 32, 32));
+    }
+
     @ParameterizedTest
     @ValueSource(doubles = {0.49, 0.51})
     void earlyClosingBridgesOnlyTheNarrowerInternalGap(double gap) {
@@ -277,6 +331,59 @@ class VegetationOutlinesTest {
         assertTrue(outline.isValid());
         assertTrue(covers(outline, seam, south + 29));
         assertFalse(covers(outline, seam, south + 15));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"--alpha-replace=0.76", "--alpha-fill=0.76"})
+    void alphaProducesByteIdenticalOutlinesAcrossATileSeam(String flag, @TempDir Path temp) throws Exception {
+        var records = new ArrayList<int[]>();
+        for (int x = -2000; x <= 2000; x += 50) {
+            for (int y = 300; y <= 1600; y += 50) {
+                records.add(new int[]{x, y, 210, 3});
+            }
+        }
+        String las = writeLas(temp.resolve("alpha-seam.las"), .01, records.toArray(int[][]::new)).toString();
+        Path joint = temp.resolve("joint");
+        Path split = temp.resolve("split");
+        VegetationOutlines.main(new String[]{flag, "--snapshots", "all", joint.toString(),
+                "2610175", "1232400", "2610225", "1232420", "2610175", "1232400", "2610225", "1232420", las});
+        VegetationOutlines.main(new String[]{flag, "--snapshots", "all", split.toString(),
+                "2610175", "1232400", "2610225", "1232420", "2610175", "1232400", "2610200", "1232420", las,
+                "2610200", "1232400", "2610225", "1232420", las});
+
+        var metrics = Pipeline.JSON.fromJson(Files.readString(split.resolve("metrics.json")), JsonObject.class);
+        var tiles = metrics.getAsJsonArray("tiles");
+        assertEquals(2, tiles.size());
+        int westCount = tiles.get(0).getAsJsonObject().get("thinned").getAsInt();
+        int eastCount = tiles.get(1).getAsJsonObject().get("thinned").getAsInt();
+        assertTrue(westCount < records.size() && eastCount < records.size());
+        assertTrue(westCount + eastCount > records.size());
+        for (String filename : List.of("alpha-hull.wkt", "alpha-back-buffer.wkt", "outline.wkt")) {
+            assertEquals(-1, Files.mismatch(joint.resolve(filename), split.resolve(filename)), filename);
+        }
+        var reader = new WKTReader(GEOMETRY);
+        var hull = reader.read(Files.readString(joint.resolve("alpha-hull.wkt")));
+        assertTrue(hull.isValid());
+        assertFalse(hull.isEmpty());
+        if (flag.startsWith("--alpha-fill=")) {
+            var outline = reader.read(Files.readString(joint.resolve("outline.wkt")));
+            assertTrue(covers(outline, 2610200, 1232410));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"--alpha-fill=0", "--alpha-fill=-1", "--alpha-replace=NaN",
+            "--alpha-fill=Infinity", "--alpha-fill=0.75 --alpha-replace=0.75",
+            "--early-close --alpha-fill=0.75", "--alpha-replace=0.75 --early-close"})
+    void rejectsInvalidOrConflictingAlphaOptions(String flags, @TempDir Path temp) throws Exception {
+        Path input = writeHeightFixture(temp.resolve("vegetation.las"));
+        Path output = temp.resolve("output");
+        var args = new ArrayList<>(List.of(flags.split(" ")));
+        args.addAll(List.of("all", output.toString(), "2610200", "1232400", "2610205", "1232405",
+                "2610200", "1232400", "2610205", "1232405", input.toString()));
+
+        assertThrows(IllegalArgumentException.class, () -> VegetationOutlines.main(args.toArray(String[]::new)));
+        assertFalse(Files.exists(output));
     }
 
     @Test

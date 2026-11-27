@@ -31,10 +31,16 @@ OPENING_WINDOW = (2610200, 1232400, 2610400, 1232550)
 OPENING_SEAM_X = 2610275
 MODES = ("all", "neighbors")
 THINNING_VARIANTS = ("grid", "spacing", "none")
+ALPHA_VARIANTS = ("replace", "fill")
+ALPHA_RADII = (0.50, 0.75, 0.76, 0.80, 1.00, 1.50)
 OUTLINE_SNAPSHOTS = {
     "beforeErosion": "before-erosion.wkt",
     "afterErosion": "after-erosion.wkt",
     "afterDilation": "after-dilation.wkt",
+}
+ALPHA_SNAPSHOTS = {
+    "alphaHull": "alpha-hull.wkt",
+    "alphaBackBuffer": "alpha-back-buffer.wkt",
 }
 
 
@@ -143,7 +149,7 @@ def timed(command, log):
     return {"wallSeconds": elapsed, **counters}
 
 
-def geometry(args, run, mode, bounds, cores, source, *, thinning=None, early_close=False,
+def geometry(args, run, mode, bounds, cores, source, *, thinning=None, early_close=False, alpha=None,
              snapshots=False, heap="512m"):
     classpath = os.pathsep.join((str(args.classes), str(args.cli.resolve().parents[1] / "lib" / "*")))
     java_home = os.environ.get("JAVA_HOME")
@@ -153,6 +159,9 @@ def geometry(args, run, mode, bounds, cores, source, *, thinning=None, early_clo
         command.append(f"--thinning={thinning}")
     if early_close:
         command.append("--early-close")
+    if alpha is not None:
+        variant, radius = alpha
+        command.append(f"--alpha-{variant}={radius}")
     if snapshots:
         command.append("--snapshots")
     command.extend((mode, run, *bounds))
@@ -163,7 +172,11 @@ def geometry(args, run, mode, bounds, cores, source, *, thinning=None, early_clo
     require(outline.is_valid, f"Invalid outline in {run}")
     require(outline.is_empty or outline.geom_type in ("Polygon", "MultiPolygon"),
             f"Unexpected outline geometry type in {run}")
-    return outline, {"process": stats, "stages": json.loads((run / "metrics.json").read_text())}
+    stages = json.loads((run / "metrics.json").read_text())
+    if alpha is not None:
+        require(stages.get("alpha") == {"mode": variant, "radiusMetres": radius},
+                f"Unexpected alpha method or radius in {run}")
+    return outline, {"process": stats, "stages": stages}
 
 
 def export(args, run, layers):
@@ -334,16 +347,52 @@ def opening_metrics(actual, opening):
     }
 
 
+def opening_preserved(metrics):
+    return (metrics["largestOpenFraction"] >= 0.95 and metrics["largestOpenIsEnclosed"]
+            and metrics["fragmentCountAtLeast1M2"] == 0)
+
+
+def holdout_opening(args, baseline, expected):
+    package = baseline / "holdout/comparison.gpkg"
+    largest_extra = max(read_layer(args, package, "zusaetzlich"), key=lambda g: g.area)
+    target = max(interior_openings(expected), key=lambda hole: hole.intersection(largest_extra).area)
+    require(largest_extra.symmetric_difference(target).area < 1e-6,
+            "The largest baseline holdout excess must match the fixed Flotron opening")
+    return target
+
+
+def outline_validation_cases(holdout_target, riedholz_opening):
+    holdout, seam = REGIONS["holdout"], REGIONS["seam"]
+    return {
+        "holdout": ("holdout", holdout, tiled(holdout), {"lichtung_flotron": holdout_target}),
+        "seam-joint": ("seam", seam, [seam], {}),
+        "seam-split": ("seam", seam, split_at(seam, SEAM_X), {}),
+        "opening-joint": ("calibration", OPENING_WINDOW, [OPENING_WINDOW], {"lichtung_flotron": riedholz_opening}),
+        "opening-split": ("calibration", OPENING_WINDOW, split_at(OPENING_WINDOW, OPENING_SEAM_X),
+                          {"lichtung_flotron": riedholz_opening}),
+    }
+
+
+def opening_frame_for(target):
+    frame = geo.box(*OPENING_WINDOW)
+    require(frame.contains(target) and target.bounds[0] < OPENING_SEAM_X < target.bounds[2],
+            "The focused split must cut through the fixed Riedholz opening")
+    return frame
+
+
 def snapshot_case(args, path, bounds, cores, source, expected, focus, *, thinning=None,
-                  early_close=False, opening=None, heap="512m"):
+                  early_close=False, alpha=None, opening=None, heap="512m"):
     variant = "early-close" if early_close else thinning or "baseline"
+    if alpha is not None:
+        variant = f"alpha-{alpha[0]}={alpha[1]:.2f}"
     print(f"{variant} {path.name} (-Xmx{heap})", flush=True)
     actual, stats = geometry(args, path, "all", bounds, cores, source,
-                             thinning=thinning, early_close=early_close, snapshots=True, heap=heap)
+                             thinning=thinning, early_close=early_close, alpha=alpha, snapshots=True, heap=heap)
     started = time.perf_counter()
     clip = geo.box(*bounds)
     snapshots = {}
-    for stage, filename in OUTLINE_SNAPSHOTS.items():
+    names = OUTLINE_SNAPSHOTS if alpha is None else {**ALPHA_SNAPSHOTS, **OUTLINE_SNAPSHOTS}
+    for stage, filename in names.items():
         outline = geo.from_wkt((path / filename).read_text())
         require(outline.is_valid, f"Invalid {stage} geometry in {path}")
         snapshots[stage] = outline.intersection(clip)
@@ -358,11 +407,14 @@ def snapshot_case(args, path, bounds, cores, source, expected, focus, *, thinnin
     opening_layers = {}
     if opening is not None:
         stats["opening"], opening_layers = opening_metrics(actual, opening)
+    alpha_layers = {} if alpha is None else {
+        "alpha_huelle": snapshots["alphaHull"], "nach_rueckpuffer": snapshots["alphaBackBuffer"],
+    }
     stats["comparisonSeconds"] = time.perf_counter() - started
     stats["exportSeconds"] = export(args, path, {
         "bestockung": actual, "referenz": expected, "zusaetzlich": extra, "fehlend": missing,
         "vor_erosion": before, "nach_erosion": after, "nach_aufweitung": snapshots["afterDilation"],
-        **focus, **opening_layers,
+        **alpha_layers, **focus, **opening_layers,
     })
     return actual, {
         "comparison": comparison,
@@ -496,27 +548,13 @@ def compare_early_closing(args, manifest, record):
     expected = {region: reference(args, bounds) for region, bounds in REGIONS.items()}
     focus = thinning_focus(args, baseline, expected["calibration"])
     target = focus["lichtung_flotron"]
-    opening_frame = geo.box(*OPENING_WINDOW)
-    require(opening_frame.contains(target) and target.bounds[0] < OPENING_SEAM_X < target.bounds[2],
-            "The focused split must cut through the fixed Riedholz opening")
-    opening_expected = expected["calibration"].intersection(opening_frame)
+    opening_expected = expected["calibration"].intersection(opening_frame_for(target))
+    holdout_target = holdout_opening(args, baseline, expected["holdout"])
 
-    holdout_package = baseline / "holdout/comparison.gpkg"
-    largest_extra = max(read_layer(args, holdout_package, "zusaetzlich"), key=lambda g: g.area)
-    holdout_target = max(interior_openings(expected["holdout"]),
-                         key=lambda hole: hole.intersection(largest_extra).area)
-    require(largest_extra.symmetric_difference(holdout_target).area < 1e-6,
-            "The largest baseline holdout excess must match the fixed Flotron opening")
-
-    calibration, holdout, seam = (REGIONS[name] for name in ("calibration", "holdout", "seam"))
+    calibration, seam = REGIONS["calibration"], REGIONS["seam"]
     cases = {
         "calibration-all": ("calibration", calibration, tiled(calibration), focus),
-        "holdout": ("holdout", holdout, tiled(holdout), {"lichtung_flotron": holdout_target}),
-        "seam-joint": ("seam", seam, [seam], {}),
-        "seam-split": ("seam", seam, split_at(seam, SEAM_X), {}),
-        "opening-joint": ("calibration", OPENING_WINDOW, [OPENING_WINDOW], {"lichtung_flotron": target}),
-        "opening-split": ("calibration", OPENING_WINDOW, split_at(OPENING_WINDOW, OPENING_SEAM_X),
-                          {"lichtung_flotron": target}),
+        **outline_validation_cases(holdout_target, target),
     }
     inputs = {region: prepared(manifest, region) for region in REGIONS}
     record.update({"baselineDirectory": str(baseline.resolve()), "maxHeap": heap,
@@ -557,8 +595,7 @@ def compare_early_closing(args, manifest, record):
         failures.append(f"Riedholz must recover at least 600 m² with a gain in both omissions: {recovered}")
     for case in ("calibration-all", "opening-joint", "opening-split"):
         result = early[case]["opening"]
-        if (result["largestOpenFraction"] < 0.95 or not result["largestOpenIsEnclosed"]
-                or result["fragmentCountAtLeast1M2"] != 0):
+        if not opening_preserved(result):
             failures.append(f"The Riedholz opening fails the connectivity criteria in {case}: {result}")
 
     old, new = (report["holdout"]["comparison"] for report in (standard, early))
@@ -579,6 +616,97 @@ def compare_early_closing(args, manifest, record):
     require(not failures, f"Early closing acceptance failed. See {report}\n" + "\n".join(failures))
 
 
+def compare_alpha(args, manifest, record):
+    heap = "2g"
+    baseline = args.baseline_dir or args.cache / "acceptance"
+    early_dir = args.early_closing_dir or args.cache / "early-closing-2g"
+    early_report = early_dir / "report.json"
+    require(early_report.is_file(), f"Missing accepted 0.25 m comparison report: {early_report}")
+    calibration = REGIONS["calibration"]
+    calibration_expected = reference(args, calibration)
+    focus = thinning_focus(args, baseline, calibration_expected)
+    target = focus["lichtung_flotron"]
+    opening_expected = calibration_expected.intersection(opening_frame_for(target))
+    input_las = {region: str(prepared(manifest, region).resolve()) for region in REGIONS}
+    record.update({"baselineDirectory": str(baseline.resolve()), "maxHeap": heap,
+                   "earlyClosingReport": str(early_report.resolve()), "inputLas": input_las})
+
+    series = {}
+    for variant in ALPHA_VARIANTS:
+        rows = []
+        for radius in ALPHA_RADII:
+            work = args.output / variant / f"{radius:.2f}"
+            work.mkdir(parents=True)
+            _, report = snapshot_case(args, work / "calibration-all", calibration, tiled(calibration),
+                                      input_las["calibration"], calibration_expected, focus,
+                                      alpha=(variant, radius), opening=target, heap=heap)
+            recovered = {key: report["fixedProbes"][key]["finalM2"]
+                         for key in ("fehlflaeche_1_grid", "fehlflaeche_2_grid")}
+            total = sum(recovered.values())
+            checks = {"recovery": total >= 600, "opening": opening_preserved(report["opening"])}
+            rows.append({"alphaM": radius, "recoveredM2": {**recovered, "total": total},
+                         "checks": checks, "eligible": all(checks.values()), **report})
+        series[variant] = rows
+
+    def rank(row):
+        comparison = row["comparison"]
+        p95 = comparison["boundaryP95M"]
+        return row["eligible"], comparison["iou"], -(p95 if p95 is not None else math.inf), -row["alphaM"]
+
+    finalists = {variant: max(rows, key=rank) for variant, rows in series.items()}
+    record.update({"series": series, "selected": {
+        variant: {"alphaM": row["alphaM"], "eligible": row["eligible"]} for variant, row in finalists.items()
+    }})
+    (args.output / "calibration.json").write_text(json.dumps(record, indent=2) + "\n")
+
+    # The 0.25 m comparison and independent reference geometries are read after the choices are frozen.
+    accepted = json.loads(early_report.read_text())
+    require(accepted["passed"] and accepted["inputLas"] == input_las
+            and accepted["reference"] == record["reference"],
+            "The accepted 0.25 m report must use the same LAS and Flotron reference")
+    comparison_025 = accepted["variants"]["early-close"]
+    expected = {"calibration": calibration_expected, **{
+        region: reference(args, REGIONS[region]) for region in ("holdout", "seam")
+    }}
+    cases = outline_validation_cases(holdout_opening(args, baseline, expected["holdout"]), target)
+    validation = {}
+    for variant, row in finalists.items():
+        radius = row["alphaM"]
+        work = args.output / variant / f"{radius:.2f}"
+        outlines, reports = {}, {}
+        for case, (region, bounds, cores, probes) in cases.items():
+            reference_outline = expected[region] if bounds == REGIONS[region] else opening_expected
+            outlines[case], reports[case] = snapshot_case(
+                args, work / case, bounds, cores, input_las[region], reference_outline, probes,
+                alpha=(variant, radius), opening=probes.get("lichtung_flotron"), heap=heap)
+        seam = seam_metrics(outlines["seam-split"], outlines["seam-joint"], REGIONS["seam"], SEAM_X)
+        opening_seam = seam_metrics(outlines["opening-split"], outlines["opening-joint"],
+                                    OPENING_WINDOW, OPENING_SEAM_X)
+        for name, metrics in (("seam", seam), ("opening", opening_seam)):
+            metrics["byteIdenticalWkt"] = (
+                (work / f"{name}-joint/outline.wkt").read_bytes()
+                == (work / f"{name}-split/outline.wkt").read_bytes()
+            )
+        strip = seam["differenceWithin10m"]
+        new = reports["holdout"]["comparison"]
+        old = comparison_025["holdout"]["comparison"]
+        old_p95, new_p95 = old["boundaryP95M"], new["boundaryP95M"]
+        seam_p95 = strip["boundaryP95M"]
+        checks = {
+            "riedholz": row["eligible"],
+            "holdoutIoU": new["iou"] >= old["iou"],
+            "holdoutP95": old_p95 is not None and new_p95 is not None and new_p95 <= old_p95,
+            "seam": strip["differenceM2"] <= 2 and seam_p95 is not None and seam_p95 <= 0.10,
+            "openingJoint": opening_preserved(reports["opening-joint"]["opening"]),
+            "openingSplit": opening_preserved(reports["opening-split"]["opening"]),
+        }
+        validation[variant] = {"alphaM": radius, **reports, "seam": seam, "openingSeam": opening_seam,
+                               "checks": checks, "recommended": all(checks.values())}
+
+    record.update({"earlyClosingComparison": comparison_025, "validation": validation, "complete": True})
+    (args.output / "report.json").write_text(json.dumps(record, indent=2) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_CACHE / "prepare.json")
@@ -595,14 +723,18 @@ def main():
                             help="compare grid, minimum spacing and no thinning with three fresh JVM runs each")
     comparison.add_argument("--compare-early-closing", action="store_true",
                             help="compare early 0.25 m closing with the accepted grid baseline")
+    comparison.add_argument("--compare-alpha", action="store_true",
+                            help="calibrate alpha replacement and fill, then validate the selected candidates")
     parser.add_argument("--baseline-dir", type=Path, help="accepted baseline, defaults to <cache>/acceptance")
+    parser.add_argument("--early-closing-dir", type=Path,
+                        help="accepted 0.25 m comparison, defaults to <cache>/early-closing-2g")
     args = parser.parse_args()
     args.gdal_bin = args.gdal_bin or args.pdal.resolve().parent
     require(args.benchmark_runs >= 0, "Negative benchmark run count")
     require(not args.compare_thinning or args.benchmark_runs == 0,
             "The thinning comparison has its own fixed benchmark rounds")
-    require(not args.compare_early_closing or args.benchmark_runs == 0,
-            "The early closing comparison does not run benchmarks")
+    require(not (args.compare_early_closing or args.compare_alpha) or args.benchmark_runs == 0,
+            "The early closing and alpha comparisons do not run benchmarks")
     args.output.mkdir(parents=True)
     manifest = json.loads(args.manifest.read_text())
     record = {
@@ -617,6 +749,9 @@ def main():
         return
     if args.compare_early_closing:
         compare_early_closing(args, manifest, record)
+        return
+    if args.compare_alpha:
+        compare_alpha(args, manifest, record)
         return
     expected = reference(args, REGIONS["calibration"])
     mode, record["calibration"] = calibrate(args, args.output, prepared(manifest, "calibration"), expected)

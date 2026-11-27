@@ -1921,3 +1921,55 @@ Kachelung. Die Einfachheitsprüfung behält beide Änderungen
 im vorhandenen Experimentkern und nutzt den etablierten
 Vergleich für Geometrien und GeoPackage-Export.
 [Realdatenvergleich](experiments.md#frühe-schliessung-mit-025-m)
+
+## FME-ähnlicher Alpha-Hüllenversuch
+
+27. November 2026. Basis `46c8522`. Die beiden experimentellen
+Optionen `--alpha-replace` und `--alpha-fill` verwenden dieselben
+Randpunkte und dieselbe Umkreisradiusregel. Die zweite Variante
+vereinigt die Dreiecke mit der bestehenden Kreisfläche. Der
+gemeinsame Punktpfad bewahrt die Kachelkontexte und der
+bisherige Rückpuffer, die Lichtungsregel und die finalen
+Puffer folgen direkt auf die Alpha-Hülle.
+
+- Der Standardbuild `./gradlew --offline -Pexperiments clean check :experiments:test installDist`
+  bestand unter Temurin 25.0.3+9 auf Apple M1 mit macOS 15.8.1
+  und Gradle 9.9.1. 234 Produkttests bestanden in 7,272 s
+  summierter Suitezeit. Der Wiederholungslauf
+  `./gradlew --offline -Pexperiments check :experiments:test installDist`
+  prüfte die Ringbereinigung im Experimentpfad mit 39 Experimenttests
+  in 7,095 s. Beide Berichte enthalten null Fehlschläge, Fehler und
+  übersprungene Tests. Die
+  JUnit-XML-Berichte liegen in `build/test-results/test`
+  und `experiments/build/test-results/test`.
+- `python3 tools/check-real-data.py <pdal>` bestand mit PDAL
+  2.10.2 und LazPerf. Alle 496’586 ausgegebenen LAS-Records
+  stimmten byteweise mit der Referenz überein. Header,
+  Rohattribute, Reihenfolge, VLRs, CRS und Statistik
+  bestanden ihre Vergleichsprüfungen. SIGTERM ergab Exit 143
+  ohne veröffentlichte oder temporäre Ausgabe.
+  Das Protokoll liegt in `build/reports/alpha-pdal.log`.
+- `experiments/check-vegetation-outlines.py --compare-alpha`
+  beendete alle 22 Realdatenläufe mit JTS 1.20.0, GDAL 3.13.3,
+  Shapely 2.1.2 und GEOS 3.13.1 unter `-Xmx2g`. Die
+  vollständige Reihe und die vor der unabhängigen Prüfung
+  eingefrorenen Kandidaten stehen in
+  `.cache/vegetation-outlines/alpha-2g/report.json`.
+  Alle 22 GeoPackages haben die erwarteten LV95-Layer.
+  Die Alpha-Ergänzung bei 0,50 m gewann in Riedholz
+  932,77 m² zurück und liess 980,10 m² zusammenhängend
+  offen. Die beiden Nahtpaare sind bytegleich.
+  Keine Einstellung erfüllte das Riedholzer Lichtungsziel
+  von 95 %. Die 0,25-m-Pufferschliessung bleibt der
+  abgenommene Vergleichspfad.
+
+Beim ersten Realdatenlauf ergab Alpha 0,75 m im Ersatzmodus
+eine selbstberührende Ringgeometrie im LV95-Zwischenstand.
+Die bedingte JTS-Ringbereinigung wird für die Alpha-Hülle
+und die beiden in LV95 geschriebenen Alpha-Zwischenstände
+angewendet. Im betroffenen Zwischenstand ändert die
+Bereinigung die Fläche um rund 1,4 × 10⁻¹¹ m².
+Der Wiederholungslauf verwendet diese Geometrien.
+Die Einfachheitsprüfung hält die Dreiecksregel im Experiment
+und nutzt den vorhandenen Punkt-, Puffer- und Exportpfad.
+[Realdatenvergleich](experiments.md#alpha-hüllen-nach-der-fme-dreiecksregel)
