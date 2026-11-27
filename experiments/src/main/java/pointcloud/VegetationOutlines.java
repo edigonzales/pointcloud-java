@@ -10,8 +10,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -26,16 +24,10 @@ import org.locationtech.jts.geom.GeometryCollection;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.PrecisionModel;
-import org.locationtech.jts.geom.Triangle;
 import org.locationtech.jts.geom.util.AffineTransformation;
-import org.locationtech.jts.geom.util.GeometryFixer;
-import org.locationtech.jts.operation.buffer.BufferOp;
-import org.locationtech.jts.operation.buffer.BufferParameters;
-import org.locationtech.jts.operation.overlayng.CoverageUnion;
 import org.locationtech.jts.operation.overlayng.OverlayNG;
 import org.locationtech.jts.operation.overlayng.OverlayNGRobust;
 import org.locationtech.jts.simplify.TopologyPreservingSimplifier;
-import org.locationtech.jts.triangulate.DelaunayTriangulationBuilder;
 
 /** Experimental polygonization of LAS records already selected by class and height above ground. */
 public final class VegetationOutlines {
@@ -44,19 +36,10 @@ public final class VegetationOutlines {
     private static final double NEIGHBOR_CELL_METRES = 0.5;
     private static final double GRID_METRES = 0.25;
     private static final double DISK_METRES = 1.4;
-    private static final double EARLY_CLOSE_METRES = 0.25;
     private static final double BUFFER_CELL_METRES = 4;
     private static final int BUFFER_BLOCK_POINTS = 128;
     private static final int MAX_CANDIDATES = 1_000_000;
-    private static final int MAX_REGION_CANDIDATES = 2_000_000;
-    private static final double CENTIMETRE = 0.01;
-    private static final int SPACING_CM = 25;
     private static final int MAX_TILES = 16;
-    private static final String BEFORE_EROSION = "before-erosion.wkt";
-    private static final String AFTER_EROSION = "after-erosion.wkt";
-    private static final String AFTER_DILATION = "after-dilation.wkt";
-    private static final String ALPHA_HULL = "alpha-hull.wkt";
-    private static final String ALPHA_BACK_BUFFER = "alpha-back-buffer.wkt";
     private static final GeometryFactory LV95 = new GeometryFactory(new PrecisionModel(), 2056);
     private static final Coordinate[] DISK_OFFSETS =
             LV95.createPoint(new CoordinateXY(0, 0)).buffer(DISK_METRES).getCoordinates();
@@ -68,66 +51,17 @@ public final class VegetationOutlines {
 
     enum Mode { ALL, NEIGHBORS }
 
-    enum Thinning { GRID, SPACING, NONE }
-
     record Selection(Coordinate[] points, int selected, int kept, int haloKept) {}
-
-    record SpacingSelection(long[] positions, int unique) {}
-
-    private record SpacingMetrics(int selected, int unique, int retained, double readSeconds,
-            double selectionSeconds) {}
-
-    private record RegionSelection(SpacingSelection selection, double offsetX, double offsetY,
-            int[] tileSelected, int[] tileHaloKept, SpacingMetrics metrics) {}
 
     private record TileMetrics(String las, double[] core, int selected, int kept, int haloKept, int thinned,
             double readSeconds, double selectionSeconds, double geometrySeconds) {}
 
-    private record Alpha(String mode, double radiusMetres) {}
-
     private record Metrics(String mode, List<TileMetrics> tiles, double area, int polygons, int vertices,
-            double finishSeconds, String thinning, SpacingMetrics spacing, boolean earlyClose, Alpha alpha) {}
+            double finishSeconds) {}
 
     public static void main(String[] args) throws IOException {
-        String thinning = null;
-        boolean snapshots = false;
-        boolean earlyClose = false;
-        Alpha alpha = null;
-        int prefix = 0;
-        while (prefix < args.length && args[prefix].startsWith("--")) {
-            String option = args[prefix++];
-            if (option.equals("--snapshots") && !snapshots) {
-                snapshots = true;
-            } else if (option.equals("--early-close") && !earlyClose) {
-                earlyClose = true;
-            } else if (alpha == null && (option.startsWith("--alpha-replace=") || option.startsWith("--alpha-fill="))) {
-                double radius = Double.parseDouble(option.substring(option.indexOf('=') + 1));
-                requireAlphaRadius(radius);
-                alpha = new Alpha(option.startsWith("--alpha-fill=") ? "fill" : "replace", radius);
-            } else if (option.startsWith("--thinning=") && thinning == null) {
-                thinning = switch (option) {
-                    case "--thinning=grid" -> "grid";
-                    case "--thinning=spacing" -> "spacing";
-                    case "--thinning=none" -> "none";
-                    default -> throw new IllegalArgumentException("Use --thinning=grid|spacing|none");
-                };
-            } else {
-                throw new IllegalArgumentException("Unknown or repeated option " + option);
-            }
-        }
-        if (earlyClose && alpha != null) {
-            throw new IllegalArgumentException("Choose either early closing or an alpha hull");
-        }
-        if (prefix != 0) {
-            args = Arrays.copyOfRange(args, prefix, args.length);
-        }
-        if (thinning == null) {
-            thinning = "grid";
-        }
         if (args.length < 11 || (args.length - 6) % 5 != 0 || (args.length - 6) / 5 > MAX_TILES) {
-            throw new IllegalArgumentException("Expected [--thinning=grid|spacing|none] [--snapshots] [--early-close]"
-                    + " [--alpha-replace=<m>|--alpha-fill=<m>]"
-                    + " <all|neighbors> <new-output-dir> <eval-xmin> <eval-ymin>"
+            throw new IllegalArgumentException("Expected <all|neighbors> <new-output-dir> <eval-xmin> <eval-ymin>"
                     + " <eval-xmax> <eval-ymax> followed by up to " + MAX_TILES
                     + " groups of <xmin> <ymin> <xmax> <ymax> <prepared.las>");
         }
@@ -140,19 +74,9 @@ public final class VegetationOutlines {
         if (Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
             throw new FileAlreadyExistsException(output.toString());
         }
-        var evaluation = bounds(args, 2);
-        var clip = LV95.toGeometry(evaluation);
-        RegionSelection region = null;
-        if (mode == Mode.NEIGHBORS && !thinning.equals("grid")) {
-            throw new IllegalArgumentException("Thinning comparison requires all mode");
-        }
-        if (thinning.equals("spacing")) {
-            region = prepareSpacing(args, evaluation);
-        }
+        var clip = LV95.toGeometry(bounds(args, 2));
         var partials = new ArrayList<Geometry>();
         var tiles = new ArrayList<TileMetrics>();
-        // Keep openings whole through the hull and width test, including at internal tile cuts.
-        var sharedPoints = earlyClose || alpha != null ? new HashSet<Coordinate>() : null;
         for (int i = 6; i < args.length; i += 5) {
             var core = bounds(args, i);
             if (core.getWidth() > 1000 || core.getHeight() > 1000) {
@@ -160,32 +84,14 @@ public final class VegetationOutlines {
             }
             var las = Path.of(args[i + 4]);
             long startRead = System.nanoTime();
-            long startSelection;
-            Selection selection;
-            if (region == null) {
-                var candidates = read(las, expanded(core, HALO_METRES + NEIGHBOR_METRES));
-                startSelection = System.nanoTime();
-                selection = thinning.equals("none")
-                        ? select(candidates, core, mode, Thinning.NONE) : select(candidates, core, mode);
-                candidates.clear();
-            } else {
-                startSelection = startRead;
-                int tile = (i - 6) / 5;
-                int count = region.tileSelected()[tile];
-                var positions = spacingPoints(region.selection(), core, region.offsetX(), region.offsetY());
-                selection = new Selection(positions, count, count, region.tileHaloKept()[tile]);
-            }
+            var candidates = read(las, expanded(core, HALO_METRES + NEIGHBOR_METRES));
+            long startSelection = System.nanoTime();
+            var selection = select(candidates, core, mode);
+            candidates.clear();
             long startGeometry = System.nanoTime();
-            if (sharedPoints == null) {
-                partials.add(trace(selection.points()));
-            } else {
-                for (var point : selection.points()) {
-                    if (sharedPoints.add(point) && sharedPoints.size() > MAX_REGION_CANDIDATES) {
-                        throw new IllegalArgumentException("Shared hull exceeds 2,000,000 distinct XY positions");
-                    }
-                }
-            }
+            var partial = trace(selection.points());
             long done = System.nanoTime();
+            partials.add(partial);
             tiles.add(new TileMetrics(las.toString(),
                     new double[]{core.getMinX(), core.getMinY(), core.getMaxX(), core.getMaxY()},
                     selection.selected(), selection.kept(), selection.haloKept(), selection.points().length,
@@ -193,13 +99,6 @@ public final class VegetationOutlines {
                     seconds(startGeometry, done)));
         }
         long startFinish = System.nanoTime();
-        var recorded = snapshots ? new LinkedHashMap<String, Geometry>() : null;
-        if (sharedPoints != null) {
-            checkInterrupted();
-            var points = sharedPoints.toArray(Coordinate[]::new);
-            sharedPoints.clear();
-            partials.add(trace(points, earlyClose, alpha, recorded));
-        }
         var outline = finish(partials, clip);
         if (!outline.isValid()) {
             throw new IllegalStateException("Final vegetation outline is invalid");
@@ -207,151 +106,8 @@ public final class VegetationOutlines {
         outline.normalize();
         var metrics = new Metrics(args[0], tiles, outline.getArea(),
                 outline.isEmpty() ? 0 : outline.getNumGeometries(), outline.getNumPoints(),
-                seconds(startFinish, System.nanoTime()), thinning, region == null ? null : region.metrics(),
-                earlyClose, alpha);
-        if (recorded != null) {
-            // Preserve the accepted grid computation. Replay the two buffers on its
-            // already fixed tile geometries for recording, after computing the outline.
-            var dissolved = OverlayNGRobust.union(partials, clip.getFactory());
-            var eroded = dissolved.buffer(-2.5);
-            recorded.put(BEFORE_EROSION, dissolved);
-            recorded.put(AFTER_EROSION, eroded);
-            recorded.put(AFTER_DILATION, eroded.buffer(0.7));
-        }
-        publish(output, outline, metrics, recorded);
-    }
-
-    private static RegionSelection prepareSpacing(String[] args, Envelope evaluation) throws IOException {
-        int tiles = (args.length - 6) / 5;
-        var source = Path.of(args[10]).toAbsolutePath().normalize();
-        var geometryBounds = new Envelope[tiles];
-        var candidateBounds = new Envelope[tiles];
-        for (int tile = 0; tile < tiles; tile++) {
-            int index = 6 + tile * 5;
-            var core = bounds(args, index);
-            if (!evaluation.covers(core) || core.getWidth() > 1000 || core.getHeight() > 1000) {
-                throw new IllegalArgumentException("Spacing cores must be within the evaluation bounds and at most 1 km");
-            }
-            if (!source.equals(Path.of(args[index + 4]).toAbsolutePath().normalize())) {
-                throw new IllegalArgumentException("Spacing requires the same prepared LAS for all cores");
-            }
-            geometryBounds[tile] = expanded(core, HALO_METRES);
-            candidateBounds[tile] = expanded(core, HALO_METRES + NEIGHBOR_METRES);
-        }
-
-        var selected = new int[tiles];
-        var haloKept = new int[tiles];
-        var regionBounds = expanded(evaluation, HALO_METRES);
-        int count = 0;
-        long startRead = System.nanoTime();
-        LasHeader header;
-        long[] positions;
-        try (var reader = new LasReader(source, LasReader.DEFAULT_BATCH_SIZE)) {
-            header = reader.header();
-            if (header.scale(0) != CENTIMETRE || header.scale(1) != CENTIMETRE) {
-                throw new IOException("Spacing requires a prepared LAS with exact centimetre XY scales");
-            }
-            positions = new long[(int) Math.min(MAX_REGION_CANDIDATES, header.pointCount())];
-            for (var batch = reader.readBatch(); batch != null; batch = reader.readBatch()) {
-                checkInterrupted();
-                for (int i = 0; i < batch.size(); i++) {
-                    double x = batch.x(i);
-                    double y = batch.y(i);
-                    if (inside(x, y, regionBounds)) {
-                        if (count == MAX_REGION_CANDIDATES) {
-                            throw new IOException("Spacing candidate limit exceeded in " + source);
-                        }
-                        positions[count++] = packPosition(batch.rawX(i), batch.rawY(i));
-                    }
-                    for (int tile = 0; tile < tiles; tile++) {
-                        if (inside(x, y, candidateBounds[tile]) && ++selected[tile] > MAX_CANDIDATES) {
-                            throw new IOException("Candidate limit exceeded in " + source + ", use a smaller core");
-                        }
-                        if (inside(x, y, geometryBounds[tile])) {
-                            haloKept[tile]++;
-                        }
-                    }
-                }
-            }
-        }
-        long startSelection = System.nanoTime();
-        var spacing = spacingSelection(positions, count);
-        var metrics = new SpacingMetrics(count, spacing.unique(), spacing.positions().length,
-                seconds(startRead, startSelection), seconds(startSelection, System.nanoTime()));
-        return new RegionSelection(spacing, header.offset(0), header.offset(1), selected, haloKept, metrics);
-    }
-
-    static long packPosition(int x, int y) {
-        // Signed sort of the packed keys preserves signed X, then signed Y.
-        return ((long) x << 32) | Integer.toUnsignedLong(y ^ Integer.MIN_VALUE);
-    }
-
-    static SpacingSelection spacingSelection(long[] positions, int length) {
-        Arrays.sort(positions, 0, length);
-        var heads = new HashMap<Long, Integer>();
-        var next = new int[length];
-        long previous = 0;
-        int unique = 0;
-        int retained = 0;
-        for (int i = 0; i < length; i++) {
-            if ((i & 4095) == 0) {
-                checkInterrupted();
-            }
-            long position = positions[i];
-            if (i != 0 && position == previous) {
-                continue;
-            }
-            previous = position;
-            unique++;
-            int x = (int) (position >> 32);
-            int y = (int) position ^ Integer.MIN_VALUE;
-            int cellX = Math.floorDiv(x, SPACING_CM);
-            int cellY = Math.floorDiv(y, SPACING_CM);
-            if (!tooClose(x, y, cellX, cellY, positions, heads, next)) {
-                positions[retained] = position;
-                var former = heads.put(cellKey(cellX, cellY), retained);
-                next[retained++] = former == null ? -1 : former;
-            }
-        }
-        return new SpacingSelection(Arrays.copyOf(positions, retained), unique);
-    }
-
-    private static boolean tooClose(int x, int y, int cellX, int cellY, long[] positions,
-            Map<Long, Integer> heads, int[] next) {
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                int neighbor = heads.getOrDefault(cellKey(cellX + dx, cellY + dy), -1);
-                while (neighbor >= 0) {
-                    long point = positions[neighbor];
-                    // Subtraction fits in int because candidates occupy this cell or a neighboring cell.
-                    int deltaX = x - (int) (point >> 32);
-                    int deltaY = y - ((int) point ^ Integer.MIN_VALUE);
-                    if (deltaX * deltaX + deltaY * deltaY < SPACING_CM * SPACING_CM) {
-                        return true;
-                    }
-                    neighbor = next[neighbor];
-                }
-            }
-        }
-        return false;
-    }
-
-    static Coordinate[] spacingPoints(SpacingSelection selection, Envelope core, double offsetX, double offsetY) {
-        var bounds = expanded(core, HALO_METRES);
-        var points = new ArrayList<Coordinate>();
-        var positions = selection.positions();
-        for (int i = 0; i < positions.length; i++) {
-            if ((i & 4095) == 0) {
-                checkInterrupted();
-            }
-            long position = positions[i];
-            double x = (int) (position >> 32) * CENTIMETRE + offsetX;
-            double y = ((int) position ^ Integer.MIN_VALUE) * CENTIMETRE + offsetY;
-            if (inside(x, y, bounds)) {
-                points.add(new CoordinateXY(x == 0 ? 0 : x, y == 0 ? 0 : y));
-            }
-        }
-        return points.toArray(Coordinate[]::new);
+                seconds(startFinish, System.nanoTime()));
+        publish(output, outline, metrics);
     }
 
     private static Envelope bounds(String[] args, int index) {
@@ -454,42 +210,6 @@ public final class VegetationOutlines {
         return new Selection(thinned, selected, kept, haloKept);
     }
 
-    static Selection select(List<Coordinate> highPoints, Envelope core, Mode mode, Thinning thinning) {
-        if (thinning == Thinning.GRID) {
-            return select(highPoints, core, mode);
-        }
-        if (mode != Mode.ALL || thinning != Thinning.NONE) {
-            throw new IllegalArgumentException("Unthinned selection requires all mode");
-        }
-        var geometryBounds = expanded(core, HALO_METRES);
-        var candidateBounds = expanded(core, HALO_METRES + NEIGHBOR_METRES);
-        var points = new ArrayList<Coordinate>();
-        int selected = 0;
-        for (int i = 0; i < highPoints.size(); i++) {
-            if ((i & 4095) == 0) {
-                checkInterrupted();
-            }
-            var point = highPoints.get(i);
-            if (inside(point.x, point.y, candidateBounds)) {
-                selected++;
-            }
-            if (inside(point.x, point.y, geometryBounds)) {
-                points.add(point.x == 0 || point.y == 0
-                        ? new CoordinateXY(point.x == 0 ? 0 : point.x, point.y == 0 ? 0 : point.y) : point);
-            }
-        }
-        points.sort(XY);
-        int unique = 0;
-        int haloKept = points.size();
-        for (int i = 0; i < haloKept; i++) {
-            var point = points.get(i);
-            if (unique == 0 || !point.equals2D(points.get(unique - 1))) {
-                points.set(unique++, point);
-            }
-        }
-        return new Selection(points.subList(0, unique).toArray(Coordinate[]::new), selected, selected, haloKept);
-    }
-
     private static boolean hasNeighbors(Coordinate[] points, int index, Map<Long, Integer> heads, int[] next) {
         var point = points[index];
         int x = index(point.x, NEIGHBOR_CELL_METRES);
@@ -548,22 +268,8 @@ public final class VegetationOutlines {
     }
 
     static Geometry trace(Coordinate[] points) {
-        return trace(points, false);
-    }
-
-    static Geometry trace(Coordinate[] points, boolean earlyClose) {
-        return trace(points, earlyClose, null, null);
-    }
-
-    private static Geometry trace(Coordinate[] points, boolean earlyClose, Alpha alpha,
-            Map<String, Geometry> snapshots) {
         if (points.length == 0) {
-            var empty = LV95.createPolygon();
-            if (alpha != null && snapshots != null) {
-                snapshots.put(ALPHA_HULL, empty);
-                snapshots.put(ALPHA_BACK_BUFFER, empty);
-            }
-            return empty;
+            return LV95.createPolygon();
         }
         // Translate to metre-sized local coordinates so the strict gap limit is not rounded at LV95 magnitude.
         var ordered = points.clone();
@@ -591,75 +297,10 @@ public final class VegetationOutlines {
             }
         }
         var coverage = OverlayNGRobust.union(blocks, LV95);
-        var hull = alpha == null ? closeOpenings(coverage) : alphaHull(coverage, alpha.radiusMetres(),
-                alpha.mode().equals("fill"));
-        var outline = backBuffer(hull, earlyClose);
-        var toWorld = AffineTransformation.translationInstance(originX, originY);
-        if (alpha != null && snapshots != null) {
-            snapshots.put(ALPHA_HULL, validPolygonal(toWorld.transform(hull)));
-            snapshots.put(ALPHA_BACK_BUFFER, validPolygonal(toWorld.transform(outline)));
-        }
+        var outline = closeOpenings(coverage).buffer(-DISK_METRES);
         outline = fillSmallHoles(outline);
         outline = minimumArea(TopologyPreservingSimplifier.simplify(outline, 0.10), 20);
-        return toWorld.transform(outline);
-    }
-
-    static Geometry alphaHull(Geometry coverage, double alpha, boolean fill) {
-        requireAlphaRadius(alpha);
-        if (coverage.isEmpty()) {
-            return coverage;
-        }
-        // Segmentize the rings only, including hole boundaries and the edges of vegetation islands.
-        var sites = Densifier.densify(coverage.getBoundary(), GRID_METRES);
-        checkInterrupted();
-        var triangulation = new DelaunayTriangulationBuilder();
-        triangulation.setSites(sites);
-        var factory = coverage.getFactory();
-        var triangles = triangulation.getTriangles(factory);
-        var accepted = new ArrayList<Geometry>();
-        for (int i = 0; i < triangles.getNumGeometries(); i++) {
-            if ((i & 4095) == 0) {
-                checkInterrupted();
-            }
-            var triangle = (Polygon) triangles.getGeometryN(i);
-            var vertices = triangle.getExteriorRing().getCoordinateSequence();
-            double radius = Triangle.circumradius(vertices.getCoordinate(0),
-                    vertices.getCoordinate(1), vertices.getCoordinate(2));
-            if (radius <= alpha) {
-                accepted.add(triangle);
-            }
-        }
-        if (accepted.isEmpty()) {
-            return fill ? coverage : factory.createPolygon();
-        }
-        checkInterrupted();
-        // Faces from one triangulation meet along exactly matching edges.
-        var hull = validPolygonal(CoverageUnion.union(
-                factory.createGeometryCollection(accepted.toArray(Geometry[]::new))));
-        return fill ? OverlayNGRobust.overlay(coverage, hull, OverlayNG.UNION) : hull;
-    }
-
-    private static Geometry validPolygonal(Geometry geometry) {
-        // A ring may touch itself at a vertex, including after rounding back to LV95.
-        return geometry.isValid() ? geometry : GeometryFixer.fix(geometry);
-    }
-
-    private static void requireAlphaRadius(double radius) {
-        if (!Double.isFinite(radius) || radius <= 0) {
-            throw new IllegalArgumentException("Alpha must be a positive finite radius in metres");
-        }
-    }
-
-    static Geometry backBuffer(Geometry cover, boolean earlyClose) {
-        if (earlyClose) {
-            // A simplified edge can move a nearly 10 m opening across the later 5 m buffer test.
-            var parameters = new BufferParameters();
-            parameters.setSimplifyFactor(0);
-            var expanded = BufferOp.bufferOp(cover, EARLY_CLOSE_METRES, parameters);
-            checkInterrupted();
-            return BufferOp.bufferOp(expanded, -(DISK_METRES + EARLY_CLOSE_METRES), parameters);
-        }
-        return cover.buffer(-DISK_METRES);
+        return AffineTransformation.translationInstance(originX, originY).transform(outline);
     }
 
     private static Geometry disk(double x, double y) {
@@ -750,29 +391,18 @@ public final class VegetationOutlines {
         }
     }
 
-    private static void publish(Path output, Geometry result, Metrics metrics, Map<String, Geometry> snapshots)
-            throws IOException {
+    private static void publish(Path output, Geometry result, Metrics metrics) throws IOException {
         checkInterrupted();
         Files.createDirectories(output.getParent());
         var staged = Files.createTempDirectory(output.getParent(), ".vegetation-");
         try {
             Files.writeString(staged.resolve("outline.wkt"), result.toText() + "\n");
             Files.writeString(staged.resolve("metrics.json"), Pipeline.JSON.toJson(metrics) + "\n");
-            if (snapshots != null) {
-                for (var snapshot : snapshots.entrySet()) {
-                    Files.writeString(staged.resolve(snapshot.getKey()), snapshot.getValue().toText() + "\n");
-                }
-            }
             checkInterrupted();
             Files.move(staged, output, StandardCopyOption.ATOMIC_MOVE);
         } finally {
             Files.deleteIfExists(staged.resolve("outline.wkt"));
             Files.deleteIfExists(staged.resolve("metrics.json"));
-            if (snapshots != null) {
-                for (var filename : snapshots.keySet()) {
-                    Files.deleteIfExists(staged.resolve(filename));
-                }
-            }
             Files.deleteIfExists(staged);
         }
     }

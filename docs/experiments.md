@@ -2176,6 +2176,28 @@ Bestockung, Referenz, zusätzlich und fehlend klassifizierte
 Flächen. Die Realdaten und Ausgaben liegen unter
 `.cache/vegetation-outlines`.
 
+## Abschluss der Bestockungsversuche
+
+Der ursprüngliche Prototyp aus `b57ea01` ist wieder der aktive
+Stand auf `codex/vegetation-outlines`. Er verwendet die ursprüngliche
+25-cm-Punktauswahl und die konkave JTS-Hülle. Der annotierte Tag
+`experiment/vegetation-outlines-2026-11-27` verweist auf `62eb46e`
+mit den Varianten zur Ausdünnung, frühen Pufferschliessung und
+Alpha-Hülle samt ihren Tests und Vergleichsskripten. Die
+Reproduktionsbefehle in den folgenden drei Abschnitten verwenden
+diesen Tag. Die lokalen JSON-Berichte und GeoPackages sind
+unter `.cache/vegetation-outlines` abgelegt.
+
+Die Flotron-Lieferung dient zur Messung geometrischer Abweichungen.
+In der Orthofoto-Sichtprobe am Riedholzer Waldrand bei ungefähr
+LV95 E 2’610’418 und N 1’232’608 wirkte der von Java weitgehend
+offen gelassene Einschnitt wegen des sichtbaren Bodens und der
+lückigen Vegetation plausibel. Flotron zählt ihn zur Bestockung.
+Die Sichtprobe beurteilt diesen Ausschnitt. Sie gibt keine
+Aussage über die Vegetationshöhe oder die übrigen Abweichungen.
+Die höhere Flächen-IoU allein war deshalb kein Übernahmegrund
+für die späteren Varianten.
+
 ## Ausdünnung der Bestockungspunkte bei 25 cm
 
 Der Vergleich verwendet die vorbereiteten LAS-Dateien, Flotron-Polygone

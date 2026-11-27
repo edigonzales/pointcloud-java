@@ -26,7 +26,6 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
-    systemProperty 'pointcloud.experiments.classpath', sourceSets.main.runtimeClasspath.asPath
 }
 
 application {

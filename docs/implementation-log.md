@@ -1973,3 +1973,30 @@ Der Wiederholungslauf verwendet diese Geometrien.
 Die Einfachheitsprüfung hält die Dreiecksregel im Experiment
 und nutzt den vorhandenen Punkt-, Puffer- und Exportpfad.
 [Realdatenvergleich](experiments.md#alpha-hüllen-nach-der-fme-dreiecksregel)
+
+## Archivierung der Bestockungsversuche
+
+27. November 2026. Der annotierte Tag
+`experiment/vegetation-outlines-2026-11-27` sichert den
+Experimentstand `62eb46e` mit Ausdünnungs-, Puffer- und
+Alpha-Varianten. Das Experimentmodul entspricht wieder
+dateigenau dem ersten Prototyp aus `b57ea01`. Die
+Versuchsberichte und die Einordnung der Orthofoto-Sichtprobe
+bleiben in der Dokumentation.
+
+- `./gradlew --offline -Pexperiments clean check :experiments:test installDist`
+  bestand mit Temurin 25.0.3+9 und Gradle 9.9.1 auf Apple M1
+  mit macOS 15.8.1. Die XML-Berichte enthalten 234 Produkt-
+  und 16 Experimenttests in 2,828 s und 0,930 s summierter
+  Suitezeit. Alle Tests bestanden ohne übersprungene Tests.
+- Der ursprüngliche Realdatenvergleich auf dem vorhandenen
+  LAS-Manifest lieferte in fünf Fällen bytegleiches WKT
+  und dieselben Vergleichsmetriken wie die erste Abnahme.
+  Der neue Bericht und die GeoPackages liegen unter
+  `.cache/vegetation-outlines/restored-baseline`.
+- Die unabhängige PDAL-2.10.2-Produktsuite bestand mit
+  496’586 bytegleich verglichenen LAS-Records. SIGTERM ergab
+  Exit 143 ohne veröffentlichte oder temporäre Ausgabe.
+  Das Protokoll liegt in `build/reports/restored-baseline-pdal.log`.
+
+[Abschluss der Bestockungsversuche](experiments.md#abschluss-der-bestockungsversuche)
