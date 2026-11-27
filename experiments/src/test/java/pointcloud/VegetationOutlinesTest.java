@@ -1,5 +1,6 @@
 package pointcloud;
 
+import com.google.gson.JsonObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -20,8 +21,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,6 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static pointcloud.VegetationOutlines.Mode.ALL;
 import static pointcloud.VegetationOutlines.Mode.NEIGHBORS;
+import static pointcloud.VegetationOutlines.Thinning.GRID;
+import static pointcloud.VegetationOutlines.Thinning.NONE;
+import static pointcloud.VegetationOutlines.packPosition;
 
 class VegetationOutlinesTest {
     private static final GeometryFactory GEOMETRY = new GeometryFactory();
@@ -40,7 +46,7 @@ class VegetationOutlinesTest {
         var candidates = List.of(point(1, 1), point(2, 1), point(1, 2), point(2, 1),
                 point(8, 8), point(8.5, 8), point(8.5, 8), point(15, 15));
 
-        var selected = VegetationOutlines.select(candidates, CORE, NEIGHBORS);
+        var selected = VegetationOutlines.select(candidates, CORE, NEIGHBORS, GRID);
 
         assertArrayEquals(new Coordinate[]{point(1, 1)}, selected.points());
         assertEquals(8, selected.selected());
@@ -51,7 +57,7 @@ class VegetationOutlinesTest {
     void usesTheExtraMetreForNeighborsWhileRetainingOnlyTheGeometryHalo() throws Exception {
         var core = new Envelope(0, 2, 0, 2);
         var candidates = List.of(point(11.75, .5), point(12.5, .5), point(12.5, 0), point(13, .5));
-        var selected = VegetationOutlines.select(candidates, core, NEIGHBORS);
+        var selected = VegetationOutlines.select(candidates, core, NEIGHBORS, GRID);
         assertArrayEquals(new Coordinate[]{point(11.75, .5)}, selected.points());
         assertEquals(3, selected.selected());
         assertEquals(3, selected.kept());
@@ -59,7 +65,7 @@ class VegetationOutlinesTest {
 
         var edgePoints = List.of(point(-10, 0), point(12, 0));
         assertArrayEquals(new Coordinate[]{point(-10, 0)},
-                VegetationOutlines.select(edgePoints, core, ALL).points());
+                VegetationOutlines.select(edgePoints, core, ALL, GRID).points());
     }
 
     @Test
@@ -68,14 +74,80 @@ class VegetationOutlinesTest {
                 point(.25, .0), point(.375, .125), point(-.125, .125),
                 point(.125, .4375), point(.125, .3125)));
 
-        var selected = VegetationOutlines.select(candidates, CORE, ALL);
+        var selected = VegetationOutlines.select(candidates, CORE, ALL, GRID);
         assertEquals(4, selected.points().length);
         var positions = List.of(selected.points());
         assertTrue(positions.containsAll(List.of(point(.0625, .125), point(.375, .125),
                 point(-.125, .125), point(.125, .3125))));
 
         Collections.reverse(candidates);
-        assertArrayEquals(selected.points(), VegetationOutlines.select(candidates, CORE, ALL).points());
+        assertArrayEquals(selected.points(), VegetationOutlines.select(candidates, CORE, ALL, GRID).points());
+    }
+
+    @Test
+    void noThinningKeepsEveryDistinctPositionIncludingCloseReturns() {
+        var candidates = List.of(point(.25, .125), point(.24, .125), point(.24, .125));
+
+        var selected = VegetationOutlines.select(candidates, CORE, ALL, NONE);
+
+        assertEquals(3, selected.selected());
+        assertArrayEquals(new Coordinate[]{point(.24, .125), point(.25, .125)}, selected.points());
+    }
+
+    @Test
+    void spacingRejectsCloseReturnsAcrossBinsAndKeepsTheExactCutoff() {
+        long origin = packPosition(24, 24);
+        long closeAcrossBins = packPosition(25, 25);
+        long diagonalCutoff = packPosition(39, 44); // 15² + 20² = 25² cm.
+        long firstAxial = packPosition(49, 0);
+        long axialCutoff = packPosition(74, 0);
+        long[] points = {axialCutoff, closeAcrossBins, firstAxial, packPosition(73, 0), diagonalCutoff, origin};
+
+        var selected = VegetationOutlines.spacingSelection(points, points.length);
+
+        assertEquals(6, selected.unique());
+        assertArrayEquals(new long[]{origin, diagonalCutoff, firstAxial, axialCutoff}, selected.positions());
+    }
+
+    @Test
+    void spacingEliminatesDuplicatesAndRetainsTheSameXyForInputPermutations() {
+        long first = packPosition(-1, -28);
+        long second = packPosition(-1, -3);
+        long third = packPosition(24, 10);
+        var candidates = new ArrayList<>(List.of(first, second, third, first, packPosition(-1, -2),
+                packPosition(8, -6), third));
+
+        for (int seed = 0; seed < 8; seed++) {
+            Collections.shuffle(candidates, new Random(seed));
+            long[] packed = candidates.stream().mapToLong(Long::longValue).toArray();
+            var selected = VegetationOutlines.spacingSelection(packed, packed.length);
+
+            assertEquals(5, selected.unique());
+            assertArrayEquals(new long[]{first, second, third}, selected.positions());
+        }
+    }
+
+    @Test
+    void overlappingTileHalosUseTheSameGloballySpacedPositionsAtTheSeam() {
+        int seam = 2610000;
+        int south = 1232500;
+        long[] points = {packPosition(-1100, 500), packPosition(-2, 500), packPosition(0, 500),
+                packPosition(23, 500), packPosition(48, 500), packPosition(1100, 500)};
+        var selection = VegetationOutlines.spacingSelection(points, points.length);
+        var west = VegetationOutlines.spacingPoints(selection, new Envelope(seam - 20, seam, south, south + 20),
+                seam, south);
+        var east = VegetationOutlines.spacingPoints(selection, new Envelope(seam, seam + 20, south, south + 20),
+                seam, south);
+        var joint = VegetationOutlines.spacingPoints(selection,
+                new Envelope(seam - 20, seam + 20, south, south + 20), seam, south);
+        var seamPoints = List.of(point(seam - .02, south + 5), point(seam + .23, south + 5),
+                point(seam + .48, south + 5));
+
+        assertEquals(List.of(point(seam - 11, south + 5), seamPoints.get(0), seamPoints.get(1),
+                seamPoints.get(2)), List.of(west));
+        assertEquals(List.of(seamPoints.get(0), seamPoints.get(1), seamPoints.get(2),
+                point(seam + 11, south + 5)), List.of(east));
+        assertArrayEquals(new Coordinate[]{west[0], west[1], west[2], west[3], east[3]}, joint);
     }
 
     @ParameterizedTest
@@ -213,6 +285,42 @@ class VegetationOutlinesTest {
     }
 
     @Test
+    void snapshotsLeaveTheFinalOutlineByteIdenticalForDefaultGridAndSpacing(@TempDir Path temp) throws Exception {
+        Path input = writeStandFixture(temp.resolve("stand.las"));
+        Path defaultOutput = temp.resolve("default");
+        Path gridSnapshots = temp.resolve("grid-snapshots");
+        Path spacingOutput = temp.resolve("spacing");
+        Path spacingSnapshots = temp.resolve("spacing-snapshots");
+
+        traceStand(input, defaultOutput);
+        traceStand(input, gridSnapshots, "--thinning=grid", "--snapshots");
+        traceStand(input, spacingOutput, "--thinning=spacing");
+        traceStand(input, spacingSnapshots, "--thinning=spacing", "--snapshots");
+
+        for (var outputs : List.of(List.of(defaultOutput, gridSnapshots), List.of(spacingOutput, spacingSnapshots))) {
+            Path plain = outputs.getFirst();
+            Path traced = outputs.getLast();
+            assertEquals(-1, Files.mismatch(plain.resolve("outline.wkt"), traced.resolve("outline.wkt")));
+            assertFalse(Files.exists(plain.resolve("before-erosion.wkt")));
+
+            var reader = new WKTReader(GEOMETRY);
+            assertFalse(reader.read(Files.readString(traced.resolve("outline.wkt"))).isEmpty());
+            var before = reader.read(Files.readString(traced.resolve("before-erosion.wkt")));
+            var eroded = reader.read(Files.readString(traced.resolve("after-erosion.wkt")));
+            var dilated = reader.read(Files.readString(traced.resolve("after-dilation.wkt")));
+            assertTrue(before.isValid());
+            assertTrue(eroded.isValid());
+            assertTrue(dilated.isValid());
+            assertTrue(before.getArea() > dilated.getArea() && dilated.getArea() > eroded.getArea());
+        }
+        var metrics = Pipeline.JSON.fromJson(Files.readString(spacingOutput.resolve("metrics.json")), JsonObject.class);
+        var spacing = metrics.getAsJsonObject("spacing");
+        assertEquals(628, spacing.get("selected").getAsInt());
+        assertEquals(627, spacing.get("unique").getAsInt());
+        assertEquals(626, spacing.get("retained").getAsInt());
+    }
+
+    @Test
     void preparedLasRetainsTheTwoMetreEchoAndExcludesOtherClassesAndFlags(@TempDir Path temp) throws Exception {
         Path input = writeHeightFixture(temp.resolve("vegetation.las"));
         Path terrain = temp.resolve("terrain.tif");
@@ -261,8 +369,40 @@ class VegetationOutlinesTest {
         return path.toString().replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
+    private static void traceStand(Path input, Path output, String... flags) throws IOException, InterruptedException {
+        // A fresh JVM matches normal CLI use and makes the symmetric fixture repeatable across runs.
+        String command = ProcessHandle.current().info().command().orElseThrow();
+        String classpath = System.getProperty("pointcloud.experiments.classpath", System.getProperty("java.class.path"));
+        var args = new ArrayList<>(List.of(command, "-cp", classpath, VegetationOutlines.class.getName()));
+        args.addAll(List.of(flags));
+        args.addAll(List.of("all", output.toString(), "2610200", "1232400", "2610220", "1232420",
+                "2610200", "1232400", "2610220", "1232420", input.toString()));
+        var process = new ProcessBuilder(args).redirectErrorStream(true).start();
+        try (var log = process.getInputStream()) {
+            var message = new String(log.readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals(0, process.waitFor(), message);
+        }
+    }
+
+    private static Path writeStandFixture(Path path) throws IOException {
+        var records = new ArrayList<int[]>();
+        for (int x = 200; x <= 1400; x += 50) {
+            for (int y = 200; y <= 1400; y += 50) {
+                records.add(new int[]{x, y, 210, 3});
+            }
+        }
+        records.add(new int[]{200, 200, 210, 3});
+        records.add(new int[]{224, 200, 210, 3});
+        records.add(new int[]{225, 200, 210, 3});
+        return writeLas(path, .01, records.toArray(int[][]::new));
+    }
+
     private static Path writeHeightFixture(Path path) throws IOException {
         int[][] records = {{1, 1, 7, 3}, {2, 1, 8, 3}, {3, 1, 9, 3}, {2, 2, 9, 0x83}, {2, 3, 9, 6}};
+        return writeLas(path, .25, records);
+    }
+
+    private static Path writeLas(Path path, double scale, int[][] records) throws IOException {
         int headerBytes = 227;
         int recordBytes = 28;
         int[] geoKeys = {1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 2056};
@@ -273,11 +413,14 @@ class VegetationOutlinesTest {
         las.put(24, (byte) 1).put(25, (byte) 2).putChar(94, (char) headerBytes);
         las.putInt(96, pointOffset).putInt(100, 1).put(104, (byte) 1).putChar(105, (char) recordBytes);
         las.putInt(107, records.length).putInt(111, records.length);
-        las.putDouble(131, .25).putDouble(139, .25).putDouble(147, .25);
-        las.putDouble(155, 2610200).putDouble(163, 1232400).putDouble(171, 700);
-        las.putDouble(179, 2610200.75).putDouble(187, 2610200.25);
-        las.putDouble(195, 1232400.75).putDouble(203, 1232400.25);
-        las.putDouble(211, 702.25).putDouble(219, 701.75);
+        double[] origin = {2610200, 1232400, 700};
+        for (int axis = 0; axis < origin.length; axis++) {
+            int coordinate = axis;
+            var extent = Arrays.stream(records).mapToInt(record -> record[coordinate]).summaryStatistics();
+            las.putDouble(131 + 8 * axis, scale).putDouble(155 + 8 * axis, origin[axis]);
+            las.putDouble(179 + 16 * axis, origin[axis] + scale * extent.getMax());
+            las.putDouble(187 + 16 * axis, origin[axis] + scale * extent.getMin());
+        }
         las.position(headerBytes + 2).put("LASF_Projection".getBytes(StandardCharsets.US_ASCII));
         las.putChar(headerBytes + 18, (char) 34735).putChar(headerBytes + 20, (char) geoKeyBytes);
         las.position(headerBytes + 54);

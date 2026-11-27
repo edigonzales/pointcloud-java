@@ -2175,3 +2175,103 @@ bleiben dabei unberücksichtigt. Jedes Vergleichs-GeoPackage enthält
 Bestockung, Referenz, zusätzlich und fehlend klassifizierte
 Flächen. Die Realdaten und Ausgaben liegen unter
 `.cache/vegetation-outlines`.
+
+## Ausdünnung der Bestockungspunkte bei 25 cm
+
+Der Vergleich verwendet die vorbereiteten LAS-Dateien, Flotron-Polygone
+und Kachelkerne des Bestockungsversuchs. Die drei Varianten verwenden
+dieselbe Selektion ab 2 m HAG und dieselben Geometrieparameter.
+`grid` wählt je 25-cm-Zelle den Originalpunkt am nächsten zur
+Zellmitte. `spacing` behält auf dem Zentimetergitter in
+XY-Sortierreihenfolge die erste zulässige Position mit mindestens
+25 cm Abstand zu allen bereits behaltenen Positionen. Die Auswahl
+erfolgt je Prüffenster samt Halo. `none` erzeugt einen Kreis pro
+eindeutiger XY-Position.
+
+Die beiden grössten Fehlpolygone der bisherigen Riedholz-Abnahme
+dienen als feste Messflächen. Die Abnahme erfasst ihre Überdeckung vor
+dem finalen Innenpuffer, nach −2,5 m, nach +0,7 m und nach der
+40-m²-Flächenschwelle. Sie erfasst auch Bestockung innerhalb der
+zugehörigen Flotron-Lichtung. Der Vergleich der Gesamtflächen und
+Grenzen verwendet dieselben Prüffenster und Metriken wie zuvor.
+
+### Riedholzer Fehlflächen
+
+Die Paare geben die bestockten Quadratmeter in der 739-m²- und der
+331-m²-Fehlfläche an.
+
+| Variante | Vor −2,5 m | Nach −2,5 m | Nach +0,7 m | Endresultat |
+| --- | ---: | ---: | ---: | ---: |
+| `grid` | 339,84 / 145,38 | 7,61 / 0,00 | 30,05 / 0,73 | 0,00 / 0,00 |
+| `spacing` | 337,80 / 145,46 | 7,31 / 0,00 | 29,21 / 0,94 | 0,59 / 0,53 |
+| `none` | 340,61 / 145,99 | 7,85 / 0,00 | 30,72 / 0,99 | 1,02 / 0,44 |
+
+Vor dem Innenpuffer unterscheiden sich die Varianten in beiden
+Fehlflächen zusammen um weniger als 4 m². Der −2,5-m-Puffer entfernt
+jeweils über 475 m² der dort noch vorhandenen Bestockung. Ohne Ausdünnung
+kommen im Endresultat zusammen 1,45 m² zurück. Die Ausdünnung erklärt
+die beiden grossen Fehlflächen damit kaum.
+
+### Unabhängiger Ausschnitt und Naht
+
+Die Nahtwerte vergleichen je Variante den geteilten und den
+zusammenhängenden Lauf im 10-m-Streifen um die Kachelgrenze.
+
+| Variante | IoU Riedholz | IoU unabhängiger Ausschnitt | P95 unabhängiger Ausschnitt | Nahtdifferenz | P95 an der Naht |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `grid` | 95,63 % | 97,200 % | 2,13 m | 1,19 m² | 8,26 cm |
+| `spacing` | 95,61 % | 97,175 % | 2,43 m | 1,10 m² | 7,98 cm |
+| `none` | 95,64 % | 97,177 % | 2,25 m | 1,29 m² | 8,15 cm |
+
+Im gesamten Nahtfenster stieg die symmetrische Differenz
+zwischen beiden Kachelvarianten von 4,10 m² mit `grid` auf
+6,43 m² mit `spacing`. Gegen Flotron verliert `spacing` dort
+ausserdem ein separates Stück Bestockung mit 276,15 m².
+Bereits vor dem Innenpuffer sind davon nur rund 122 m²
+bestockt. Der Innenpuffer entfernt den Rest. Dieses Stück
+erklärt den Grenzabstand von 103,18 m bei P95 im
+Flotron-Vergleich des Nahtfensters. Die beiden Nahtläufe mit
+`spacing` zeigen dieselbe Fehlfläche. In einer Kontrollrechnung
+mit diesem Stück sank P95 wieder auf 0,77 m.
+
+In der rund 1'251 m² grossen Flotron-Lichtung verbleiben je
+Variante rund 34 m² zusätzliche Bestockung. `grid` bleibt
+der Standard. `spacing` gewinnt in Riedholz zusammen 1,12 m²
+zurück, verschlechtert aber die IoU und P95 im unabhängigen
+Ausschnitt.
+
+### Laufzeit auf vorbereitetem LAS
+
+Drei rotierende Runden mit frischen JVMs auf Apple M1 und
+`-Xmx512m`. Die Punktvorbereitung war bereits abgeschlossen.
+Die Ein-Minuten-Systemlast zu Beginn der Messläufe lag bei
+6,02–9,86. Alle neun Läufe reproduzierten ihr jeweiliges
+End-WKT bytegleich zur Abnahme mit Zwischengeometrien.
+
+| Variante | JVM-Wandzeit Median und Min–Max | Lesen Median | Selektion Median | JTS-Geometrie Median | Export Median | Höchste Spitzen-RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `grid` | 14,40 s (14,15–23,15 s) | 0,12 s | 0,85 s | 13,27 s | 0,29 s | 353,59 MiB |
+| `spacing` | 11,45 s (10,20–17,29 s) | 0,14 s | 0,77 s | 10,25 s | 0,35 s | 365,55 MiB |
+| `none` | 31,74 s (28,46–38,06 s) | 0,15 s | 0,31 s | 31,04 s | 0,41 s | 362,56 MiB |
+
+Die Auswahlzeit von `spacing` umfasst den fensterweiten
+Mindestabstand und die anschliessende Zuordnung zu den Kernen.
+Die Exporte mit den vier Vergleichslayern liefen ausserhalb
+des JVM-Zeitfensters.
+
+### Reproduktion
+
+Die Option `--compare-thinning` verwendet als Baseline das
+Abnahmeverzeichnis des ersten Bestockungsversuchs.
+
+```sh
+python3 experiments/check-vegetation-outlines.py --compare-thinning \
+  --pdal "$pdal" --reference "$reference" \
+  --output .cache/vegetation-outlines/thinning
+```
+
+Das Ausgabeverzeichnis enthält einen gemeinsamen `report.json`
+und je Variante die GeoPackages aller vier Fälle. Die Pakete
+enthalten die vier Vergleichslayer und die Puffer-Zwischengeometrien.
+In Riedholz kommen die beiden festen Fehlflächen und die
+Flotron-Lichtung als Messlayer hinzu.

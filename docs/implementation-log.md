@@ -1830,3 +1830,44 @@ belässt LAS- und Höhenverarbeitung in den vorhandenen Stages. GEOS
 wertet die als WKT vorbereiteten Polygone aus und GDAL schreibt
 die vier GeoPackage-Layer.
 [Vergleich und Laufzeiten](experiments.md#punktbasierte-bestockungspolygone-für-riedholz)
+
+## Ausdünnungsversuch für Bestockungspolygone
+
+27. November 2026. Basis `b57ea01`. Das Experiment vergleicht das
+25-cm-Raster, einen exakten Mindestabstand auf dem Zentimetergitter und
+eindeutige XY ohne Ausdünnung. Alle Varianten verwenden dieselbe
+vorbereitete Punktwolke, Kachelung und Geometriefolge.
+
+- `./gradlew --offline -Pexperiments clean check :experiments:test installDist`
+  bestand auf Apple M1 mit macOS 15.8.1 und Temurin 25.0.3+9.
+  Die XML-Berichte von Gradle 9.9.1 enthalten 234 Produkt- und 21
+  Experimenttests, ohne Fehler, Fehlschläge oder übersprungene Tests.
+  Die Suitezeiten summierten sich auf 6,074 s und 8,262 s.
+- `tools/check-real-data.py <pdal>` bestätigte mit PDAL 2.10.2/LazPerf
+  alle 496'586 ausgegebenen LAS-Records. SIGTERM ergab Exit 143
+  ohne veröffentlichte oder temporäre Ausgabe.
+- Eine unabhängige Ganzzahlprüfung der gemeinsamen LAS-Fenster
+  bestätigte 300'012, 163'658 und 511'674 Punkte mit Mindestabstand
+  in Riedholz, am Kachelstoss und im unabhängigen Ausschnitt.
+- `experiments/check-vegetation-outlines.py --compare-thinning`
+  bestand mit GDAL 3.13.3, Shapely 2.1.2 und `-Xmx512m`.
+  Die vier Rasterfälle reproduzierten die früheren WKT-Dateien
+  bytegleich. Der Rückvergleich aus den exportierten Zwischenständen
+  ergab zwölf exakt gleiche Endgeometrien. Die neun frischen
+  Messläufe ergaben 14,40 s, 11,45 s und 31,74 s JVM-Wandzeitmedian
+  für Raster, Mindestabstand und den ungedünnten Kontrolllauf.
+  Ohne Ausdünnung wurden 1,45 m² in den beiden Riedholzer
+  Fehlflächen zurückgewonnen. Der Mindestabstand verschlechterte
+  die IoU und P95 im unabhängigen Ausschnitt. `grid` bleibt Standard.
+
+Wiederholte Aufrufe in derselben JVM führten beim symmetrischen
+synthetischen Bestand auch bei gleichem Aufzeichnungsmodus zu kleinen
+JTS-Abweichungen. Der Regressionstest vergleicht die echten
+CLI-Aufrufe in frischen JVMs. Eine erste Umstrukturierung ergab
+auf Realdaten eine kleine Abweichung zur früheren Rasterabnahme.
+Der erhaltene Rasterpfad und die nach der Berechnung separat aus den
+festen Kachelgeometrien abgeleiteten Zwischengeometrien bewahren
+die byteweise Referenzprüfung. Die Einfachheitsprüfung hält
+das Zentimetergitter, die räumliche Suche und den Vergleich
+im Experimentmodul.
+[Ausdünnungsvergleich](experiments.md#ausdünnung-der-bestockungspunkte-bei-25-cm)
