@@ -27,9 +27,11 @@ REGIONS = {
     "holdout": (2611200, 1233200, 2611800, 1233800),
 }
 SEAM_X = 2610000
+OPENING_WINDOW = (2610200, 1232400, 2610400, 1232550)
+OPENING_SEAM_X = 2610275
 MODES = ("all", "neighbors")
 THINNING_VARIANTS = ("grid", "spacing", "none")
-THINNING_SNAPSHOTS = {
+OUTLINE_SNAPSHOTS = {
     "beforeErosion": "before-erosion.wkt",
     "afterErosion": "after-erosion.wkt",
     "afterDilation": "after-dilation.wkt",
@@ -141,13 +143,16 @@ def timed(command, log):
     return {"wallSeconds": elapsed, **counters}
 
 
-def geometry(args, run, mode, bounds, cores, source, *, thinning=None, snapshots=False, heap="512m"):
+def geometry(args, run, mode, bounds, cores, source, *, thinning=None, early_close=False,
+             snapshots=False, heap="512m"):
     classpath = os.pathsep.join((str(args.classes), str(args.cli.resolve().parents[1] / "lib" / "*")))
     java_home = os.environ.get("JAVA_HOME")
     java = Path(java_home) / "bin/java" if java_home else "java"
     command = [java, f"-Xmx{heap}", "-cp", classpath, "pointcloud.VegetationOutlines"]
     if thinning is not None:
         command.append(f"--thinning={thinning}")
+    if early_close:
+        command.append("--early-close")
     if snapshots:
         command.append("--snapshots")
     command.extend((mode, run, *bounds))
@@ -209,20 +214,29 @@ def prepared(manifest, name):
     return Path(item["input"])
 
 
+def split_at(bounds, x):
+    west, south, east, north = bounds
+    return [(west, south, x, north), (x, south, east, north)]
+
+
+def seam_metrics(split, joint, bounds, x):
+    strip = (x - 10, bounds[1], x + 10, bounds[3])
+    strip_box = geo.box(*strip)
+    return {
+        "difference": compare(split, joint, bounds)[0],
+        "differenceWithin10m": compare(split.intersection(strip_box), joint.intersection(strip_box), strip)[0],
+    }
+
+
 def seam_cases(args, work, mode, source, expected):
     bounds = REGIONS["seam"]
-    west, south, east, north = bounds
     joint, joint_report = run_case(args, work / "seam-joint", mode, bounds, [bounds], source, expected)
     split, split_report = run_case(args, work / "seam-split", mode, bounds,
-                                   [(west, south, SEAM_X, north), (SEAM_X, south, east, north)],
-                                   source, expected)
-    strip = (SEAM_X - 10, south, SEAM_X + 10, north)
-    strip_box = geo.box(*strip)
+                                   split_at(bounds, SEAM_X), source, expected)
     return {
         "joint": joint_report,
         "split": split_report,
-        "difference": compare(split, joint, bounds)[0],
-        "differenceWithin10m": compare(split.intersection(strip_box), joint.intersection(strip_box), strip)[0],
+        **seam_metrics(split, joint, bounds, SEAM_X),
     }
 
 
@@ -270,6 +284,11 @@ def benchmark(args, work, mode, expected, accepted_metrics, source):
     return rows
 
 
+def interior_openings(outline):
+    return [geo.Polygon(ring).difference(outline)
+            for polygon in polygons(outline) for ring in polygon.interiors]
+
+
 def thinning_focus(args, baseline, expected):
     package = baseline / "calibration-all/comparison.gpkg"
     missing = sorted(read_layer(args, package, "fehlend"), key=lambda g: -g.area)[:2]
@@ -278,15 +297,11 @@ def thinning_focus(args, baseline, expected):
     delivered = geo.union_all(read_layer(args, package, "referenz"))
     require(delivered.equals(expected), "The Riedholz reference differs from the baseline package")
 
-    def interior_holes(geometry):
-        return [geo.Polygon(ring).difference(geometry)
-                for polygon in polygons(geometry) for ring in polygon.interiors]
-
     probe = geo.union_all(missing)
-    holes = interior_holes(actual)
+    holes = interior_openings(actual)
     require(holes, "The baseline is missing the Riedholz opening")
     opening = max(holes, key=lambda g: g.intersection(probe).area)
-    holes = interior_holes(delivered)
+    holes = interior_openings(delivered)
     require(holes, "The delivered reference is missing the Riedholz opening")
     delivered_opening = max(holes, key=lambda g: g.intersection(opening).area)
     require(probe.difference(opening).area < 1e-6 and delivered_opening.intersection(opening).area > 0,
@@ -295,14 +310,40 @@ def thinning_focus(args, baseline, expected):
             "lichtung_flotron": delivered_opening}
 
 
-def thinning_case(args, path, variant, bounds, cores, source, expected, focus, heap):
+def opening_metrics(actual, opening):
+    # Connected polygon interiors represent paths of positive width. Parts meeting only at a point stay distinct.
+    open_ground = opening.difference(actual)
+    parts = sorted(polygons(open_ground), key=lambda p: -p.area)
+    main, fragments = (parts[0], parts[1:]) if parts else (geo.Polygon(), [])
+    # Ignore sub-square-millimetre overlay artefacts along the same boundary.
+    enclosed = not main.is_empty and any(main.difference(hole).area <= 1e-6
+                                        for hole in interior_openings(actual))
+    return {
+        "referenceM2": opening.area,
+        "stockedM2": opening.intersection(actual).area,
+        "openM2": open_ground.area,
+        "largestOpenM2": main.area,
+        "largestOpenFraction": main.area / opening.area,
+        "largestOpenIsEnclosed": enclosed,
+        "openComponentAreasM2": [part.area for part in parts],
+        "fragmentCountAtLeast1M2": sum(part.area >= 1 for part in fragments),
+    }, {
+        "lichtung_offen": open_ground,
+        "lichtung_hauptteil": main,
+        "lichtung_fragmente": geo.MultiPolygon(fragments),
+    }
+
+
+def snapshot_case(args, path, bounds, cores, source, expected, focus, *, thinning=None,
+                  early_close=False, opening=None, heap="512m"):
+    variant = "early-close" if early_close else thinning or "baseline"
     print(f"{variant} {path.name} (-Xmx{heap})", flush=True)
     actual, stats = geometry(args, path, "all", bounds, cores, source,
-                             thinning=variant, snapshots=True, heap=heap)
+                             thinning=thinning, early_close=early_close, snapshots=True, heap=heap)
     started = time.perf_counter()
     clip = geo.box(*bounds)
     snapshots = {}
-    for stage, filename in THINNING_SNAPSHOTS.items():
+    for stage, filename in OUTLINE_SNAPSHOTS.items():
         outline = geo.from_wkt((path / filename).read_text())
         require(outline.is_valid, f"Invalid {stage} geometry in {path}")
         snapshots[stage] = outline.intersection(clip)
@@ -314,11 +355,14 @@ def thinning_case(args, path, variant, bounds, cores, source, expected, focus, h
             for stage, outline in {**snapshots, "final": actual}.items()
         }} for name, target in focus.items()
     }
+    opening_layers = {}
+    if opening is not None:
+        stats["opening"], opening_layers = opening_metrics(actual, opening)
     stats["comparisonSeconds"] = time.perf_counter() - started
     stats["exportSeconds"] = export(args, path, {
         "bestockung": actual, "referenz": expected, "zusaetzlich": extra, "fehlend": missing,
         "vor_erosion": before, "nach_erosion": after, "nach_aufweitung": snapshots["afterDilation"],
-        **focus,
+        **focus, **opening_layers,
     })
     return actual, {
         "comparison": comparison,
@@ -374,14 +418,11 @@ def thinning_benchmark(args, work, source, expected, reference_wkt, heap):
 
 def thinning_profile(args, work, manifest, expected, baseline, focus, heap):
     seam = REGIONS["seam"]
-    west, south, east, north = seam
-    strip = (SEAM_X - 10, south, SEAM_X + 10, north)
-    strip_box = geo.box(*strip)
     cases = {
         "calibration-all": ("calibration", tiled(REGIONS["calibration"])),
         "holdout": ("holdout", tiled(REGIONS["holdout"])),
         "seam-joint": ("seam", [seam]),
-        "seam-split": ("seam", [(west, south, SEAM_X, north), (SEAM_X, south, east, north)]),
+        "seam-split": ("seam", split_at(seam, SEAM_X)),
     }
     reports = {variant: {} for variant in THINNING_VARIANTS}
     seam_outlines = {variant: {} for variant in THINNING_VARIANTS}
@@ -391,9 +432,10 @@ def thinning_profile(args, work, manifest, expected, baseline, focus, heap):
     for case, (region, cores) in cases.items():
         for variant in THINNING_VARIANTS:
             path = work / variant / case
-            actual, reports[variant][case] = thinning_case(args, path, variant, REGIONS[region], cores,
+            actual, reports[variant][case] = snapshot_case(args, path, REGIONS[region], cores,
                                                            prepared(manifest, region), expected[region],
-                                                           focus if region == "calibration" else {}, heap)
+                                                           focus if region == "calibration" else {},
+                                                           thinning=variant, heap=heap)
             if region == "seam":
                 seam_outlines[variant][case] = actual
             if variant == "grid" or region == "calibration":
@@ -405,9 +447,9 @@ def thinning_profile(args, work, manifest, expected, baseline, focus, heap):
                     reference_wkt[variant] = output_wkt
     for variant, outlines in seam_outlines.items():
         joint, split = outlines["seam-joint"], outlines["seam-split"]
-        reports[variant]["seamDifference"] = compare(split, joint, seam)[0]
-        reports[variant]["seamDifferenceWithin10m"] = compare(split.intersection(strip_box),
-                                                                 joint.intersection(strip_box), strip)[0]
+        differences = seam_metrics(split, joint, seam, SEAM_X)
+        reports[variant]["seamDifference"] = differences["difference"]
+        reports[variant]["seamDifferenceWithin10m"] = differences["differenceWithin10m"]
     benchmark = thinning_benchmark(args, work / "benchmark", prepared(manifest, "calibration"),
                                    expected["calibration"], reference_wkt, heap)
     return reports, benchmark
@@ -447,6 +489,96 @@ def compare_thinning(args, manifest, record):
         return
 
 
+def compare_early_closing(args, manifest, record):
+    # The joint hull and precise offsets in the large holdout need more heap than per-tile buffering.
+    heap = "2g"
+    baseline = args.baseline_dir or args.cache / "acceptance"
+    expected = {region: reference(args, bounds) for region, bounds in REGIONS.items()}
+    focus = thinning_focus(args, baseline, expected["calibration"])
+    target = focus["lichtung_flotron"]
+    opening_frame = geo.box(*OPENING_WINDOW)
+    require(opening_frame.contains(target) and target.bounds[0] < OPENING_SEAM_X < target.bounds[2],
+            "The focused split must cut through the fixed Riedholz opening")
+    opening_expected = expected["calibration"].intersection(opening_frame)
+
+    holdout_package = baseline / "holdout/comparison.gpkg"
+    largest_extra = max(read_layer(args, holdout_package, "zusaetzlich"), key=lambda g: g.area)
+    holdout_target = max(interior_openings(expected["holdout"]),
+                         key=lambda hole: hole.intersection(largest_extra).area)
+    require(largest_extra.symmetric_difference(holdout_target).area < 1e-6,
+            "The largest baseline holdout excess must match the fixed Flotron opening")
+
+    calibration, holdout, seam = (REGIONS[name] for name in ("calibration", "holdout", "seam"))
+    cases = {
+        "calibration-all": ("calibration", calibration, tiled(calibration), focus),
+        "holdout": ("holdout", holdout, tiled(holdout), {"lichtung_flotron": holdout_target}),
+        "seam-joint": ("seam", seam, [seam], {}),
+        "seam-split": ("seam", seam, split_at(seam, SEAM_X), {}),
+        "opening-joint": ("calibration", OPENING_WINDOW, [OPENING_WINDOW], {"lichtung_flotron": target}),
+        "opening-split": ("calibration", OPENING_WINDOW, split_at(OPENING_WINDOW, OPENING_SEAM_X),
+                          {"lichtung_flotron": target}),
+    }
+    inputs = {region: prepared(manifest, region) for region in REGIONS}
+    record.update({"baselineDirectory": str(baseline.resolve()), "maxHeap": heap,
+                   "inputLas": {region: str(source.resolve()) for region, source in inputs.items()}})
+    variants = {}
+    baseline_wkt = {}
+    for name, early in (("baseline", False), ("early-close", True)):
+        work = args.output / name
+        work.mkdir()
+        outlines, reports = {}, {}
+        for case, (region, bounds, cores, probes) in cases.items():
+            path = work / case
+            reference_outline = expected[region] if bounds == REGIONS[region] else opening_expected
+            outlines[case], reports[case] = snapshot_case(
+                args, path, bounds, cores, inputs[region], reference_outline,
+                probes, early_close=early, opening=probes.get("lichtung_flotron"), heap=heap)
+            if not early and case in ("calibration-all", "holdout", "seam-joint", "seam-split"):
+                accepted_wkt = (baseline / case / "outline.wkt").read_bytes()
+                baseline_wkt[case] = (path / "outline.wkt").read_bytes() == accepted_wkt
+        reports["seam"] = seam_metrics(outlines["seam-split"], outlines["seam-joint"], seam, SEAM_X)
+        reports["openingSeam"] = seam_metrics(outlines["opening-split"], outlines["opening-joint"],
+                                              OPENING_WINDOW, OPENING_SEAM_X)
+        variants[name] = reports
+
+    standard, early = variants["baseline"], variants["early-close"]
+    failures = [f"Baseline WKT changed in {case}" for case, matches in baseline_wkt.items() if not matches]
+    selection_keys = ("las", "core", "selected", "kept", "haloKept", "thinned")
+    for case in cases:
+        left, right = (report[case]["stages"]["tiles"] for report in (standard, early))
+        if len(left) != len(right) or any(a[key] != b[key]
+                                         for a, b in zip(left, right) for key in selection_keys):
+            failures.append(f"Point selection changed in {case}")
+
+    recovered = {key: early["calibration-all"]["fixedProbes"][key]["finalM2"]
+                 - standard["calibration-all"]["fixedProbes"][key]["finalM2"]
+                 for key in ("fehlflaeche_1_grid", "fehlflaeche_2_grid")}
+    if sum(recovered.values()) < 600 or min(recovered.values()) <= 0:
+        failures.append(f"Riedholz must recover at least 600 m² with a gain in both omissions: {recovered}")
+    for case in ("calibration-all", "opening-joint", "opening-split"):
+        result = early[case]["opening"]
+        if (result["largestOpenFraction"] < 0.95 or not result["largestOpenIsEnclosed"]
+                or result["fragmentCountAtLeast1M2"] != 0):
+            failures.append(f"The Riedholz opening fails the connectivity criteria in {case}: {result}")
+
+    old, new = (report["holdout"]["comparison"] for report in (standard, early))
+    if new["iou"] < old["iou"]:
+        failures.append(f"Holdout IoU fell from {old['iou']} to {new['iou']}")
+    old_p95, new_p95 = old["boundaryP95M"], new["boundaryP95M"]
+    if old_p95 is None or new_p95 is None or new_p95 > old_p95:
+        failures.append(f"Holdout P95 must not worsen from {old_p95} to {new_p95}")
+    strip = early["seam"]["differenceWithin10m"]
+    if strip["differenceM2"] > 2 or strip["boundaryP95M"] is None or strip["boundaryP95M"] > 0.1:
+        failures.append(f"The standard seam exceeds 2 m² or 0.10 m P95 within 10 m: {strip}")
+
+    record.update({"variants": variants, "baselineWktUnchanged": baseline_wkt,
+                   "recoveredM2": {**recovered, "total": sum(recovered.values())},
+                   "passed": not failures, "failures": failures})
+    report = args.output / "report.json"
+    report.write_text(json.dumps(record, indent=2) + "\n")
+    require(not failures, f"Early closing acceptance failed. See {report}\n" + "\n".join(failures))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_CACHE / "prepare.json")
@@ -458,14 +590,19 @@ def main():
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--benchmark-runs", type=int, default=0)
-    parser.add_argument("--compare-thinning", action="store_true",
-                        help="compare grid, minimum spacing and no thinning with three fresh JVM runs each")
+    comparison = parser.add_mutually_exclusive_group()
+    comparison.add_argument("--compare-thinning", action="store_true",
+                            help="compare grid, minimum spacing and no thinning with three fresh JVM runs each")
+    comparison.add_argument("--compare-early-closing", action="store_true",
+                            help="compare early 0.25 m closing with the accepted grid baseline")
     parser.add_argument("--baseline-dir", type=Path, help="accepted baseline, defaults to <cache>/acceptance")
     args = parser.parse_args()
     args.gdal_bin = args.gdal_bin or args.pdal.resolve().parent
     require(args.benchmark_runs >= 0, "Negative benchmark run count")
     require(not args.compare_thinning or args.benchmark_runs == 0,
             "The thinning comparison has its own fixed benchmark rounds")
+    require(not args.compare_early_closing or args.benchmark_runs == 0,
+            "The early closing comparison does not run benchmarks")
     args.output.mkdir(parents=True)
     manifest = json.loads(args.manifest.read_text())
     record = {
@@ -477,6 +614,9 @@ def main():
     }
     if args.compare_thinning:
         compare_thinning(args, manifest, record)
+        return
+    if args.compare_early_closing:
+        compare_early_closing(args, manifest, record)
         return
     expected = reference(args, REGIONS["calibration"])
     mode, record["calibration"] = calibrate(args, args.output, prepared(manifest, "calibration"), expected)

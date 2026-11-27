@@ -1871,3 +1871,53 @@ die byteweise Referenzprüfung. Die Einfachheitsprüfung hält
 das Zentimetergitter, die räumliche Suche und den Vergleich
 im Experimentmodul.
 [Ausdünnungsvergleich](experiments.md#ausdünnung-der-bestockungspunkte-bei-25-cm)
+
+## Frühe Schliessung der Bestockungspolygone
+
+27. November 2026. Basis `fc38730`. Der Opt-in `--early-close`
+im Experimentmodul verwendet nach der konkaven Hülle die Puffer
++0,25 m und −1,65 m. Überlappende Kacheln geben ihre ausgewählten
+XY-Positionen in eine gemeinsame Hüllenbildung. Die
+Kachelauswahl und ihre 10-m-Halos werden für beide Varianten
+mit demselben vorbereiteten LAS-Manifest ausgeführt.
+
+- `./gradlew --offline -Pexperiments clean check :experiments:test installDist`
+  lief unter Temurin 25.0.3+9 auf Apple M1 mit macOS 15.8.1.
+  Der unveränderte Produktpfad bestand mit 234 Tests in
+  3,250 s summierter Suitezeit. Nach den Änderungen im
+  Experiment wiederholte
+  `./gradlew --offline -Pexperiments check :experiments:test installDist`
+  die Experimenttests mit 26 Tests in 8,058 s. Beide
+  JUnit-Berichte enthalten null Fehlschläge, Fehler und
+  übersprungene Tests. Die XML-Berichte liegen in
+  `build/test-results/test` und `experiments/build/test-results/test`.
+- `python3 tools/check-real-data.py <pdal>` bestand mit PDAL
+  2.10.2 und LazPerf für den unveränderten Produktpfad.
+  496’586 ausgegebene LAS-Records waren bytegleich zur
+  Referenz. LAS-Header, Punktattribute, Reihenfolge, VLRs,
+  CRS und Statistik bestanden die vorhandenen Prüfungen.
+  SIGTERM ergab Exit 143 ohne veröffentlichte oder temporäre
+  Ausgabe. Das Laufprotokoll liegt in
+  `build/reports/early-closing-pdal.log`.
+- `experiments/check-vegetation-outlines.py --compare-early-closing`
+  bestand mit JTS 1.20.0, GDAL 3.13.3, Shapely 2.1.2
+  und GEOS 3.13.1. Zwölf JVM-Läufe unter `-Xmx2g`
+  erzeugten zwölf GeoPackages. Die vier Standardfälle
+  reproduzierten ihr WKT bytegleich. Die frühe Schliessung
+  gewann 622,66 m² in den zwei festen Riedholzer Fehlflächen
+  zurück und hielt 1’197,07 m² als eine einzige Lichtung
+  offen. Die Ausgaben des zusammenhängenden und geteilten
+  Laufs waren an beiden Nähten bytegleich. Der unabhängige
+  Ausschnitt erreichte 97,41 % IoU und 1,50 m P95.
+  Alle Abnahmekriterien im JSON-Bericht sind erfüllt.
+
+Die Kontrolle mit den Standard-JTS-Puffern zeigte bei der
+5-m-Lichtungsregel einen Rest von rund 0,9 mm². Die neuen
+Puffer erhalten deshalb die unvereinfachten Eingabekanten.
+Beim gezielten Riedholz-Schnitt begann die spätere
+Flächendifferenz bereits in den separaten konkaven Hüllen.
+Die gemeinsame Hülle behebt diese Abhängigkeit von der
+Kachelung. Die Einfachheitsprüfung behält beide Änderungen
+im vorhandenen Experimentkern und nutzt den etablierten
+Vergleich für Geometrien und GeoPackage-Export.
+[Realdatenvergleich](experiments.md#frühe-schliessung-mit-025-m)

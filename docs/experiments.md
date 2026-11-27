@@ -2275,3 +2275,76 @@ und je Variante die GeoPackages aller vier Fälle. Die Pakete
 enthalten die vier Vergleichslayer und die Puffer-Zwischengeometrien.
 In Riedholz kommen die beiden festen Fehlflächen und die
 Flotron-Lichtung als Messlayer hinzu.
+
+## Frühe Schliessung mit 0,25 m
+
+Im Java-Prototyp aktiviert `--early-close` nach der konkaven Hülle
+die beiden Puffer +0,25 m und −1,65 m. Der zweite Puffer enthält
+den bisherigen Rückpuffer von −1,4 m. Beide Puffer arbeiten
+mit unvereinfachten Eingabekanten. Mit der
+Standardvereinfachung blieb im ersten Riedholzer Lauf in einer
+Nebenlichtung nach dem −5-m-Test eine Fläche von rund 0,9 mm² übrig.
+Die Lichtungsregel liess dadurch die ganze Nebenlichtung offen.
+Der Regressionstest bildet diesen Grenzfall mit einem kleinen
+synthetischen Polygon nach.
+
+Die Variante sammelt die ausgewählten, eindeutigen XY-Positionen
+aus allen Kacheln eines Fensters und erzeugt daraus eine gemeinsame
+Kreisunion und Hülle. Das Limit liegt bei zwei Millionen Positionen
+je Fenster. Punktselektion und 10-m-Halos entsprechen dem Standardlauf.
+Mit einer separaten Hülle je Teilkachel blieben beim Schnitt direkt
+durch die Riedholzer Lichtung nur rund 868 von 1’251 m² offen.
+Die gemeinsame Hülle lässt die Lichtungsprüfung den ganzen Umriss
+beurteilen. Der 5-m-Test, die Vereinfachungen, die Flächenschwellen
+und die finalen Puffer −2,5 m und +0,7 m gelten weiterhin.
+
+Die Abnahme vergleicht beide Java-Varianten in Riedholz, im
+unabhängigen Ausschnitt, an der Naht bei E 2’610’000 und an
+einer Naht direkt durch die Lichtung bei E 2’610’275. Beide
+Nahtfenster laufen zusammenhängend und geteilt. Im Zielpolygon
+der Lichtung zählt der grösste eingeschlossene offene Teil.
+Er muss mindestens 95 % der Referenzfläche decken. Weitere
+offene Komponenten ab 1 m² gelten als Trennung.
+
+### Ergebnis
+
+| Ausschnitt und Variante | Flächen-IoU | P95-Grenzabstand | Zusätzlich (m²) | Fehlend (m²) |
+| --- | ---: | ---: | ---: | ---: |
+| Riedholz, Standard | 95,63 % | 6,07 m | 629,43 | 1’679,57 |
+| Riedholz, frühe Schliessung | 96,83 % | 3,16 m | 667,11 | 1’007,70 |
+| Unabhängiger Ausschnitt, Standard | 97,20 % | 2,13 m | 1’794,86 | 724,39 |
+| Unabhängiger Ausschnitt, frühe Schliessung | 97,41 % | 1,50 m | 1’886,15 | 449,03 |
+
+In den beiden festen Riedholzer Fehlflächen gewinnt die
+Variante 582,73 m² und 39,93 m² Bestockung zurück. In der
+1’250,79 m² grossen Flotron-Lichtung bleiben 1’197,07 m²
+beziehungsweise 95,71 % als einzige eingeschlossene Fläche
+offen. Dieser Wert gilt auch für den zusammenhängenden und
+den geteilten Lauf am direkten Lichtungsschnitt. Die bekannte
+Flotron-Lichtung von 340,89 m² im unabhängigen Ausschnitt
+ist in beiden Varianten vollständig bestockt.
+
+An beiden Nähten sind die normalisierten WKT-Ausgaben der
+frühen Schliessung im zusammenhängenden und im geteilten Lauf
+bytegleich. Im bisherigen Nahtfenster sinkt die symmetrische
+Flächendifferenz im Streifen von je 10 m beidseits der Naht
+von 1,19 auf 0 m². Der P95-Grenzabstand sinkt von 8,26 cm
+auf rechnerisch null. Die vier Standardfälle reproduzieren
+die bisherige Abnahme bytegleich.
+
+### Reproduktion
+
+```sh
+python3 experiments/check-vegetation-outlines.py --compare-early-closing \
+  --pdal "$pdal" --reference "$reference" \
+  --output .cache/vegetation-outlines/early-closing-2g
+```
+
+Der Vergleich verwendet für beide Varianten `-Xmx2g` und das
+vorhandene LAS-Manifest. Der zusammenhängende Geometrieschritt
+mit unvereinfachten Kanten überschritt beim Probelauf das
+kleinere Heap-Limit. Die höchste beobachtete Spitzen-RSS betrug
+2’153,89 MiB im unabhängigen Ausschnitt. Der gemeinsame JSON-Bericht hält den
+Abnahmeentscheid und alle Messflächen fest. Die GeoPackages
+zeigen die Puffer-Zwischenstände, die Bestockung und die
+offenen Teile der Lichtung.

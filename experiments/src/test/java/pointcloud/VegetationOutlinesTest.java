@@ -29,6 +29,7 @@ import java.util.Random;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static pointcloud.VegetationOutlines.Mode.ALL;
@@ -186,6 +187,98 @@ class VegetationOutlinesTest {
         assertEquals(forest.intersection(shell).getArea(), closed.intersection(shell).getArea(), 1e-9);
     }
 
+    @ParameterizedTest
+    @ValueSource(doubles = {0.49, 0.51})
+    void earlyClosingBridgesOnlyTheNarrowerInternalGap(double gap) {
+        var stock = rectangle(0, 0, 30, 30).difference(rectangle(12, 5, 12 + gap, 25));
+        var hull = VegetationOutlines.closeOpenings(stock);
+        double gapCentre = 12 + gap / 2;
+
+        assertFalse(covers(hull, gapCentre, 15));
+        assertFalse(covers(VegetationOutlines.backBuffer(hull, false), gapCentre, 15));
+        var closed = VegetationOutlines.backBuffer(hull, true);
+
+        assertTrue(closed.isValid());
+        assertEquals(gap < 0.5, covers(closed, gapCentre, 15));
+    }
+
+    @Test
+    void earlyClosingPreservesBoundaryDetailThatDecidesTheFiveMetreTest() throws Exception {
+        var hole = new WKTReader(GEOMETRY).read(
+                "POLYGON ((0 0, 7.197 0, 7.201 6, 7.201 14, 7.197 20, 0 20, 0 0))");
+        var stock = rectangle(-20, -20, 20, 30).difference(hole);
+        var hull = VegetationOutlines.closeOpenings(stock);
+        var backed = VegetationOutlines.backBuffer(hull, true);
+
+        // Simplifying the input to the early buffers creates a false remnant at the cutoff.
+        assertFalse(covers(backed, 3.6, 10));
+        var filled = VegetationOutlines.fillSmallHoles(backed);
+        assertEquals(0, assertInstanceOf(Polygon.class, filled).getNumInteriorRing());
+        assertTrue(covers(filled, 3.6, 10));
+    }
+
+    @Test
+    void earlyClosingKeepsTheOpenAreaAroundAVegetationIslandConnected() {
+        var clip = rectangle(0, 0, 64, 64);
+        var clearing = rectangle(14, 14, 50, 50);
+        var island = rectangle(24, 24, 40, 40);
+        var hull = VegetationOutlines.closeOpenings(clip.difference(clearing).union(island));
+        var partial = VegetationOutlines.fillSmallHoles(VegetationOutlines.backBuffer(hull, true));
+        var outline = VegetationOutlines.finish(List.of(partial), clip);
+
+        assertTrue(outline.isValid());
+        assertTrue(covers(outline, 5, 32));
+        assertTrue(covers(outline, 32, 32));
+        var open = assertInstanceOf(Polygon.class, clearing.difference(outline));
+        assertEquals(1, open.getNumInteriorRing());
+        assertTrue(covers(open, 18, 32));
+        assertTrue(covers(open, 46, 32));
+    }
+
+    @Test
+    void earlyClosingBridgesANarrowExtensionAcrossATileSeam(@TempDir Path temp) throws Exception {
+        int seam = 2610200;
+        int south = 1232400;
+        double scale = 0.005;
+        var records = new ArrayList<int[]>();
+        for (int x = -40; x <= 40; x++) {
+            double east = 0.5 * x + (x < 0 ? -0.125 : 0.125);
+            for (int y = 0; y <= 80; y++) {
+                double north = 0.5 * y + 0.125;
+                double halfWidth = north < 23 ? 8 : 1.625;
+                if (north < 8 || north > 33 || Math.abs(east) >= halfWidth) {
+                    records.add(new int[]{(int) Math.round(east / scale), (int) Math.round(north / scale), 400, 3});
+                }
+            }
+        }
+        String las = writeLas(temp.resolve("seam.las"), scale, records.toArray(int[][]::new)).toString();
+        Path baseline = temp.resolve("baseline");
+        Path joint = temp.resolve("joint");
+        Path split = temp.resolve("split");
+        VegetationOutlines.main(new String[]{"all", baseline.toString(), "2610175", "1232400", "2610225", "1232445",
+                "2610175", "1232400", "2610225", "1232445", las});
+        VegetationOutlines.main(new String[]{"--early-close", "all", joint.toString(),
+                "2610175", "1232400", "2610225", "1232445", "2610175", "1232400", "2610225", "1232445", las});
+        VegetationOutlines.main(new String[]{"--early-close", "all", split.toString(),
+                "2610175", "1232400", "2610225", "1232445", "2610175", "1232400", "2610200", "1232445", las,
+                "2610200", "1232400", "2610225", "1232445", las});
+
+        var metrics = Pipeline.JSON.fromJson(Files.readString(split.resolve("metrics.json")), JsonObject.class);
+        var tiles = metrics.getAsJsonArray("tiles");
+        assertEquals(2, tiles.size());
+        int westCount = tiles.get(0).getAsJsonObject().get("thinned").getAsInt();
+        int eastCount = tiles.get(1).getAsJsonObject().get("thinned").getAsInt();
+        assertTrue(westCount < records.size() && eastCount < records.size());
+        assertTrue(westCount + eastCount > records.size());
+        assertEquals(-1, Files.mismatch(joint.resolve("outline.wkt"), split.resolve("outline.wkt")));
+        var reader = new WKTReader(GEOMETRY);
+        assertFalse(covers(reader.read(Files.readString(baseline.resolve("outline.wkt"))), seam, south + 29));
+        var outline = reader.read(Files.readString(joint.resolve("outline.wkt")));
+        assertTrue(outline.isValid());
+        assertTrue(covers(outline, seam, south + 29));
+        assertFalse(covers(outline, seam, south + 15));
+    }
+
     @Test
     void fillsOnlyHolesThatDisappearWhenBufferedInward() throws Exception {
         var forest = rectangle(0, 0, 60, 30).difference(rectangle(5, 5, 14, 22))
@@ -285,19 +378,24 @@ class VegetationOutlinesTest {
     }
 
     @Test
-    void snapshotsLeaveTheFinalOutlineByteIdenticalForDefaultGridAndSpacing(@TempDir Path temp) throws Exception {
+    void snapshotsLeaveTheFinalOutlineByteIdenticalForEachTestedVariant(@TempDir Path temp) throws Exception {
         Path input = writeStandFixture(temp.resolve("stand.las"));
         Path defaultOutput = temp.resolve("default");
         Path gridSnapshots = temp.resolve("grid-snapshots");
         Path spacingOutput = temp.resolve("spacing");
         Path spacingSnapshots = temp.resolve("spacing-snapshots");
+        Path earlyOutput = temp.resolve("early-closing");
+        Path earlySnapshots = temp.resolve("early-closing-snapshots");
 
         traceStand(input, defaultOutput);
         traceStand(input, gridSnapshots, "--thinning=grid", "--snapshots");
         traceStand(input, spacingOutput, "--thinning=spacing");
         traceStand(input, spacingSnapshots, "--thinning=spacing", "--snapshots");
+        traceStand(input, earlyOutput, "--early-close");
+        traceStand(input, earlySnapshots, "--early-close", "--snapshots");
 
-        for (var outputs : List.of(List.of(defaultOutput, gridSnapshots), List.of(spacingOutput, spacingSnapshots))) {
+        for (var outputs : List.of(List.of(defaultOutput, gridSnapshots), List.of(spacingOutput, spacingSnapshots),
+                List.of(earlyOutput, earlySnapshots))) {
             Path plain = outputs.getFirst();
             Path traced = outputs.getLast();
             assertEquals(-1, Files.mismatch(plain.resolve("outline.wkt"), traced.resolve("outline.wkt")));
@@ -318,6 +416,8 @@ class VegetationOutlinesTest {
         assertEquals(628, spacing.get("selected").getAsInt());
         assertEquals(627, spacing.get("unique").getAsInt());
         assertEquals(626, spacing.get("retained").getAsInt());
+        var early = Pipeline.JSON.fromJson(Files.readString(earlyOutput.resolve("metrics.json")), JsonObject.class);
+        assertTrue(early.get("earlyClose").getAsBoolean());
     }
 
     @Test

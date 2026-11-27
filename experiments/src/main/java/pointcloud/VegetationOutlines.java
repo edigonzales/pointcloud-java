@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -25,6 +26,8 @@ import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.PrecisionModel;
 import org.locationtech.jts.geom.util.AffineTransformation;
+import org.locationtech.jts.operation.buffer.BufferOp;
+import org.locationtech.jts.operation.buffer.BufferParameters;
 import org.locationtech.jts.operation.overlayng.OverlayNG;
 import org.locationtech.jts.operation.overlayng.OverlayNGRobust;
 import org.locationtech.jts.simplify.TopologyPreservingSimplifier;
@@ -36,6 +39,7 @@ public final class VegetationOutlines {
     private static final double NEIGHBOR_CELL_METRES = 0.5;
     private static final double GRID_METRES = 0.25;
     private static final double DISK_METRES = 1.4;
+    private static final double EARLY_CLOSE_METRES = 0.25;
     private static final double BUFFER_CELL_METRES = 4;
     private static final int BUFFER_BLOCK_POINTS = 128;
     private static final int MAX_CANDIDATES = 1_000_000;
@@ -73,18 +77,21 @@ public final class VegetationOutlines {
             double readSeconds, double selectionSeconds, double geometrySeconds) {}
 
     private record Metrics(String mode, List<TileMetrics> tiles, double area, int polygons, int vertices,
-            double finishSeconds, String thinning, SpacingMetrics spacing) {}
+            double finishSeconds, String thinning, SpacingMetrics spacing, boolean earlyClose) {}
 
     private record Snapshots(Geometry beforeErosion, Geometry afterErosion, Geometry afterDilation) {}
 
     public static void main(String[] args) throws IOException {
         String thinning = null;
         boolean snapshots = false;
+        boolean earlyClose = false;
         int prefix = 0;
         while (prefix < args.length && args[prefix].startsWith("--")) {
             String option = args[prefix++];
             if (option.equals("--snapshots") && !snapshots) {
                 snapshots = true;
+            } else if (option.equals("--early-close") && !earlyClose) {
+                earlyClose = true;
             } else if (option.startsWith("--thinning=") && thinning == null) {
                 thinning = switch (option) {
                     case "--thinning=grid" -> "grid";
@@ -103,7 +110,8 @@ public final class VegetationOutlines {
             thinning = "grid";
         }
         if (args.length < 11 || (args.length - 6) % 5 != 0 || (args.length - 6) / 5 > MAX_TILES) {
-            throw new IllegalArgumentException("Expected [--thinning=grid|spacing|none] [--snapshots] <all|neighbors> <new-output-dir> <eval-xmin> <eval-ymin>"
+            throw new IllegalArgumentException("Expected [--thinning=grid|spacing|none] [--snapshots] [--early-close]"
+                    + " <all|neighbors> <new-output-dir> <eval-xmin> <eval-ymin>"
                     + " <eval-xmax> <eval-ymax> followed by up to " + MAX_TILES
                     + " groups of <xmin> <ymin> <xmax> <ymax> <prepared.las>");
         }
@@ -127,6 +135,8 @@ public final class VegetationOutlines {
         }
         var partials = new ArrayList<Geometry>();
         var tiles = new ArrayList<TileMetrics>();
+        // Keep openings whole through the hull and width test, including at internal tile cuts.
+        var earlyPoints = earlyClose ? new HashSet<Coordinate>() : null;
         for (int i = 6; i < args.length; i += 5) {
             var core = bounds(args, i);
             if (core.getWidth() > 1000 || core.getHeight() > 1000) {
@@ -150,9 +160,16 @@ public final class VegetationOutlines {
                 selection = new Selection(positions, count, count, region.tileHaloKept()[tile]);
             }
             long startGeometry = System.nanoTime();
-            var partial = trace(selection.points());
+            if (earlyPoints == null) {
+                partials.add(trace(selection.points()));
+            } else {
+                for (var point : selection.points()) {
+                    if (earlyPoints.add(point) && earlyPoints.size() > MAX_REGION_CANDIDATES) {
+                        throw new IllegalArgumentException("Early closing exceeds 2,000,000 distinct XY positions");
+                    }
+                }
+            }
             long done = System.nanoTime();
-            partials.add(partial);
             tiles.add(new TileMetrics(las.toString(),
                     new double[]{core.getMinX(), core.getMinY(), core.getMaxX(), core.getMaxY()},
                     selection.selected(), selection.kept(), selection.haloKept(), selection.points().length,
@@ -160,6 +177,12 @@ public final class VegetationOutlines {
                     seconds(startGeometry, done)));
         }
         long startFinish = System.nanoTime();
+        if (earlyPoints != null) {
+            checkInterrupted();
+            var points = earlyPoints.toArray(Coordinate[]::new);
+            earlyPoints.clear();
+            partials.add(trace(points, true));
+        }
         var outline = finish(partials, clip);
         if (!outline.isValid()) {
             throw new IllegalStateException("Final vegetation outline is invalid");
@@ -167,7 +190,7 @@ public final class VegetationOutlines {
         outline.normalize();
         var metrics = new Metrics(args[0], tiles, outline.getArea(),
                 outline.isEmpty() ? 0 : outline.getNumGeometries(), outline.getNumPoints(),
-                seconds(startFinish, System.nanoTime()), thinning, region == null ? null : region.metrics());
+                seconds(startFinish, System.nanoTime()), thinning, region == null ? null : region.metrics(), earlyClose);
         Snapshots recorded = null;
         if (snapshots) {
             // Preserve the accepted grid computation. Replay the two buffers on its
@@ -506,6 +529,10 @@ public final class VegetationOutlines {
     }
 
     static Geometry trace(Coordinate[] points) {
+        return trace(points, false);
+    }
+
+    static Geometry trace(Coordinate[] points, boolean earlyClose) {
         if (points.length == 0) {
             return LV95.createPolygon();
         }
@@ -535,10 +562,22 @@ public final class VegetationOutlines {
             }
         }
         var coverage = OverlayNGRobust.union(blocks, LV95);
-        var outline = closeOpenings(coverage).buffer(-DISK_METRES);
+        var outline = backBuffer(closeOpenings(coverage), earlyClose);
         outline = fillSmallHoles(outline);
         outline = minimumArea(TopologyPreservingSimplifier.simplify(outline, 0.10), 20);
         return AffineTransformation.translationInstance(originX, originY).transform(outline);
+    }
+
+    static Geometry backBuffer(Geometry cover, boolean earlyClose) {
+        if (earlyClose) {
+            // A simplified edge can move a nearly 10 m opening across the later 5 m buffer test.
+            var parameters = new BufferParameters();
+            parameters.setSimplifyFactor(0);
+            var expanded = BufferOp.bufferOp(cover, EARLY_CLOSE_METRES, parameters);
+            checkInterrupted();
+            return BufferOp.bufferOp(expanded, -(DISK_METRES + EARLY_CLOSE_METRES), parameters);
+        }
+        return cover.buffer(-DISK_METRES);
     }
 
     private static Geometry disk(double x, double y) {
